@@ -153,6 +153,39 @@ class WhaleCopyStrategy:
         self._last_scan_time: float = 0.0
         # Statistiche whale (cache)
         self._whale_stats: dict[str, dict] = {}
+        # v8.2: Whale Profiler whitelist (additive filter)
+        self._whitelist: dict[str, dict] = {}
+        self._whitelist_loaded_at: float = 0.0
+        self._load_whitelist()
+
+    def _load_whitelist(self) -> None:
+        """
+        v8.2: Carica whitelist dal Whale Profiler (logs/whale_whitelist.json).
+        Refresh ogni 6 ore. Se il file non esiste, noop (filtro additive).
+        """
+        try:
+            from utils.whale_profiler import WhaleProfiler
+            data = WhaleProfiler.load_whitelist()
+            if data:
+                self._whitelist = {}
+                for addr, info in data.items():
+                    self._whitelist[addr] = {
+                        "score": info.get("composite_score", 0),
+                        "recommendation": info.get("recommendation", "WATCH"),
+                        "time_profitable_pct": info.get("time_profitable_pct", 0),
+                        "accumulation_pattern": info.get("accumulation_pattern", "UNKNOWN"),
+                    }
+                self._whitelist_loaded_at = time.time()
+                logger.info(
+                    f"[WHALE] Whitelist caricata: {len(self._whitelist)} wallet "
+                    f"(COPY={sum(1 for v in self._whitelist.values() if v['recommendation'] == 'COPY')}, "
+                    f"WATCH={sum(1 for v in self._whitelist.values() if v['recommendation'] == 'WATCH')}, "
+                    f"SKIP={sum(1 for v in self._whitelist.values() if v['recommendation'] == 'SKIP')})"
+                )
+            else:
+                logger.debug("[WHALE] Nessuna whitelist trovata — filtro profiler disattivato")
+        except Exception as e:
+            logger.debug(f"[WHALE] Errore caricamento whitelist: {e}")
 
     async def scan(self, shared_markets: list[Market] | None = None) -> list[WhaleCopyOpportunity]:
         """
@@ -459,6 +492,20 @@ class WhaleCopyStrategy:
             if now - self._recently_traded[wt.market.id] < self._TRADE_COOLDOWN:
                 return None
 
+        # v8.2: Filtro whitelist profiler (additive — se whitelist non esiste, skip)
+        if self._whitelist:
+            # Refresh whitelist ogni 6 ore
+            if now - self._whitelist_loaded_at > 21600:
+                self._load_whitelist()
+
+            wl_entry = self._whitelist.get(wt.wallet_address)
+            if wl_entry and wl_entry.get("recommendation") == "SKIP":
+                logger.debug(
+                    f"[WHALE] SKIP profiler: {wt.whale_name} "
+                    f"score={wl_entry.get('score', 0):.2f}"
+                )
+                return None
+
         # Filtro prezzo
         token_key = "yes" if wt.side == "YES" else "no"
         price = wt.market.prices.get(token_key, 0.5)
@@ -549,6 +596,24 @@ class WhaleCopyStrategy:
             confidence -= 0.05
         elif delay > 60:
             confidence -= 0.02
+
+        # v8.2: Boost/penalita' da Whale Profiler whitelist
+        if self._whitelist:
+            wl_entry = self._whitelist.get(wt.wallet_address)
+            if wl_entry:
+                rec = wl_entry.get("recommendation", "")
+                score = wl_entry.get("score", 0)
+                pattern = wl_entry.get("accumulation_pattern", "")
+
+                if rec == "COPY" and score >= 0.75:
+                    confidence += 0.08
+                elif rec == "COPY":
+                    confidence += 0.05
+                elif rec == "WATCH":
+                    confidence -= 0.03
+
+                if pattern == "INCREASING":
+                    confidence += 0.03
 
         return min(max(confidence, 0.40), 0.85)
 

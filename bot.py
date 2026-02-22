@@ -59,6 +59,21 @@ try:
 except ImportError:
     FinBERTFeed = None
 
+# v9.0: Architettura agentica a 6 layer
+from validators.signal_validator import SignalValidator, ValidationResult
+from validators.devils_advocate import DevilsAdvocate
+from validators.signal_converter import (
+    from_event_opportunity, from_bond_opportunity,
+    from_whale_opportunity, from_prediction, from_weather_opportunity,
+)
+from monitoring.attribution import AttributionEngine
+from monitoring.drift_detector import DriftDetector
+from monitoring.calibration import CalibrationEngine
+from risk.correlation_monitor import CorrelationMonitor
+from risk.tail_risk import TailRiskAgent
+from agents.orchestrator import OrchestratorAgent
+from execution.execution_agent import ExecutionAgent
+
 # ── Logging ──────────────────────────────────────────────────────
 
 os.makedirs("logs", exist_ok=True)
@@ -82,10 +97,10 @@ logger = logging.getLogger("bot")
 
 BANNER = """
 ╔═══════════════════════════════════════════════════════════════════════╗
-║     Polymarket Multi-Strategy Trading Bot v7.0.0                     ║
-║     BOND=25% GAB=20% WTH=20% ARB=10% DATA=10% EVT=10% WHALE=5%     ║
-║     Kelly-Proporzionale | Anti-Hedge | Sniper + UMA + FinBERT NLP    ║
-║     Fee-Aware | Atomic Arb | News-Reactive | ML Sentiment | 20 Slots ║
+║     Polymarket Multi-Strategy Trading Bot v9.0.0                     ║
+║     6-Layer Agentic Architecture | Signal Validator + Devil's Adv.    ║
+║     Attribution + Drift + Calibration | Correlation + Tail Risk      ║
+║     Orchestrator + Event Bus | TWAP Execution | PG + Redis Storage   ║
 ╚═══════════════════════════════════════════════════════════════════════╝
 """
 
@@ -244,6 +259,51 @@ class MultiStrategyBot:
         self._resolve_last_check = 0.0
         self._resolved_cache: set[str] = set()
 
+        # ── v9.0: Layer 2 — Signal Validator + Devil's Advocate ──
+        self.devils_advocate = DevilsAdvocate(risk_manager=self.risk)
+        self.signal_validator = SignalValidator(devil_advocate=self.devils_advocate)
+
+        # ── v9.0: Layer 5 — Monitoring & Attribution ──
+        self.attribution = AttributionEngine()
+        self.drift_detector = DriftDetector()
+        self.calibration = CalibrationEngine(self.attribution, self.drift_detector)
+
+        # ── v9.0: Layer 3 — Correlation Monitor & Tail Risk ──
+        self.correlation_monitor = CorrelationMonitor(risk_manager=self.risk)
+        self.risk.correlation_monitor = self.correlation_monitor
+        self.tail_risk = TailRiskAgent(risk_manager=self.risk)
+
+        # ── v9.0: Layer 1 — Orchestrator ──
+        self.orchestrator = OrchestratorAgent()
+
+        # ── v9.0: Layer 4 — Execution Engine ──
+        self.execution_agent = ExecutionAgent(api=self.api)
+
+        # ── v9.0: Layer 0 — Storage (graceful: se non configurato, noop) ──
+        self.db = None
+        self.event_bus = None
+        if config.db_dsn:
+            try:
+                from storage.database import Database
+                self.db = Database(config.db_dsn)
+                self.db.connect()
+                self.risk.db = self.db
+                self.attribution.db = self.db
+                self.drift_detector.db = self.db
+                self.calibration.db = self.db
+                logger.info("[v9.0] PostgreSQL storage attivo")
+            except Exception as e:
+                logger.warning(f"[v9.0] PostgreSQL non disponibile: {e}")
+        if config.redis_url:
+            try:
+                from storage.redis_bus import EventBus
+                self.event_bus = EventBus(config.redis_url)
+                self.event_bus.connect()
+                self.orchestrator.event_bus = self.event_bus
+                logger.info("[v9.0] Redis event bus attivo")
+            except Exception as e:
+                logger.warning(f"[v9.0] Redis non disponibile: {e}")
+
     async def start(self):
         print(BANNER)
 
@@ -300,6 +360,21 @@ class MultiStrategyBot:
                     continue
 
                 logger.debug(f"Ciclo #{self._cycle}: {len(shared_markets)} mercati fetchati")
+
+                # ── v9.0: Orchestrator — prioritizzazione mercati ──
+                try:
+                    orch_tasks = await self.orchestrator.prioritize(shared_markets)
+                    if orch_tasks:
+                        # Classifica temi per il correlation monitor
+                        for task in orch_tasks:
+                            for m in shared_markets:
+                                if m.id == task.market_id:
+                                    theme = self.correlation_monitor.classify_theme(
+                                        m.id, m.question, m.category, m.tags
+                                    )
+                                    break
+                except Exception as e:
+                    logger.debug(f"[ORCHESTRATOR] Errore: {e}")
 
                 # ── Balance check (ogni 50 cicli) ──
                 # Il bot deve sapere se ha abbastanza USDC per comprare.
@@ -366,7 +441,16 @@ class MultiStrategyBot:
                         for opp in weather_opps[:3]:
                             if not self._running:
                                 break
-                            await self.weather.execute(opp, paper=paper)
+                            signal = from_weather_opportunity(opp)
+                            kelly = self.risk.kelly_size(opp.forecast_prob, signal.price, "weather")
+                            report = self.signal_validator.validate(signal, trade_size=kelly)
+                            if report.result == ValidationResult.TRADE:
+                                self.attribution.record_entry(
+                                    opp.market.tokens.get(opp.side.lower(), ""),
+                                    "weather", "weather", "weather",
+                                    edge_predicted=opp.edge, validation_score=report.score,
+                                )
+                                await self.weather.execute(opp, paper=paper)
                 except Exception as e:
                     logger.error(f"[WEATHER] Errore strategia: {e}", exc_info=True)
 
@@ -388,7 +472,16 @@ class MultiStrategyBot:
                         for pred in predictions[:3]:
                             if not self._running:
                                 break
-                            await self.data.execute(pred, paper=paper)
+                            signal = from_prediction(pred)
+                            kelly = self.risk.kelly_size(pred.true_prob_yes, signal.price, "data_driven")
+                            report = self.signal_validator.validate(signal, trade_size=kelly)
+                            if report.result == ValidationResult.TRADE:
+                                self.attribution.record_entry(
+                                    pred.market.tokens.get(pred.best_side.lower(), ""),
+                                    "data_driven", "data_driven", pred.market.category,
+                                    edge_predicted=pred.best_edge, validation_score=report.score,
+                                )
+                                await self.data.execute(pred, paper=paper)
                 except Exception as e:
                     logger.error(f"[DATA] Errore strategia: {e}", exc_info=True)
 
@@ -399,7 +492,19 @@ class MultiStrategyBot:
                         for ev in events[:10]:  # v5.6: era [:5], tutte e 5 bloccate → prova 10
                             if not self._running:
                                 break
-                            await self.event.execute(ev, paper=paper)
+                            signal = from_event_opportunity(ev)
+                            kelly = self.risk.kelly_size(
+                                ev.confidence, signal.price, "event_driven"
+                            )
+                            report = self.signal_validator.validate(signal, trade_size=kelly)
+                            if report.result == ValidationResult.TRADE:
+                                self.attribution.record_entry(
+                                    ev.market.tokens.get(ev.side.lower(), ""),
+                                    "event_driven", getattr(ev, 'signal_type', 'structural'),
+                                    getattr(ev, 'event_type', ''),
+                                    edge_predicted=ev.edge, validation_score=report.score,
+                                )
+                                await self.event.execute(ev, paper=paper)
                 except Exception as e:
                     logger.error(f"[EVENT] Errore strategia: {e}", exc_info=True)
 
@@ -411,7 +516,18 @@ class MultiStrategyBot:
                             for opp in bond_opps[:3]:
                                 if not self._running:
                                     break
-                                await self.bond.execute(opp, paper=paper)
+                                signal = from_bond_opportunity(opp)
+                                kelly = self.risk.kelly_size(
+                                    opp.certainty_score, opp.price_yes, "high_prob_bond"
+                                )
+                                report = self.signal_validator.validate(signal, trade_size=kelly)
+                                if report.result == ValidationResult.TRADE:
+                                    self.attribution.record_entry(
+                                        opp.market.tokens.get("yes", ""),
+                                        "high_prob_bond", "bond", opp.market.category,
+                                        edge_predicted=opp.edge, validation_score=report.score,
+                                    )
+                                    await self.bond.execute(opp, paper=paper)
                     except Exception as e:
                         logger.error(f"[BOND] Errore strategia: {e}", exc_info=True)
 
@@ -425,9 +541,28 @@ class MultiStrategyBot:
                             for opp in whale_opps[:3]:
                                 if not self._running:
                                     break
-                                await self.whale.execute(opp, paper=paper)
+                                signal = from_whale_opportunity(opp)
+                                report = self.signal_validator.validate(signal, trade_size=opp.copy_size)
+                                if report.result == ValidationResult.TRADE:
+                                    self.attribution.record_entry(
+                                        opp.market.tokens.get(opp.side.lower(), ""),
+                                        "whale_copy", "whale_copy", opp.market.category,
+                                        edge_predicted=opp.edge, validation_score=report.score,
+                                    )
+                                    await self.whale.execute(opp, paper=paper)
                     except Exception as e:
                         logger.error(f"[WHALE] Errore strategia: {e}", exc_info=True)
+
+                # ── 8.1. Whale Profiler (ogni 1000 cicli ~50 min) ──
+                if self._cycle % 1000 == 500:
+                    try:
+                        from utils.whale_profiler import WhaleProfiler
+                        profiler = WhaleProfiler()
+                        whitelist = profiler.profile_all_wallets()
+                        profiler.save_whitelist(whitelist)
+                        self.whale._load_whitelist()
+                    except Exception as e:
+                        logger.warning(f"[WHALE_PROFILER] Errore profiling periodico: {e}")
 
                 # ── 9. Monitoraggio mercati risolti + Auto-Redeem ──
                 try:
@@ -440,6 +575,11 @@ class MultiStrategyBot:
                                 else:
                                     pnl = -t.size
                                 self.risk.close_trade(t.token_id, won=r["won"], pnl=pnl)
+                                # v9.0: Attribution exit + Drift recording
+                                self.attribution.record_exit(
+                                    t.token_id, pnl=pnl, won=r["won"]
+                                )
+                                self.drift_detector.record_outcome(t.strategy, r["won"])
                                 logger.info(
                                     f"[PNL] Trade chiuso: "
                                     f"{'VINTO' if r['won'] else 'PERSO'} "
@@ -506,6 +646,31 @@ class MultiStrategyBot:
                         )
                     except Exception as e:
                         logger.warning(f"[PNL-LIVE] Errore calcolo: {e}")
+
+                # ── v9.0: Drift + Calibration (ogni 500 cicli) ──
+                if self._cycle % 500 == 0 and self._cycle > 0:
+                    try:
+                        drift_alerts = self.drift_detector.check_drift()
+                        for alert in drift_alerts:
+                            logger.warning(f"[DRIFT] {alert.message}")
+                        suggestions = self.calibration.analyze()
+                        for s in suggestions:
+                            logger.info(f"[CALIBRATION] {s.reason}")
+                    except Exception as e:
+                        logger.warning(f"[v9.0] Errore drift/calibration: {e}")
+
+                # ── v9.0: Tail Risk (ogni 200 cicli) ──
+                if self._cycle % 200 == 0 and self._cycle > 0:
+                    try:
+                        tail_report = self.tail_risk.analyze()
+                        if tail_report.risk_level == "CRITICAL":
+                            logger.warning(
+                                f"[TAIL_RISK] CRITICAL: max loss "
+                                f"${abs(tail_report.max_loss_scenario):.2f} "
+                                f"({tail_report.exposure_pct:.0%} capitale)"
+                            )
+                    except Exception as e:
+                        logger.warning(f"[v9.0] Errore tail risk: {e}")
 
                 # Salva trade periodicamente
                 if self._cycle % 10 == 0:
@@ -913,6 +1078,18 @@ class MultiStrategyBot:
             self.api.cancel_all()
         await self.binance.stop()
         self.risk.save_trades()
+
+        # v9.0: Cleanup storage
+        if self.db:
+            try:
+                self.db.close()
+            except Exception:
+                pass
+        if self.event_bus:
+            try:
+                self.event_bus.close()
+            except Exception:
+                pass
 
         s = self.risk.status
         logger.info(

@@ -80,6 +80,11 @@ class RiskManager:
         self._stop_loss_cooldown: dict[str, float] = {}  # market_id → timestamp
         self.STOP_LOSS_COOLDOWN_HOURS = 4.0  # 4 ore di cooldown post stop-loss
 
+        # v9.0: Correlation monitor (iniettato da bot.py)
+        self.correlation_monitor = None
+        # v9.0: Database (iniettato da bot.py)
+        self.db = None
+
     @property
     def total_exposed(self) -> float:
         """Capitale totale bloccato in posizioni aperte."""
@@ -231,6 +236,15 @@ class RiskManager:
                     f"Fees/Vol gate: fee rt ${rt_fee:.4f} > 30% "
                     f"vol attesa ${expected_vol:.4f} (ratio={rt_fee/expected_vol:.1%})"
                 )
+
+        # v9.0: Correlation monitor — max 40% capitale per tema
+        if self.correlation_monitor and market_id:
+            theme = self.correlation_monitor.classify_theme(market_id)
+            allowed, reason = self.correlation_monitor.check_correlation(
+                market_id, theme, size
+            )
+            if not allowed:
+                return False, reason
 
         return True, "OK"
 
@@ -648,7 +662,7 @@ class RiskManager:
         return len(stale)
 
     def save_trades(self, path: str = "logs/trades.json"):
-        """Salva lo storico trade su file."""
+        """Salva lo storico trade su file (e su DB se disponibile)."""
         data = []
         for t in self.trades:
             data.append({
@@ -666,3 +680,17 @@ class RiskManager:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as f:
             json.dump(data, f, indent=2)
+
+        # v9.0: Sync chiusure su DB (solo trade appena chiusi)
+        if self.db and hasattr(self.db, 'available') and self.db.available:
+            for t in self.trades:
+                if t.result in ("WIN", "LOSS"):
+                    try:
+                        self.db.update_trade_result(
+                            market_id=t.market_id,
+                            token_id=t.token_id,
+                            result=t.result,
+                            pnl=t.pnl,
+                        )
+                    except Exception:
+                        pass  # graceful

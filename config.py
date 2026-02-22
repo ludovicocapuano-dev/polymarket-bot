@@ -62,6 +62,9 @@ class Config:
     paper_trading: bool = True
     poll_interval: int = 3
     log_level: str = "INFO"
+    # v9.0: Storage layer
+    db_dsn: str = ""        # PostgreSQL DSN (es. postgresql://localhost/polymarket_bot)
+    redis_url: str = ""     # Redis URL (es. redis://localhost:6379)
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -109,6 +112,9 @@ class Config:
             paper_trading=os.getenv("PAPER_TRADING", "true").lower() == "true",
             poll_interval=int(os.getenv("POLL_INTERVAL", "3")),
             log_level=os.getenv("LOG_LEVEL", "INFO"),
+            # v9.0: Storage layer (graceful: se vuoto, usa JSON come prima)
+            db_dsn=os.getenv("DATABASE_DSN", ""),
+            redis_url=os.getenv("REDIS_URL", ""),
         )
 
     def validate(self) -> list[str]:
