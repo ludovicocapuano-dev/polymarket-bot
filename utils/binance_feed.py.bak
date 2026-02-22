@@ -1,0 +1,197 @@
+"""
+Feed real-time multi-crypto da Binance via WebSocket.
+Supporta BTC, ETH, SOL, XRP su USDT via combined stream.
+
+Architettura:
+- Un solo WebSocket in modalita' combined stream
+- Dati separati per ogni simbolo (price, history, momentum, vol)
+- Retrocompatibile: .price, .history, .momentum() etc. restituiscono BTC
+- Per altri simboli: .momentum(5, symbol="eth"), .symbol_price("sol"), etc.
+
+URL combined stream:
+  wss://stream.binance.com:9443/stream?streams=btcusdt@trade/ethusdt@trade/...
+"""
+
+import asyncio
+import json
+import logging
+import time
+from collections import deque
+from dataclasses import dataclass, field
+
+import websockets
+
+logger = logging.getLogger(__name__)
+
+# ── Simboli supportati ─────────────────────────────────────────
+# Chiave = nome corto (usato nel bot), Valore = coppia Binance
+SUPPORTED_SYMBOLS: dict[str, str] = {
+    "btc": "btcusdt",
+    "eth": "ethusdt",
+    "sol": "solusdt",
+    "xrp": "xrpusdt",
+}
+
+BINANCE_COMBINED_WS = (
+    "wss://stream.binance.com:9443/stream?streams="
+    + "/".join(f"{pair}@trade" for pair in SUPPORTED_SYMBOLS.values())
+)
+
+
+@dataclass
+class SymbolData:
+    """Dati real-time per un singolo simbolo."""
+    price: float = 0.0
+    updated_at: float = 0.0
+    history: deque = field(default_factory=lambda: deque(maxlen=2000))
+
+
+@dataclass
+class BinanceFeed:
+    """
+    Feed multi-crypto da Binance.
+
+    Retrocompatibile: .price, .history etc. restituiscono dati BTC.
+    Per altri simboli: usa il parametro symbol="eth" etc.
+    """
+    _symbols: dict[str, SymbolData] = field(default_factory=dict)
+    _running: bool = False
+    _pair_to_sym: dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self):
+        for sym in SUPPORTED_SYMBOLS:
+            self._symbols[sym] = SymbolData()
+        self._pair_to_sym = {v: k for k, v in SUPPORTED_SYMBOLS.items()}
+
+    # ── Proprieta' retrocompatibili (BTC) ──────────────────────
+
+    @property
+    def price(self) -> float:
+        """Prezzo BTC (retrocompatibile con data_driven)."""
+        return self._symbols["btc"].price
+
+    @property
+    def updated_at(self) -> float:
+        return self._symbols["btc"].updated_at
+
+    @property
+    def history(self) -> deque:
+        return self._symbols["btc"].history
+
+    # ── Accesso per simbolo ────────────────────────────────────
+
+    def get_symbol(self, symbol: str) -> SymbolData:
+        """Ottieni dati di un simbolo. Ritorna SymbolData vuoto se non esiste."""
+        return self._symbols.get(symbol.lower(), SymbolData())
+
+    def symbol_price(self, symbol: str) -> float:
+        """Prezzo corrente di un simbolo."""
+        return self.get_symbol(symbol).price
+
+    def ready_symbols(self) -> list[str]:
+        """Lista dei simboli con feed pronto (price > 0)."""
+        return [sym for sym, sd in self._symbols.items() if sd.price > 0]
+
+    def prices_summary(self) -> str:
+        """Stringa riassuntiva dei prezzi per il log."""
+        parts = []
+        for sym in SUPPORTED_SYMBOLS:
+            sd = self._symbols[sym]
+            if sd.price > 0:
+                parts.append(f"{sym.upper()}=${sd.price:,.2f}")
+            else:
+                parts.append(f"{sym.upper()}=--")
+        return " | ".join(parts)
+
+    # ── WebSocket ──────────────────────────────────────────────
+
+    async def connect(self):
+        """Connessione al combined stream multi-crypto."""
+        self._running = True
+
+        while self._running:
+            try:
+                async with websockets.connect(
+                    BINANCE_COMBINED_WS, ping_interval=20
+                ) as ws:
+                    symbols_str = ", ".join(s.upper() for s in SUPPORTED_SYMBOLS)
+                    logger.info(
+                        f"Binance feed multi-crypto connesso ({symbols_str})"
+                    )
+                    async for msg in ws:
+                        if not self._running:
+                            break
+                        raw = json.loads(msg)
+
+                        # Combined stream format:
+                        # {"stream": "btcusdt@trade", "data": {"p": "...", ...}}
+                        stream_name = raw.get("stream", "")
+                        trade_data = raw.get("data", raw)
+
+                        pair = stream_name.split("@")[0] if "@" in stream_name else ""
+                        sym = self._pair_to_sym.get(pair)
+                        if sym and sym in self._symbols:
+                            sd = self._symbols[sym]
+                            sd.price = float(trade_data["p"])
+                            sd.updated_at = time.time()
+                            sd.history.append((sd.updated_at, sd.price))
+
+            except websockets.ConnectionClosed:
+                logger.warning("Binance disconnesso, riconnessione...")
+                await asyncio.sleep(2)
+            except Exception as e:
+                logger.error(f"Errore Binance: {e}")
+                await asyncio.sleep(5)
+
+    # ── Analisi tecnica (con supporto multi-simbolo) ───────────
+
+    def momentum(self, seconds: int = 30, symbol: str = "btc") -> float:
+        """Variazione percentuale negli ultimi N secondi."""
+        sd = self.get_symbol(symbol)
+        if not sd.history or sd.price == 0:
+            return 0.0
+        now = time.time()
+        for ts, p in reversed(sd.history):
+            if now - ts >= seconds:
+                return (sd.price - p) / p if p > 0 else 0.0
+        return 0.0
+
+    def volatility(self, seconds: int = 60, symbol: str = "btc") -> float:
+        """Deviazione standard dei rendimenti."""
+        sd = self.get_symbol(symbol)
+        now = time.time()
+        prices = [p for ts, p in sd.history if now - ts <= seconds]
+        if len(prices) < 5:
+            return 0.0
+        rets = [
+            (prices[i] - prices[i - 1]) / prices[i - 1]
+            for i in range(1, len(prices))
+            if prices[i - 1] > 0
+        ]
+        if not rets:
+            return 0.0
+        mean = sum(rets) / len(rets)
+        var = sum((r - mean) ** 2 for r in rets) / len(rets)
+        return var ** 0.5
+
+    def direction_confidence(
+        self, symbol: str = "btc"
+    ) -> tuple[str, float]:
+        """Direzione del prezzo e confidenza (0-1)."""
+        m5 = self.momentum(5, symbol)
+        m15 = self.momentum(15, symbol)
+        m30 = self.momentum(30, symbol)
+        weighted = m5 * 0.5 + m15 * 0.3 + m30 * 0.2
+        vol = self.volatility(60, symbol)
+        if vol == 0:
+            return "FLAT", 0.0
+        strength = abs(weighted) / max(vol, 1e-8)
+        conf = min(strength / 3.0, 1.0)
+        if weighted > 0.0001:
+            return "UP", conf
+        elif weighted < -0.0001:
+            return "DOWN", conf
+        return "FLAT", 0.0
+
+    async def stop(self):
+        self._running = False
