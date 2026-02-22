@@ -1,0 +1,400 @@
+"""
+Feed GDELT API v2 — Global news + tone per event_driven strategy.
+
+GDELT (Global Database of Events, Language and Tone) monitora media globali
+con aggiornamenti ogni 15 minuti, copertura 265+ lingue e sentiment/tone integrato.
+
+Complementa Finlight: GDELT ha copertura superiore su eventi politici e geopolitici
+(le categorie piu' profittevoli secondo Becker Dataset: politics +$18.6M PnL),
+mentre Finlight e' piu' preciso per news finanziarie/crypto.
+
+GDELT DOC 2.0 API:
+- Endpoint: GET https://api.gdeltproject.org/api/v2/doc/doc
+- Auth: Nessuna (gratuito)
+- Params: query, mode=artlist, format=json, sourcelang=english, sort=datedesc
+- Response: {"articles": [{url, title, seendate, domain, language, tone, ...}]}
+
+Uso nel bot:
+- event_driven: fonte complementare a Finlight per breaking news detection.
+  Merge multi-fonte: prende la fonte con segnale piu' forte per categoria.
+  Se entrambe concordano → boost 10% alla news_strength.
+"""
+
+import logging
+import time
+
+import requests
+from dataclasses import dataclass, field
+
+from utils.finlight_feed import NewsArticle, NewsSentiment, CACHE_TTL
+
+logger = logging.getLogger(__name__)
+
+GDELT_BASE_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
+
+# Query per categoria (stesse 5 categorie di event_driven)
+GDELT_QUERIES: dict[str, list[str]] = {
+    "macro": [
+        "federal reserve OR FOMC OR interest rate",
+        "inflation OR CPI OR consumer price index",
+        "unemployment OR nonfarm payrolls OR jobs report",
+        "GDP growth OR recession OR treasury yield",
+        "tariff OR trade war OR debt ceiling",
+    ],
+    "crypto_regulatory": [
+        "bitcoin ETF OR crypto regulation",
+        "SEC cryptocurrency OR CFTC crypto",
+        "stablecoin regulation OR CBDC",
+        "binance OR coinbase regulation",
+    ],
+    "political": [
+        "US election OR presidential election",
+        "congress vote OR senate vote OR legislation",
+        "supreme court decision OR ruling",
+        "impeachment OR political crisis",
+        "executive order OR presidential approval",
+    ],
+    "tech": [
+        "NVIDIA earnings OR Apple earnings OR tech earnings",
+        "AI regulation OR artificial intelligence policy",
+        "tech IPO OR acquisition OR antitrust",
+        "semiconductor shortage OR chip supply",
+    ],
+    "geopolitical": [
+        "Ukraine Russia war OR ceasefire",
+        "China Taiwan tensions OR strait",
+        "Iran Israel conflict OR Middle East",
+        "OPEC oil production OR oil price",
+        "NATO defense OR sanctions OR embargo",
+    ],
+}
+
+# Discount vs Finlight: GDELT tone e' meno preciso di NLP fine-tuned
+GDELT_STRENGTH_DISCOUNT = 0.90  # 10% discount
+
+# Circuit breaker: disabilita dopo N errori consecutivi
+MAX_CONSECUTIVE_ERRORS = 5
+
+
+@dataclass
+class GDELTFeed:
+    """
+    Client per GDELT DOC 2.0 API — global news con tone analysis.
+
+    Produce gli stessi tipi (NewsArticle, NewsSentiment) di FinlightFeed
+    per permettere merge trasparente in event_driven.
+    Degrada gracefully se GDELT e' irraggiungibile.
+    """
+    _cache: dict[str, NewsSentiment] = field(default_factory=dict)
+    _available: bool | None = None  # None=non testato, True=ok, False=down
+    _consecutive_errors: int = 0
+
+    def __post_init__(self):
+        logger.info(
+            f"[GDELT] Feed inizializzato — "
+            f"{len(GDELT_QUERIES)} categorie evento"
+        )
+
+    # ── Accesso dati ─────────────────────────────────────────────
+
+    def get_event_sentiment(self, event_type: str) -> NewsSentiment:
+        """
+        Ottieni il sentiment delle notizie per un tipo di evento.
+        Cerca notizie correlate su GDELT e aggrega il tone.
+        """
+        if event_type not in GDELT_QUERIES:
+            return NewsSentiment(event_type=event_type)
+
+        cached = self._cache.get(event_type)
+        if cached and cached.is_fresh:
+            return cached
+
+        self._fetch_event_news(event_type)
+        return self._cache.get(event_type, NewsSentiment(event_type=event_type))
+
+    def get_market_sentiment(self, question: str, event_type: str) -> NewsSentiment:
+        """
+        Cerca notizie specificamente correlate a un mercato Polymarket.
+        Usa la domanda del mercato come query.
+        """
+        cache_key = f"mkt_{hash(question) % 10000}_{event_type}"
+
+        cached = self._cache.get(cache_key)
+        if cached and cached.is_fresh:
+            return cached
+
+        query = self._question_to_query(question)
+        if not query:
+            return NewsSentiment(event_type=event_type)
+
+        articles = self._fetch_articles(query, max_records=10)
+        ns = NewsSentiment(
+            event_type=event_type,
+            articles=articles,
+            fetched_at=time.time(),
+        )
+        self._cache[cache_key] = ns
+        return ns
+
+    def detect_breaking_events(
+        self, min_articles: int = 5, min_sentiment: float = 0.25
+    ) -> list[tuple[str, NewsSentiment]]:
+        """
+        Rileva breaking news: categorie con molti articoli recenti
+        e tone forte (positivo o negativo).
+
+        Returns: [(event_type, NewsSentiment)] ordinato per |sentiment| * n_articles
+        """
+        breaking = []
+
+        for etype in GDELT_QUERIES:
+            ns = self.get_event_sentiment(etype)
+            if ns.n_articles >= min_articles and abs(ns.avg_sentiment) >= min_sentiment:
+                breaking.append((etype, ns))
+
+        breaking.sort(
+            key=lambda x: abs(x[1].avg_sentiment) * x[1].n_articles,
+            reverse=True,
+        )
+
+        if breaking:
+            logger.info(
+                f"[GDELT] BREAKING: {len(breaking)} categorie — "
+                + " | ".join(
+                    f"{et}: {ns.sentiment_label}({ns.n_articles}art, {ns.avg_sentiment:+.2f})"
+                    for et, ns in breaking
+                )
+            )
+
+        return breaking
+
+    def get_news_strength(self, event_type: str) -> float:
+        """
+        Calcola la "forza" delle news per un evento: 0.0 a 1.0.
+        Combina volume di articoli, sentiment e freschezza.
+        Applica discount 10% vs Finlight (GDELT tone meno preciso).
+        """
+        ns = self.get_event_sentiment(event_type)
+        if not ns.is_fresh or ns.n_articles == 0:
+            return 0.0
+
+        # Volume score: 1 art=0.1, 5 art=0.5, 10+=1.0
+        vol_score = min(ns.n_articles / 10.0, 1.0)
+
+        # Sentiment score: |avg_sentiment| normalizzato 0-1
+        sent_score = min(abs(ns.avg_sentiment) / 0.6, 1.0)
+
+        # High-confidence boost
+        hc = ns.high_confidence_sentiment
+        hc_boost = 0.0
+        if abs(hc) > 0.5 and ns.n_articles >= 3:
+            hc_boost = 0.15
+
+        strength = (vol_score * 0.4 + sent_score * 0.5 + hc_boost)
+        # Discount: GDELT tone e' meno preciso di NLP fine-tuned
+        strength *= GDELT_STRENGTH_DISCOUNT
+        return min(strength, 1.0)
+
+    # ── Fetch da API ─────────────────────────────────────────────
+
+    def _fetch_event_news(self, event_type: str):
+        """Fetcha notizie per tutte le query di un tipo di evento."""
+        if self._available is False:
+            return
+
+        queries = GDELT_QUERIES.get(event_type, [])
+        all_articles: list[NewsArticle] = []
+
+        for query in queries:
+            articles = self._fetch_articles(query, max_records=10)
+            all_articles.extend(articles)
+
+        # Deduplica per URL
+        seen_urls: set[str] = set()
+        unique_articles: list[NewsArticle] = []
+        for a in all_articles:
+            if a.url and a.url not in seen_urls:
+                seen_urls.add(a.url)
+                unique_articles.append(a)
+            elif not a.url:
+                unique_articles.append(a)
+
+        ns = NewsSentiment(
+            event_type=event_type,
+            articles=unique_articles,
+            fetched_at=time.time(),
+        )
+        self._cache[event_type] = ns
+
+        if unique_articles:
+            logger.debug(
+                f"[GDELT] {event_type}: {len(unique_articles)} articoli, "
+                f"sentiment={ns.sentiment_label} ({ns.avg_sentiment:+.2f})"
+            )
+
+    def _fetch_articles(
+        self, query: str, max_records: int = 10, timespan: str = "1h"
+    ) -> list[NewsArticle]:
+        """
+        GET a GDELT DOC 2.0 API.
+
+        Params: query, mode=artlist, format=json, sourcelang=english,
+                sort=datedesc, maxrecords, timespan
+        Response: {"articles": [{url, title, seendate, domain, language, tone, ...}]}
+        """
+        if self._available is False:
+            return []
+
+        params = {
+            "query": query,
+            "mode": "artlist",
+            "format": "json",
+            "sourcelang": "english",
+            "sort": "datedesc",
+            "maxrecords": max_records,
+            "timespan": timespan,
+        }
+
+        try:
+            resp = requests.get(
+                GDELT_BASE_URL,
+                params=params,
+                timeout=12,  # GDELT puo' essere lento
+            )
+
+            if resp.status_code == 200:
+                # Reset errori consecutivi
+                self._consecutive_errors = 0
+                if self._available is None:
+                    self._available = True
+                    logger.info("[GDELT] API connessa — notizie disponibili")
+
+                data = resp.json()
+                return self._parse_articles(data)
+
+            else:
+                logger.debug(f"[GDELT] HTTP {resp.status_code} per query '{query[:30]}'")
+                self._register_error()
+                return []
+
+        except requests.Timeout:
+            logger.debug(f"[GDELT] Timeout per query '{query[:30]}'")
+            self._register_error()
+            return []
+        except requests.RequestException as e:
+            logger.debug(f"[GDELT] Errore: {e}")
+            self._register_error()
+            return []
+        except ValueError:
+            # JSON decode error
+            logger.debug(f"[GDELT] Risposta non-JSON per query '{query[:30]}'")
+            self._register_error()
+            return []
+
+    def _register_error(self):
+        """Circuit breaker: disabilita dopo MAX_CONSECUTIVE_ERRORS errori."""
+        self._consecutive_errors += 1
+        if self._consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+            logger.warning(
+                f"[GDELT] {self._consecutive_errors} errori consecutivi — "
+                f"feed disabilitato (circuit breaker)"
+            )
+            self._available = False
+
+    # ── Parsing ──────────────────────────────────────────────────
+
+    def _parse_articles(self, data: dict) -> list[NewsArticle]:
+        """
+        Parsa la risposta di GDELT DOC 2.0 API.
+
+        Formato: {"articles": [{url, title, seendate, domain, language, tone, ...}]}
+        Il campo tone e' una stringa CSV: "tone,pos,neg,polarity,arf,srf,wc"
+        """
+        items = []
+        if isinstance(data, dict):
+            items = data.get("articles", [])
+        elif isinstance(data, list):
+            items = data
+
+        if not isinstance(items, list):
+            return []
+
+        articles = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+
+            # Parse tone CSV
+            tone_str = item.get("tone", "")
+            sentiment_label, sentiment_score, confidence = self._parse_tone(tone_str)
+
+            articles.append(NewsArticle(
+                title=item.get("title", ""),
+                summary="",  # GDELT non fornisce summary
+                source=item.get("domain", ""),
+                url=item.get("url", ""),
+                sentiment=sentiment_label,
+                confidence=confidence,
+                published_at=item.get("seendate", ""),
+                tickers=[],
+                companies=[],
+            ))
+
+        return articles
+
+    @staticmethod
+    def _parse_tone(tone_str: str) -> tuple[str, float, float]:
+        """
+        Converte tone GDELT (CSV) in (sentiment_label, normalized_score, confidence).
+
+        Formato tone: "tone,positive_score,negative_score,polarity,arf,srf,word_count"
+        - tone: average tone of document (-100 to +100, tipicamente -15 a +15)
+        - Normalizziamo: tone / 10.0 per range ~-1.0/+1.0
+
+        Confidence cappata a 0.85 (GDELT meno preciso di NLP fine-tuned).
+        Threshold: |normalized| > 0.15 per positive/negative, altrimenti neutral.
+        """
+        if not tone_str:
+            return "neutral", 0.0, 0.0
+
+        try:
+            parts = tone_str.split(",")
+            raw_tone = float(parts[0])
+        except (ValueError, IndexError):
+            return "neutral", 0.0, 0.0
+
+        # Normalizza in range -1.0/+1.0
+        normalized = max(-1.0, min(1.0, raw_tone / 10.0))
+
+        # Confidence basata sulla magnitudine del tone
+        # Tone piu' forte = piu' confidenza (ma cap a 0.85)
+        confidence = min(abs(normalized) * 1.2, 0.85)
+
+        # Threshold per label
+        if normalized > 0.15:
+            label = "positive"
+        elif normalized < -0.15:
+            label = "negative"
+        else:
+            label = "neutral"
+
+        return label, normalized, confidence
+
+    def _question_to_query(self, question: str) -> str:
+        """
+        Converte una domanda Polymarket in una query GDELT.
+        Rimuove parole generiche, mantiene i termini chiave.
+        """
+        stop_words = {
+            "will", "the", "be", "by", "on", "in", "at", "to", "of",
+            "a", "an", "is", "or", "and", "for", "this", "that", "it",
+            "yes", "no", "before", "after", "end", "day",
+        }
+        words = question.lower().split()
+        key_words = [w for w in words if w not in stop_words and len(w) > 2]
+
+        if len(key_words) < 2:
+            return ""
+
+        # Prendi le prime 5 parole chiave
+        return " ".join(key_words[:5])
