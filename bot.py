@@ -119,6 +119,7 @@ def dashboard(risk: RiskManager, paper: bool, cycle: int,
   USDC:     {usdc_str}  |  Unrealized: {upnl_str}
   Trades:   {s['total_trades']:>10d}  |  Win rate: {s['win_rate']:>7.1f}%
   Aperte:   {s['open']:>10d}  |  W/L: {s['wins']}/{s['losses']}
+  Esposto:  ${s['exposed']:>9,.2f}  |  Disponibile: ${s['available']:>8,.2f}  |  Floor: ${s['reserve_floor']:>8,.2f}
 {'─' * 65}
   PnL strategia: {spnl}
   Stato:         {strat_line}

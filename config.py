@@ -31,6 +31,7 @@ class RiskConfig:
     kelly_fraction: float = 0.25
     max_consecutive_losses: int = 10
     max_open_positions: int = 30  # v7.3: aumentato da 20 (Casino Model — più diversificazione)
+    reserve_floor_pct: float = 25.0  # v8.1: % capitale da tenere sempre liquido
 
 
 @dataclass

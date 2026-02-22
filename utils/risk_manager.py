@@ -80,6 +80,16 @@ class RiskManager:
         self._stop_loss_cooldown: dict[str, float] = {}  # market_id → timestamp
         self.STOP_LOSS_COOLDOWN_HOURS = 4.0  # 4 ore di cooldown post stop-loss
 
+    @property
+    def total_exposed(self) -> float:
+        """Capitale totale bloccato in posizioni aperte."""
+        return sum(t.size for t in self.open_trades)
+
+    @property
+    def available_capital(self) -> float:
+        """Capitale disponibile per nuovi trade."""
+        return self.capital - self.total_exposed
+
     def set_strategy_budget(self, name: str, budget: float):
         self._strategy_budgets[name] = budget
         self._strategy_pnl.setdefault(name, 0.0)
@@ -117,6 +127,16 @@ class RiskManager:
 
         if len(self.open_trades) >= self.config.max_open_positions:
             return False, f"Max posizioni aperte ({self.config.max_open_positions})"
+
+        # v8.1: Reserve floor — mantieni almeno X% del capitale liquido
+        reserve_floor = self.config.total_capital * (self.config.reserve_floor_pct / 100.0)
+        available = self.available_capital
+        if available - size < reserve_floor:
+            return False, (
+                f"Reserve floor: ${available:.2f} disponibile, "
+                f"dopo trade ${size:.2f} resterebbe ${available - size:.2f} "
+                f"< floor ${reserve_floor:.2f} ({self.config.reserve_floor_pct:.0f}%)"
+            )
 
         budget = self._strategy_budgets.get(strategy, 0)
         spent = self._strategy_pnl.get(strategy, 0)
@@ -526,6 +546,9 @@ class RiskManager:
             "win_rate": round(wins / total * 100, 1) if total else 0.0,
             "halted": any_halted,
             "halt_reason": " | ".join(halt_reasons) if halt_reasons else "",
+            "exposed": round(self.total_exposed, 2),
+            "available": round(self.available_capital, 2),
+            "reserve_floor": round(self.config.total_capital * (self.config.reserve_floor_pct / 100.0), 2),
             "strategy_pnl": {k: round(v, 2) for k, v in self._strategy_pnl.items()},
             "strategy_halted": dict(self._strategy_halted),
         }
