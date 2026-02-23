@@ -276,18 +276,6 @@ class WeatherStrategy:
         # BUY_NO a 0.93 = rischia $23.25 per guadagnare $1.75 (risk/reward 13:1)
         # Anche con 90% accuratezza: EV = 0.9*1.75 - 0.1*23.25 = -$0.75 NEGATIVO
         # Blocca trade dove il risk/reward supera 5:1
-        buy_price = price_yes if best_side == "YES" else price_no
-        if buy_price > 0.85:
-            # v8.0: Rilassato — Becker: Weather ha bias positivo (underpriced) a 0.60-0.90
-            # Permettere se edge forte E confidence alta
-            if best_edge < 0.05 or confidence < 0.75:
-                # Blocca ancora se edge/confidence deboli
-                return None
-            # Altrimenti procedi — Becker conferma underpricing a 0.85-0.90
-        if buy_price < 0.05:
-            # Longshot: paghi poco ma probabilita' troppo bassa
-            return None
-
         # 7. Confidence basata sulla qualita' della previsione
         # - Orizzonte vicino = piu' affidabile
         # - Piu' fonti = piu' affidabile (consensus multi-provider)
@@ -306,6 +294,18 @@ class WeatherStrategy:
         confidence = min(horizon_conf * source_conf * ensemble_boost, 0.90)
 
         if confidence < self.min_confidence:
+            return None
+
+        buy_price = price_yes if best_side == "YES" else price_no
+        if buy_price > 0.85:
+            # v8.0: Rilassato — Becker: Weather ha bias positivo (underpriced) a 0.60-0.90
+            # Permettere se edge forte E confidence alta
+            if best_edge < 0.05 or confidence < 0.75:
+                # Blocca ancora se edge/confidence deboli
+                return None
+            # Altrimenti procedi — Becker conferma underpricing a 0.85-0.90
+        if buy_price < 0.05:
+            # Longshot: paghi poco ma probabilita' troppo bassa
             return None
 
         return WeatherOpportunity(

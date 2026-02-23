@@ -89,6 +89,7 @@ def setup_logging(level: str):
                 f"logs/bot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
             ),
         ],
+        force=True,
     )
 
 logger = logging.getLogger("bot")
