@@ -72,8 +72,9 @@ GDELT_QUERIES: dict[str, list[str]] = {
 # Discount vs Finlight: GDELT tone e' meno preciso di NLP fine-tuned
 GDELT_STRENGTH_DISCOUNT = 0.90  # 10% discount
 
-# Circuit breaker: disabilita dopo N errori consecutivi
+# Circuit breaker: disabilita dopo N errori consecutivi, retry dopo cooldown
 MAX_CONSECUTIVE_ERRORS = 5
+CIRCUIT_BREAKER_COOLDOWN = 300  # 5 minuti
 
 
 @dataclass
@@ -88,6 +89,7 @@ class GDELTFeed:
     _cache: dict[str, NewsSentiment] = field(default_factory=dict)
     _available: bool | None = None  # None=non testato, True=ok, False=down
     _consecutive_errors: int = 0
+    _circuit_breaker_at: float = 0.0  # timestamp quando e' scattato
 
     def __post_init__(self):
         logger.info(
@@ -199,7 +201,7 @@ class GDELTFeed:
 
     def _fetch_event_news(self, event_type: str):
         """Fetcha notizie per tutte le query di un tipo di evento."""
-        if self._available is False:
+        if not self._check_circuit_breaker():
             return
 
         queries = GDELT_QUERIES.get(event_type, [])
@@ -242,7 +244,7 @@ class GDELTFeed:
                 sort=datedesc, maxrecords, timespan
         Response: {"articles": [{url, title, seendate, domain, language, tone, ...}]}
         """
-        if self._available is False:
+        if not self._check_circuit_breaker():
             return []
 
         params = {
@@ -291,13 +293,28 @@ class GDELTFeed:
             self._register_error()
             return []
 
+    def _check_circuit_breaker(self) -> bool:
+        """Controlla se il circuit breaker e' scattato. Se il cooldown e' passato, resetta."""
+        if self._available is not False:
+            return True  # feed attivo
+        elapsed = time.time() - self._circuit_breaker_at
+        if elapsed >= CIRCUIT_BREAKER_COOLDOWN:
+            logger.info(
+                f"[GDELT] Circuit breaker reset dopo {elapsed:.0f}s — retry"
+            )
+            self._available = None
+            self._consecutive_errors = 0
+            return True  # riprova
+        return False  # ancora in cooldown
+
     def _register_error(self):
         """Circuit breaker: disabilita dopo MAX_CONSECUTIVE_ERRORS errori."""
         self._consecutive_errors += 1
         if self._consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+            self._circuit_breaker_at = time.time()
             logger.warning(
                 f"[GDELT] {self._consecutive_errors} errori consecutivi — "
-                f"feed disabilitato (circuit breaker)"
+                f"feed disabilitato (circuit breaker, retry tra {CIRCUIT_BREAKER_COOLDOWN}s)"
             )
             self._available = False
 
