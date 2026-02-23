@@ -48,12 +48,12 @@ class AllocationConfig:
     crypto_5min: int = 0       # ELIMINATO: Kelly -0.22, fees > edge
     weather: int = 20          # v9.1: +5% da arb
     arbitrage: int = 0         # DISABILITATO v9.1: exploit incrementNonce() — settlement non atomico
-    data_driven: int = 10      # v9.1: +5% da arb (oggi miglior performer)
-    event_driven: int = 25     # v9.1: +10% da arb (politics top Becker)
+    data_driven: int = 35      # v9.1: miglior performer (+$73.50/day, 67% WR)
+    event_driven: int = 10     # v9.1: ridotto — Finlight rate limited, GDELT irraggiungibile
     arb_gabagool: int = 0      # DISABILITATO v9.1: exploit incrementNonce() — settlement non atomico
     high_prob_bond: int = 30   # v9.1: +5% da arb
     market_making: int = 0     # ELIMINATO: necessita $2K+ budget
-    whale_copy: int = 15       # v9.1: +5% da arb
+    whale_copy: int = 5        # v9.1: ridotto — pochi segnali, dipende da attivita' whale
 
 
 @dataclass
@@ -97,12 +97,12 @@ class Config:
                 crypto_5min=int(os.getenv("ALLOC_CRYPTO_5MIN", "0")),
                 weather=int(os.getenv("ALLOC_WEATHER", "20")),
                 arbitrage=int(os.getenv("ALLOC_ARBITRAGE", "0")),
-                data_driven=int(os.getenv("ALLOC_DATA_DRIVEN", "10")),
-                event_driven=int(os.getenv("ALLOC_EVENT_DRIVEN", "25")),
+                data_driven=int(os.getenv("ALLOC_DATA_DRIVEN", "35")),
+                event_driven=int(os.getenv("ALLOC_EVENT_DRIVEN", "10")),
                 arb_gabagool=int(os.getenv("ALLOC_ARB_GABAGOOL", "0")),
                 high_prob_bond=int(os.getenv("ALLOC_HIGH_PROB_BOND", "30")),
                 market_making=int(os.getenv("ALLOC_MARKET_MAKING", "0")),
-                whale_copy=int(os.getenv("ALLOC_WHALE_COPY", "15")),
+                whale_copy=int(os.getenv("ALLOC_WHALE_COPY", "5")),
             )
         else:
             # .env ha solo le vecchie 6 strategie — usa i nuovi default v6.0
