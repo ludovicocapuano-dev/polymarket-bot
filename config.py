@@ -42,16 +42,18 @@ class AllocationConfig:
     - whale_copy 5→10: Becker conferma che copiare whale funziona (68% WR)
     - data_driven 10→5: crypto ben calibrato, poco edge disponibile
     - weather 20→15: redistribuiamo dove c'è più edge
+    v9.1: arb disabilitate per exploit incrementNonce() (settlement non atomico).
+    30% redistribuito a strategie non-arb.
     """
     crypto_5min: int = 0       # ELIMINATO: Kelly -0.22, fees > edge
-    weather: int = 15          # v8.0: ridotto da 20 — buono ma meno edge di politics
-    arbitrage: int = 10        # Invariato
-    data_driven: int = 5       # v8.0: ridotto da 10 — crypto ben calibrato
-    event_driven: int = 15     # v8.0: aumentato da 10 — politics edge forte
-    arb_gabagool: int = 20     # Invariato: risk-free
-    high_prob_bond: int = 25   # Invariato: confermato dal backtest
+    weather: int = 20          # v9.1: +5% da arb
+    arbitrage: int = 0         # DISABILITATO v9.1: exploit incrementNonce() — settlement non atomico
+    data_driven: int = 10      # v9.1: +5% da arb (oggi miglior performer)
+    event_driven: int = 25     # v9.1: +10% da arb (politics top Becker)
+    arb_gabagool: int = 0      # DISABILITATO v9.1: exploit incrementNonce() — settlement non atomico
+    high_prob_bond: int = 30   # v9.1: +5% da arb
     market_making: int = 0     # ELIMINATO: necessita $2K+ budget
-    whale_copy: int = 10       # v8.0: aumentato da 5 — whale hanno edge reale
+    whale_copy: int = 15       # v9.1: +5% da arb
 
 
 @dataclass
@@ -94,13 +96,13 @@ class Config:
             alloc = AllocationConfig(
                 crypto_5min=int(os.getenv("ALLOC_CRYPTO_5MIN", "0")),
                 weather=int(os.getenv("ALLOC_WEATHER", "20")),
-                arbitrage=int(os.getenv("ALLOC_ARBITRAGE", "10")),
+                arbitrage=int(os.getenv("ALLOC_ARBITRAGE", "0")),
                 data_driven=int(os.getenv("ALLOC_DATA_DRIVEN", "10")),
-                event_driven=int(os.getenv("ALLOC_EVENT_DRIVEN", "10")),
-                arb_gabagool=int(os.getenv("ALLOC_ARB_GABAGOOL", "20")),
-                high_prob_bond=int(os.getenv("ALLOC_HIGH_PROB_BOND", "25")),
+                event_driven=int(os.getenv("ALLOC_EVENT_DRIVEN", "25")),
+                arb_gabagool=int(os.getenv("ALLOC_ARB_GABAGOOL", "0")),
+                high_prob_bond=int(os.getenv("ALLOC_HIGH_PROB_BOND", "30")),
                 market_making=int(os.getenv("ALLOC_MARKET_MAKING", "0")),
-                whale_copy=int(os.getenv("ALLOC_WHALE_COPY", "5")),
+                whale_copy=int(os.getenv("ALLOC_WHALE_COPY", "15")),
             )
         else:
             # .env ha solo le vecchie 6 strategie — usa i nuovi default v6.0
