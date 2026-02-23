@@ -2,12 +2,13 @@
 - Rispondi sempre in italiano
 - Nessuna convenzione particolare di codice
 
-# Progetto: Polymarket Multi-Strategy Trading Bot (v9.0.0)
+# Progetto: Polymarket Multi-Strategy Trading Bot (v9.1.0)
 Repo: https://github.com/ludovicocapuano-dev/polymarket-bot (privato)
-Bot automatico di trading su Polymarket con 7 strategie attive (2 eliminate per performance negativa).
+Bot automatico di trading su Polymarket con 5 strategie attive (4 eliminate per performance negativa o sicurezza).
 v8.0 ottimizzato con analisi Becker Dataset (115M trade, 381K mercati risolti).
 v8.1: integrazione GDELT feed per event_driven + configurazione .claude/ (rules, agents, commands).
 v9.0: architettura agentica a 6 layer (Signal Validator, Monitoring, Storage, Orchestrator, Risk, Execution).
+v9.1: arb disabilitate per exploit incrementNonce(), weather max_bet cappato a $15, bugfix vari.
 
 ## Architettura v9.0 — 6 Layer
 
@@ -30,7 +31,7 @@ v9.0: architettura agentica a 6 layer (Signal Validator, Monitoring, Storage, Or
   - `weather_feed.py` — feed previsioni meteo multi-provider
   - `finbert_feed.py` — feed FinBERT/VADER per NLP sentiment analysis
   - `strategies/` — strategie di trading
-    - `arb_gabagool.py` — arbitraggio combinatorio (v8.0: fee reale + profit/fee gate)
+    - `arb_gabagool.py` — DISABILITATO v9.1: exploit incrementNonce() (settlement non atomico)
     - `event_driven.py` — news-reactive + sentiment (v8.0: CATEGORY_CONFIG per-categoria)
     - `high_prob_bond.py` — obbligazioni ad alta prob (v8.0: politics boost, sports hard blacklist)
     - `market_making.py` — DISABILITATO v7.0 (necessita $2K+ budget)
@@ -66,25 +67,25 @@ v9.0: architettura agentica a 6 layer (Signal Validator, Monitoring, Storage, Or
   - `analyze_strategy.py`
   - `strategy_config.json`
 
-## Strategie e allocazione (v8.0.0)
+## Strategie e allocazione (v9.1.0)
 | Strategia      | Allocazione | Descrizione                                    |
 |----------------|-------------|------------------------------------------------|
-| high_prob_bond | 25%         | Bond ad alta prob (politics boost +0.12)       |
-| arb_gabagool   | 20%         | Arbitraggio combinatorio (fee reale p*(1-p)*6.25%) |
-| event_driven   | 15%         | News-reactive + CATEGORY_CONFIG + GDELT merge  |
-| weather        | 15%         | Mercati meteo (rilassato price>0.85 se edge forte) |
-| arbitrage      | 10%         | Arbitraggio classico + cross-platform          |
-| whale_copy     | 10%         | Copy trading size-aware (sweet spot $1K-$100K) |
-| data_driven    | 5%          | Prediction data-driven (crypto ben calibrato)  |
-| crypto_5min    | 0%          | ELIMINATO: Kelly negativo, fees 3.15%          |
-| market_making  | 0%          | ELIMINATO: necessita $2K+ budget               |
+| high_prob_bond | 30%         | Bond ad alta prob (politics boost +0.12)       |
+| event_driven   | 25%         | News-reactive + CATEGORY_CONFIG + GDELT merge  |
+| weather        | 20%         | Mercati meteo (MAX_WEATHER_BET=$15 v9.1)       |
+| whale_copy     | 15%         | Copy trading size-aware (sweet spot $1K-$100K) |
+| data_driven    | 10%         | Prediction data-driven (crypto ben calibrato)  |
+| arb_gabagool   | 0%          | DISABILITATO v9.1: exploit incrementNonce()    |
+| arbitrage      | 0%          | DISABILITATO v9.1: exploit incrementNonce()    |
+| crypto_5min    | 0%          | ELIMINATO v7.0: Kelly negativo, fees 3.15%     |
+| market_making  | 0%          | ELIMINATO v7.0: necessita $2K+ budget          |
 
 ## Modifiche v9.0.0 (Architettura Agentica a 6 Layer)
 ### Layer 2: Signal Validator + Devil's Advocate
 - **SignalValidator** con 7 gate checks: min edge (>=0.02), confidence (>=60%), resolution clarity (<30gg), liquidita' (>=2x size), spread (<=5%), EV positivo post-fee, Devil's Advocate
 - **DevilsAdvocate** fast-path: sport blacklist per bond, edge sospetto (>0.20 non-arb), overconfident senza news, volume <$500, losing streak (3+)
 - **SignalConverter**: adattatori da ogni strategia a UnifiedSignal normalizzato
-- Arb gabagool e arbitrage BYPASSANO il validator (profitto deterministico)
+- Arb gabagool e arbitrage DISABILITATI v9.1 (exploit incrementNonce())
 - Integrato nel main loop: ogni strategia passa dal validator prima di execute()
 
 ### Layer 5: Monitoring & Feedback Loop
@@ -118,6 +119,21 @@ v9.0: architettura agentica a 6 layer (Signal Validator, Monitoring, Storage, Or
 - **ExecutionAgent**: LIMIT_MAKER per trade <=\$30, TWAP per trade >\$30
 - TWAP: tranche da \$15 ogni 2s con slippage check tra tranche
 - Max slippage 2%, stop automatico se superato
+
+## Modifiche v9.1.0 (Security: exploit incrementNonce + bugfix)
+### Sicurezza: arb disabilitate
+- **arb_gabagool** e **arbitrage** disabilitate (allocazione 0%) per exploit `incrementNonce()` sul CTF Exchange
+- L'exploit permette di invalidare il settlement on-chain dopo il match CLOB, lasciando l'arb bot con posizione naked
+- Le gambe dell'arb sono eseguite in sequenza (gap 3-5s), non atomicamente — finestra di attacco
+- Nessuna verifica on-chain post-trade nel codice attuale
+- 30% riallocato: bond +5%, event +10%, weather +5%, whale +5%, data +5%
+### Weather sizing
+- **MAX_WEATHER_BET = $15** (weather.py): cap specifico per weather, loss da $25 troppo pesanti vs win medi ~$12
+### Bugfix
+- **Weather confidence UnboundLocalError**: variabile usata prima della definizione (432 errori in 15h)
+- **v9.0 logging**: aggiunto `force=True` a `logging.basicConfig()` — layer v9.0 non loggavano
+- **GDELT circuit breaker auto-reset**: aggiunto cooldown 5 min (prima era permanente fino a restart)
+- **Type annotations mypy**: 17 errori risolti in storage/redis_bus.py, storage/database.py, risk/correlation_monitor.py, monitoring/calibration.py
 
 ## Modifiche v8.0.0 (Becker Dataset optimization)
 ### Strategie
@@ -165,7 +181,8 @@ v9.0: architettura agentica a 6 layer (Signal Validator, Monitoring, Storage, Or
 - Il bot ha un risk manager integrato con Kelly criterion (proporzionale per strategia)
 - La strategia event_driven usa Finlight + GDELT per news sentiment in tempo reale (merge multi-fonte)
 - Il risk manager ha stop-loss cooldown (4h) per evitare loop distruttivi
-- Il Signal Validator filtra trade a bassa qualita' PRIMA dell'esecuzione (arb bypassano)
+- Il Signal Validator filtra trade a bassa qualita' PRIMA dell'esecuzione
+- Le strategie arb (gabagool, arbitrage) sono DISABILITATE per exploit incrementNonce() — NON riabilitare senza verifica settlement on-chain atomica
 - Il Correlation Monitor limita esposizione per tema (max 40% capitale)
 - Il Drift Detector segnala cali di win rate >30% vs storico
 - Becker Dataset in `/root/becker-dataset/data/` — fonte delle ottimizzazioni v8.0
