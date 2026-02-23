@@ -40,6 +40,7 @@ from utils.risk_manager import RiskManager, Trade
 logger = logging.getLogger(__name__)
 
 STRATEGY_NAME = "weather"
+MAX_WEATHER_BET = 15.0  # Cap weather-specifico (loss da $25 troppo pesanti vs win medi)
 
 # ── Pattern per riconoscere mercati weather ──────────────────
 WEATHER_PATTERNS = [
@@ -500,6 +501,10 @@ class WeatherStrategy:
                 f"price={price:.4f} win_prob={win_prob:.4f}"
             )
             return False
+
+        if size > MAX_WEATHER_BET:
+            logger.debug(f"[WEATHER] size ${size:.2f} → cap ${MAX_WEATHER_BET:.2f}")
+            size = MAX_WEATHER_BET
 
         allowed, reason = self.risk.can_trade(
             STRATEGY_NAME, size, price=price,
