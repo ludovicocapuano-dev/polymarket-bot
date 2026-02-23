@@ -8,6 +8,7 @@ politico colpisce, si perde tutto.
 
 import logging
 from collections import defaultdict
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,7 @@ class CorrelationMonitor:
         self._market_themes: dict[str, str] = {}  # market_id → theme
 
     def classify_theme(self, market_id: str, question: str = "",
-                       category: str = "", tags: list[str] = None) -> str:
+                       category: str = "", tags: Optional[list[str]] = None) -> str:
         """Classifica un mercato per tema basandosi su question/category/tags."""
         # Cache
         if market_id in self._market_themes:

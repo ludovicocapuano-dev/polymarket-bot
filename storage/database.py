@@ -12,6 +12,7 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ class Database:
 
     def __init__(self, dsn: str):
         self.dsn = dsn
-        self._conn = None
+        self._conn: Any = None
         self._available = False
 
     def connect(self) -> bool:
@@ -113,7 +114,7 @@ class Database:
     def record_trade(self, strategy: str, market_id: str, token_id: str,
                      side: str, size: float, price: float, edge: float,
                      reason: str = "", signal_type: str = "",
-                     category: str = "", validation_score: float = None):
+                     category: str = "", validation_score: Optional[float] = None):
         """Registra un nuovo trade."""
         if not self._available:
             return
@@ -133,7 +134,7 @@ class Database:
             logger.warning(f"[DB] Errore record_trade: {e}")
 
     def update_trade_result(self, market_id: str, token_id: str,
-                            result: str, pnl: float, brier_score: float = None):
+                            result: str, pnl: float, brier_score: Optional[float] = None):
         """Aggiorna il risultato di un trade chiuso."""
         if not self._available:
             return

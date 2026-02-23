@@ -51,7 +51,7 @@ class CalibrationEngine:
         Analizza metriche e genera suggerimenti.
         v1.0: solo suggerimenti loggati, nessuna modifica automatica.
         """
-        suggestions = []
+        suggestions: list[ParameterAdjustment] = []
 
         if not self.attribution:
             return suggestions

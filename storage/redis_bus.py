@@ -13,6 +13,7 @@ Canali:
 import json
 import logging
 import time
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -31,9 +32,9 @@ class EventBus:
 
     def __init__(self, redis_url: str = "redis://localhost:6379"):
         self.redis_url = redis_url
-        self._redis = None
+        self._redis: Any = None
         self._available = False
-        self._pubsub = None
+        self._pubsub: Any = None
         # Fallback in-memory se Redis non disponibile
         self._memory_cache: dict[str, tuple[str, float]] = {}  # key -> (value, expire_time)
         self._memory_subscribers: dict[str, list] = {}  # channel -> [callbacks]
