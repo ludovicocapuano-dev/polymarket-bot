@@ -88,6 +88,8 @@ class RiskManager:
         self.vpin_monitor = None
         # v9.0: Database (iniettato da bot.py)
         self.db = None
+        # v10.0: Empirical Kelly (iniettato da bot.py)
+        self.empirical_kelly = None
 
     @property
     def total_exposed(self) -> float:
@@ -359,6 +361,13 @@ class RiskManager:
         # Weather same-day boost: +30% di fraction (previsioni accurate 85%+)
         if strategy == "weather" and days_ahead is not None and days_ahead == 0:
             base_frac = min(base_frac * 1.30, 0.40)  # Cap 2/5 Kelly
+
+        # v10.0: Empirical Kelly — haircut data-driven basato su MC
+        if self.empirical_kelly is not None:
+            emp_factor = self.empirical_kelly.get_adjustment_factor(strategy)
+            if emp_factor is not None:
+                # Blend 70% empirical + 30% statico (floor di sicurezza)
+                base_frac = base_frac * (0.70 * emp_factor + 0.30)
 
         frac = kelly * base_frac
 

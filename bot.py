@@ -71,6 +71,7 @@ from validators.signal_converter import (
 from monitoring.attribution import AttributionEngine
 from monitoring.drift_detector import DriftDetector
 from monitoring.calibration import CalibrationEngine
+from monitoring.empirical_kelly import EmpiricalKelly
 from risk.correlation_monitor import CorrelationMonitor
 from risk.tail_risk import TailRiskAgent
 from agents.orchestrator import OrchestratorAgent
@@ -275,7 +276,15 @@ class MultiStrategyBot:
         # ── v9.0: Layer 5 — Monitoring & Attribution ──
         self.attribution = AttributionEngine()
         self.drift_detector = DriftDetector()
-        self.calibration = CalibrationEngine(self.attribution, self.drift_detector)
+
+        # v10.0: Empirical Kelly — data-driven position sizing
+        self.empirical_kelly = EmpiricalKelly()
+        self.risk.empirical_kelly = self.empirical_kelly
+
+        self.calibration = CalibrationEngine(
+            self.attribution, self.drift_detector,
+            empirical_kelly=self.empirical_kelly,
+        )
 
         # ── v9.0: Layer 3 — Correlation Monitor & Tail Risk ──
         self.correlation_monitor = CorrelationMonitor(risk_manager=self.risk)
@@ -683,6 +692,15 @@ class MultiStrategyBot:
                             logger.info(f"[CALIBRATION] {s.reason}")
                     except Exception as e:
                         logger.warning(f"[v9.0] Errore drift/calibration: {e}")
+
+                    # v10.0: Empirical Kelly recalculation
+                    try:
+                        for strat in ["high_prob_bond", "data_driven", "weather", "event_driven", "whale_copy"]:
+                            closed = [t for t in self.risk.trades if t.strategy == strat and t.result in ("WIN", "LOSS")]
+                            if self.empirical_kelly.needs_recalc(strat, len(closed), self._cycle):
+                                self.empirical_kelly.update(strat, closed, self._cycle)
+                    except Exception as e:
+                        logger.warning(f"[v10.0] Errore empirical kelly: {e}")
 
                 # ── v9.0: Tail Risk (ogni 200 cicli) ──
                 if self._cycle % 200 == 0 and self._cycle > 0:

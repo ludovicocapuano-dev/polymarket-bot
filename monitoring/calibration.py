@@ -41,10 +41,11 @@ class CalibrationEngine:
     ALPHA_DECAY_THRESHOLD = 0.50    # Alpha < 0.50 = edge in forte calo
     ALPHA_GROWTH_THRESHOLD = 1.30   # Alpha > 1.30 = edge in crescita
 
-    def __init__(self, attribution=None, drift_detector=None, db=None):
+    def __init__(self, attribution=None, drift_detector=None, db=None, empirical_kelly=None):
         self.attribution = attribution
         self.drift_detector = drift_detector
         self.db = db
+        self.empirical_kelly = empirical_kelly
 
     def analyze(self) -> list[ParameterAdjustment]:
         """
@@ -115,6 +116,41 @@ class CalibrationEngine:
                         f"= edge in crescita. Considerare aumento Kelly +20%."
                     ),
                 ))
+
+            # Check 3: Monte Carlo empirical Kelly (v10.0)
+            if self.empirical_kelly:
+                emp = self.empirical_kelly._cache.get(strategy)
+                if emp is not None:
+                    static_frac = 0.25  # default
+                    try:
+                        from utils.risk_manager import RiskManager
+                        static_frac = RiskManager.KELLY_FRACTIONS.get(strategy, 0.25)
+                    except Exception:
+                        pass
+                    if emp.f_empirical < 0.50:
+                        suggestions.append(ParameterAdjustment(
+                            strategy=strategy,
+                            parameter="kelly_fraction",
+                            old_value=f"{static_frac:.3f}",
+                            new_value=f"{static_frac * emp.f_empirical:.3f} (MC CV={emp.cv_edge:.2f})",
+                            reason=(
+                                f"Monte Carlo: CV_edge={emp.cv_edge:.3f} (n={emp.n_trades}). "
+                                f"Edge uncertainty alta — suggerito ridurre Kelly. "
+                                f"DD95={emp.drawdown_95:.2%}"
+                            ),
+                        ))
+                    elif emp.f_empirical > 0.85 and emp.n_trades >= 50:
+                        suggestions.append(ParameterAdjustment(
+                            strategy=strategy,
+                            parameter="kelly_fraction",
+                            old_value=f"{static_frac:.3f}",
+                            new_value=f"*1.10 (MC CV={emp.cv_edge:.2f})",
+                            reason=(
+                                f"Monte Carlo: CV_edge={emp.cv_edge:.3f} (n={emp.n_trades}). "
+                                f"Edge molto stabile — considerare +10% Kelly. "
+                                f"DD95={emp.drawdown_95:.2%}"
+                            ),
+                        ))
 
         # Log suggerimenti
         for s in suggestions:
