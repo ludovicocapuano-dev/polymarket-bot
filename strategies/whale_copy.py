@@ -311,27 +311,26 @@ class WhaleCopyStrategy:
 
     def _fetch_wallet_positions(self, address: str) -> list[dict]:
         """
-        Fetch posizioni recenti di un wallet via Gamma API activity endpoint.
+        Fetch posizioni recenti di un wallet via Polymarket data API.
+
+        v9.2.1: Migrato da gamma-api (404) a data-api.polymarket.com.
+        Endpoint: GET /activity?user=ADDRESS&limit=N
+        Response: [{proxyWallet, timestamp, conditionId, type, size, usdcSize,
+                    price, side, outcomeIndex, title, slug, ...}]
 
         Returns lista di dict con: market_id, side, size, timestamp.
         """
         import requests as _req
         positions = []
         try:
-            # Gamma API: activity/positions per wallet
+            # v9.2.1: data-api.polymarket.com (gamma-api /activity è 404)
             resp = _req.get(
-                f"https://gamma-api.polymarket.com/activity",
-                params={"address": address, "limit": 20},
+                "https://data-api.polymarket.com/activity",
+                params={"user": address, "limit": 20},
                 timeout=8,
             )
             if resp.status_code != 200:
-                # Fallback: prova endpoint posizioni dirette
-                resp = _req.get(
-                    f"https://gamma-api.polymarket.com/positions",
-                    params={"user": address, "sizeThreshold": 100, "limit": 20},
-                    timeout=8,
-                )
-            if resp.status_code != 200:
+                logger.warning(f"[WHALE] data-api HTTP {resp.status_code} per {address[:10]}...")
                 return []
 
             data = resp.json()
@@ -339,7 +338,12 @@ class WhaleCopyStrategy:
 
             now = time.time()
             for item in items:
-                # Parse diversi formati di risposta API
+                # v9.2.1: Filtra solo BUY (non REDEEM, SELL, etc.)
+                trade_type = item.get("type", "").upper()
+                if trade_type not in ("BUY", "TRADE", ""):
+                    continue
+
+                # Parse conditionId (data-api usa conditionId)
                 market_id = (
                     item.get("conditionId", "") or
                     item.get("market_id", "") or
@@ -349,29 +353,30 @@ class WhaleCopyStrategy:
                 if not market_id:
                     continue
 
-                # Side: "YES"/"NO" o "Buy"/"Sell" + outcome
-                side = item.get("side", item.get("outcome", ""))
-                if side.upper() in ("BUY", "LONG"):
-                    side = item.get("outcome", "YES").upper()
-                elif side.upper() in ("SELL", "SHORT"):
-                    continue  # non copiamo le vendite
-                side = side.upper()
-                if side not in ("YES", "NO"):
-                    # Prova da outcomeIndex: 0=YES, 1=NO
+                # Side: data-api usa outcomeIndex (0=YES, 1=NO) e side ("BUY"/"SELL")
+                side = item.get("side", item.get("outcome", "")).upper()
+                if side in ("BUY", "LONG", ""):
+                    # Determina YES/NO da outcomeIndex
                     idx = item.get("outcomeIndex", item.get("outcome_index", -1))
                     if idx == 0:
                         side = "YES"
                     elif idx == 1:
                         side = "NO"
+                    elif side in ("YES", "NO"):
+                        pass  # già corretto
                     else:
                         continue
+                elif side == "SELL":
+                    continue  # non copiamo le vendite
+                elif side not in ("YES", "NO"):
+                    continue
 
-                # Size in $
-                size = float(item.get("size", item.get("usdcSize", item.get("value", 0))))
+                # Size in $ (data-api usa usdcSize)
+                size = float(item.get("usdcSize", item.get("size", item.get("value", 0))))
                 if size <= 0:
                     continue
 
-                # Timestamp
+                # Timestamp (data-api usa unix timestamp in secondi)
                 ts_raw = item.get("timestamp", item.get("createdAt", item.get("created_at", "")))
                 if isinstance(ts_raw, (int, float)):
                     ts = float(ts_raw)
@@ -387,7 +392,7 @@ class WhaleCopyStrategy:
                 else:
                     ts = now
 
-                # Solo trade recenti (ultimi 10 minuti)
+                # Solo trade recenti (ultimi MAX_COPY_DELAY secondi)
                 if now - ts > MAX_COPY_DELAY:
                     continue
 
@@ -399,7 +404,7 @@ class WhaleCopyStrategy:
                 })
 
         except Exception as e:
-            logger.debug(f"[WHALE] Errore fetch posizioni {address[:10]}...: {e}")
+            logger.warning(f"[WHALE] Errore fetch posizioni {address[:10]}...: {e}")
 
         return positions
 
@@ -424,9 +429,9 @@ class WhaleCopyStrategy:
         }
 
         try:
-            # Gamma API: profilo trader con statistiche
+            # v9.2.1: data-api.polymarket.com (gamma-api /profiles è 404)
             resp = _req.get(
-                f"https://gamma-api.polymarket.com/profiles/{address}",
+                f"https://data-api.polymarket.com/profiles/{address}",
                 timeout=8,
             )
             if resp.status_code == 200:
@@ -455,7 +460,7 @@ class WhaleCopyStrategy:
                     stats["total_trades"] = max(stats["total_trades"], 100)
 
         except Exception as e:
-            logger.debug(f"[WHALE] Errore fetch stats {address[:10]}...: {e}")
+            logger.warning(f"[WHALE] Errore fetch stats {address[:10]}...: {e}")
             # Fallback per wallet noti: usa stime conservative documentate
             stats["win_rate"] = 0.57
             stats["total_trades"] = 100

@@ -182,6 +182,9 @@ class FinlightFeed:
     _cache: dict[str, NewsSentiment] = field(default_factory=dict)
     _session: requests.Session | None = None
     _available: bool | None = None
+    # v9.2.1: Backoff esponenziale su 429
+    _consecutive_429: int = 0
+    _backoff_until: float = 0.0
 
     def __post_init__(self):
         self._api_key = os.environ.get("FINLIGHT_API_KEY", "")
@@ -387,6 +390,11 @@ class FinlightFeed:
         if not self._session or self._available is False:
             return []
 
+        # v9.2.1: Backoff esponenziale — rispetta il cooldown dopo 429
+        now = time.time()
+        if now < self._backoff_until:
+            return []
+
         body = {
             "query": query,
             "language": "en",
@@ -403,6 +411,7 @@ class FinlightFeed:
             )
 
             if resp.status_code == 200:
+                self._consecutive_429 = 0  # v9.2.1: reset backoff su successo
                 data = resp.json()
                 return self._parse_articles(data)
 
@@ -412,7 +421,14 @@ class FinlightFeed:
                 return []
 
             elif resp.status_code == 429:
-                logger.warning("[FINLIGHT] Rate limit raggiunto (429)")
+                # v9.2.1: Backoff esponenziale — 30s, 60s, 120s, 300s
+                self._consecutive_429 += 1
+                backoff = min(30 * (2 ** (self._consecutive_429 - 1)), 300)
+                self._backoff_until = time.time() + backoff
+                logger.warning(
+                    f"[FINLIGHT] Rate limit 429 (#{self._consecutive_429}) — "
+                    f"backoff {backoff}s, retry alle {time.strftime('%H:%M:%S', time.localtime(self._backoff_until))}"
+                )
                 return []
 
             else:

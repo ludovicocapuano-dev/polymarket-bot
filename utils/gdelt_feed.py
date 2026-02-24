@@ -76,6 +76,9 @@ GDELT_STRENGTH_DISCOUNT = 0.90  # 10% discount
 MAX_CONSECUTIVE_ERRORS = 5
 CIRCUIT_BREAKER_COOLDOWN = 300  # 5 minuti
 
+# v9.2.1: Rate limit GDELT — 1 richiesta ogni 5 secondi
+GDELT_MIN_REQUEST_INTERVAL = 5.5  # secondi tra richieste (5s + margine)
+
 
 @dataclass
 class GDELTFeed:
@@ -90,6 +93,7 @@ class GDELTFeed:
     _available: bool | None = None  # None=non testato, True=ok, False=down
     _consecutive_errors: int = 0
     _circuit_breaker_at: float = 0.0  # timestamp quando e' scattato
+    _last_request_at: float = 0.0  # v9.2.1: rate limit tracking
 
     def __post_init__(self):
         logger.info(
@@ -205,11 +209,11 @@ class GDELTFeed:
             return
 
         queries = GDELT_QUERIES.get(event_type, [])
-        all_articles: list[NewsArticle] = []
-
-        for query in queries:
-            articles = self._fetch_articles(query, max_records=10)
-            all_articles.extend(articles)
+        # v9.2.1: Usa solo le prime 2 query per categoria (le piu' rilevanti)
+        # e combinale con OR per fare 1 sola richiesta (rate limit GDELT: 1 req/5s)
+        top_queries = queries[:2]
+        combined_query = " OR ".join(f"({q})" for q in top_queries)
+        all_articles = self._fetch_articles(combined_query, max_records=15, timespan="4h")
 
         # Deduplica per URL
         seen_urls: set[str] = set()
@@ -235,7 +239,7 @@ class GDELTFeed:
             )
 
     def _fetch_articles(
-        self, query: str, max_records: int = 10, timespan: str = "1h"
+        self, query: str, max_records: int = 10, timespan: str = "4h"
     ) -> list[NewsArticle]:
         """
         GET a GDELT DOC 2.0 API.
@@ -246,6 +250,14 @@ class GDELTFeed:
         """
         if not self._check_circuit_breaker():
             return []
+
+        # v9.2.1: Rate limit — GDELT richiede minimo 5s tra richieste
+        now = time.time()
+        elapsed = now - self._last_request_at
+        if elapsed < GDELT_MIN_REQUEST_INTERVAL:
+            wait = GDELT_MIN_REQUEST_INTERVAL - elapsed
+            time.sleep(wait)
+        self._last_request_at = time.time()
 
         params = {
             "query": query,
@@ -261,10 +273,17 @@ class GDELTFeed:
             resp = requests.get(
                 GDELT_BASE_URL,
                 params=params,
-                timeout=12,  # GDELT puo' essere lento
+                timeout=20,  # v9.2.1: aumentato da 12s — query combinate piu' lente
             )
 
             if resp.status_code == 200:
+                # v9.2.1: GDELT a volte ritorna 200 con body di rate limit
+                text = resp.text.strip()
+                if text.startswith("Please limit") or not text.startswith("{"):
+                    logger.warning("[GDELT] Rate limit (200 con body testo) — attesa extra")
+                    self._last_request_at = time.time() + 5
+                    return []
+
                 # Reset errori consecutivi
                 self._consecutive_errors = 0
                 if self._available is None:
@@ -274,22 +293,27 @@ class GDELTFeed:
                 data = resp.json()
                 return self._parse_articles(data)
 
+            elif resp.status_code == 429:
+                logger.warning(f"[GDELT] Rate limit 429 — attesa prima del prossimo tentativo")
+                self._last_request_at = time.time() + 5  # forza attesa extra
+                self._register_error()
+                return []
             else:
-                logger.debug(f"[GDELT] HTTP {resp.status_code} per query '{query[:30]}'")
+                logger.warning(f"[GDELT] HTTP {resp.status_code} per query '{query[:40]}'")
                 self._register_error()
                 return []
 
         except requests.Timeout:
-            logger.debug(f"[GDELT] Timeout per query '{query[:30]}'")
+            logger.warning(f"[GDELT] Timeout per query '{query[:40]}'")
             self._register_error()
             return []
         except requests.RequestException as e:
-            logger.debug(f"[GDELT] Errore: {e}")
+            logger.warning(f"[GDELT] Errore: {e}")
             self._register_error()
             return []
         except ValueError:
-            # JSON decode error
-            logger.debug(f"[GDELT] Risposta non-JSON per query '{query[:30]}'")
+            # JSON decode error — GDELT a volte ritorna testo invece di JSON
+            logger.warning(f"[GDELT] Risposta non-JSON per query '{query[:40]}'")
             self._register_error()
             return []
 
