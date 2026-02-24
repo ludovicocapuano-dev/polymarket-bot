@@ -2,7 +2,7 @@
 - Rispondi sempre in italiano
 - Nessuna convenzione particolare di codice
 
-# Progetto: Polymarket Multi-Strategy Trading Bot (v9.2.2)
+# Progetto: Polymarket Multi-Strategy Trading Bot (v9.2.3)
 Repo: https://github.com/ludovicocapuano-dev/polymarket-bot (privato)
 Bot automatico di trading su Polymarket con 5 strategie attive (4 eliminate per performance negativa o sicurezza).
 v8.0 ottimizzato con analisi Becker Dataset (115M trade, 381K mercati risolti).
@@ -11,6 +11,7 @@ v9.0: architettura agentica a 6 layer (Signal Validator, Monitoring, Storage, Or
 v9.1: arb disabilitate per exploit incrementNonce(), weather max_bet cappato a $15, bugfix vari.
 v9.2.1: VPIN toxic flow detection, VAMP pricing (Stoikov), flash move protection, riallocazione post-Gemchange.
 v9.2.2: fix feed P0/P1 (redeemer conditionId, GDELT rate limit, Finlight backoff, whale API migration, Binance WS).
+v9.2.3: Data API redeemable fast-path (1 chiamata vs N), strict conditionId validation (no zfill).
 
 ## Architettura v9.0 — 6 Layer
 
@@ -61,7 +62,7 @@ v9.2.2: fix feed P0/P1 (redeemer conditionId, GDELT rate limit, Finlight backoff
   - `utils/vpin_monitor.py` — VPIN toxic flow detection (Easley, Lopez de Prado, O'Hara 2012) v9.2.1
   - `utils/finlight_feed.py` — client Finlight API v2 (news + sentiment, v9.2.2: exponential backoff su 429)
   - `utils/binance_feed.py` — feed multi-crypto Binance WS (v9.2.2: backoff esponenziale con jitter, stale detection)
-  - `utils/redeemer.py` — auto-redeem posizioni risolte via Safe proxy (v9.2.2: conditionId padding, gas estimation, retry on revert)
+  - `utils/redeemer.py` — auto-redeem posizioni risolte via Safe proxy (v9.2.3: Data API redeemable, strict conditionId, gas estimation, retry on revert)
   - `utils/risk_manager.py` — Kelly sizing, triple barrier, stop-loss cooldown, correlation check, flash move + VPIN v9.2.1
   - `utils/whale_profiler.py` — Profiler wallet whale (whitelist automatica)
   - `.claude/rules/` — regole modulari per strategia (event-driven, risk, merge, general)
@@ -105,6 +106,20 @@ v9.2.2: fix feed P0/P1 (redeemer conditionId, GDELT rate limit, Finlight backoff
 - **data_driven** 35→30%: edge floor 0.060 sospetto (artificialmente inflato), diversificazione
 - **event_driven** 10→15%: NLP edge (FinBERT/GDELT) non dipende da latenza, politics piu' profittevole (Becker: +$18.6M PnL)
 - Motivazione: articolo Gemchange documenta compressione margini arb (finestra 12.3s→2.7s), competizione e' su velocita' non su analisi fondamentale
+
+## Modifiche v9.2.3 (Data API redeemable + strict conditionId)
+### Data API redeemable fast-path (P0)
+- **`fetch_redeemable_positions()`** in `redeemer.py`: singola query a `data-api.polymarket.com/positions?user=` ritorna tutte le posizioni con flag `redeemable`
+- **`_find_resolved_markets()`** riscritta: Data API come fonte primaria, Gamma API come fallback per mercati non trovati
+- **`_check_resolved_markets()` in `bot.py`**: fast-path Data API prima del loop Gamma per-market — 1 chiamata vs N sequenziali
+- Se Data API trova tutti i mercati risolti, skippa completamente il loop Gamma (zero API calls extra)
+- Se Data API fallisce o non trova tutti, fallback al loop Gamma classico (zero regressione)
+- Matching posizioni via conditionId, slug, o title
+### Strict conditionId validation (P1a)
+- **Rimosso `zfill(64)`** in `_redeem_position()`: un conditionId troncato indica bug nella fonte dati, non va paddato silenziosamente
+- **Validazione strict**: esattamente 64 hex chars (32 bytes) o return False con log `[REDEEM] conditionId malformato`
+- Ispirato dal tipo `B256` del Polymarket CLI Rust che rifiuta qualsiasi valore != 32 bytes
+- Rimossa validazione ridondante post-padding (ora la validazione avviene prima dell'encoding)
 
 ## Modifiche v9.2.2 (Feed reliability + Redeemer fix)
 ### Redeemer TX reverted (P0)
@@ -223,7 +238,7 @@ v9.2.2: fix feed P0/P1 (redeemer conditionId, GDELT rate limit, Finlight backoff
 
 ## Stack tecnico
 - Python, requests, asyncio
-- API: Polymarket CLOB, Gamma API, Finlight v2, GDELT v2, Binance, LunarCrush, CryptoQuant, Nansen
+- API: Polymarket CLOB, Gamma API, Data API, Finlight v2, GDELT v2, Binance, LunarCrush, CryptoQuant, Nansen
 - NLP: FinBERT (ProsusAI/finbert) con fallback VADER
 - Storage: PostgreSQL + Redis (opzionali, graceful degradation a JSON + in-memory)
 - Chain: Polygon (chain_id 137)
@@ -241,7 +256,8 @@ v9.2.2: fix feed P0/P1 (redeemer conditionId, GDELT rate limit, Finlight backoff
 - Le strategie arb (gabagool, arbitrage) sono DISABILITATE per exploit incrementNonce() — NON riabilitare senza verifica settlement on-chain atomica
 - Il Correlation Monitor limita esposizione per tema (max 40% capitale)
 - Il Drift Detector segnala cali di win rate >30% vs storico
-- Il redeemer auto-riscuote vincite da mercati risolti via Safe proxy — conditionId DEVE essere 32 bytes (v9.2.2)
+- Il redeemer auto-riscuote vincite da mercati risolti via Safe proxy — conditionId DEVE essere esattamente 64 hex chars (v9.2.3: strict validation, no padding)
+- Il redeemer usa Data API (`data-api.polymarket.com/positions`) come fonte primaria per detectare posizioni redeemable (v9.2.3), Gamma API come fallback
 - GDELT usa query semplici (1 per categoria) con intervallo 10s e circuit breaker escalante (v9.2.2)
 - Finlight ha exponential backoff su 429 (30s→300s cap) — API key potrebbe avere quota limitata
 - Whale copy usa `data-api.polymarket.com` (NON gamma-api, ritorna 404 dal 2026)
