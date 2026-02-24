@@ -76,8 +76,8 @@ GDELT_STRENGTH_DISCOUNT = 0.90  # 10% discount
 MAX_CONSECUTIVE_ERRORS = 5
 CIRCUIT_BREAKER_COOLDOWN = 300  # 5 minuti
 
-# v9.2.1: Rate limit GDELT — 1 richiesta ogni 5 secondi
-GDELT_MIN_REQUEST_INTERVAL = 5.5  # secondi tra richieste (5s + margine)
+# v9.2.2: Rate limit GDELT — intervallo conservativo per evitare ban IP
+GDELT_MIN_REQUEST_INTERVAL = 10.0  # secondi tra richieste (era 5.5, aumentato per stabilita')
 
 
 @dataclass
@@ -93,6 +93,7 @@ class GDELTFeed:
     _available: bool | None = None  # None=non testato, True=ok, False=down
     _consecutive_errors: int = 0
     _circuit_breaker_at: float = 0.0  # timestamp quando e' scattato
+    _circuit_breaker_trips: int = 0  # v9.2.2: contatore trip per cooldown escalante
     _last_request_at: float = 0.0  # v9.2.1: rate limit tracking
 
     def __post_init__(self):
@@ -209,11 +210,14 @@ class GDELTFeed:
             return
 
         queries = GDELT_QUERIES.get(event_type, [])
-        # v9.2.1: Usa solo le prime 2 query per categoria (le piu' rilevanti)
-        # e combinale con OR per fare 1 sola richiesta (rate limit GDELT: 1 req/5s)
-        top_queries = queries[:2]
-        combined_query = " OR ".join(f"({q})" for q in top_queries)
-        all_articles = self._fetch_articles(combined_query, max_records=15, timespan="4h")
+        # v9.2.2: Query singola (la prima, piu' rilevante) per categoria.
+        # Le query combinate con OR causavano timeout sistematici su GDELT
+        # perche' la ricerca full-text su miliardi di articoli e' troppo lenta
+        # con boolean OR complessi. Una query semplice risponde in 2-5s.
+        query = queries[0] if queries else ""
+        if not query:
+            return
+        all_articles = self._fetch_articles(query, max_records=10, timespan="4h")
 
         # Deduplica per URL
         seen_urls: set[str] = set()
@@ -273,7 +277,7 @@ class GDELTFeed:
             resp = requests.get(
                 GDELT_BASE_URL,
                 params=params,
-                timeout=20,  # v9.2.1: aumentato da 12s — query combinate piu' lente
+                timeout=30,  # v9.2.2: 30s per query semplici (era 20s per combinate)
             )
 
             if resp.status_code == 200:
@@ -281,7 +285,8 @@ class GDELTFeed:
                 text = resp.text.strip()
                 if text.startswith("Please limit") or not text.startswith("{"):
                     logger.warning("[GDELT] Rate limit (200 con body testo) — attesa extra")
-                    self._last_request_at = time.time() + 5
+                    self._last_request_at = time.time() + 10  # v9.2.2: attesa piu' lunga
+                    # NON contare come errore (e' rate limit, non errore feed)
                     return []
 
                 # Reset errori consecutivi
@@ -321,10 +326,15 @@ class GDELTFeed:
         """Controlla se il circuit breaker e' scattato. Se il cooldown e' passato, resetta."""
         if self._available is not False:
             return True  # feed attivo
+        # v9.2.2: Cooldown escalante basato su quante volte il breaker e' scattato
+        cooldowns = [60, 180, 300, 600]  # 1min, 3min, 5min, 10min
+        idx = min(self._circuit_breaker_trips - 1, len(cooldowns) - 1)
+        cooldown = cooldowns[max(idx, 0)]
         elapsed = time.time() - self._circuit_breaker_at
-        if elapsed >= CIRCUIT_BREAKER_COOLDOWN:
+        if elapsed >= cooldown:
             logger.info(
-                f"[GDELT] Circuit breaker reset dopo {elapsed:.0f}s — retry"
+                f"[GDELT] Circuit breaker reset dopo {elapsed:.0f}s "
+                f"(trip #{self._circuit_breaker_trips}) — retry"
             )
             self._available = None
             self._consecutive_errors = 0
@@ -336,9 +346,14 @@ class GDELTFeed:
         self._consecutive_errors += 1
         if self._consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
             self._circuit_breaker_at = time.time()
+            self._circuit_breaker_trips += 1
+            cooldowns = [60, 180, 300, 600]
+            idx = min(self._circuit_breaker_trips - 1, len(cooldowns) - 1)
+            cooldown = cooldowns[max(idx, 0)]
             logger.warning(
                 f"[GDELT] {self._consecutive_errors} errori consecutivi — "
-                f"feed disabilitato (circuit breaker, retry tra {CIRCUIT_BREAKER_COOLDOWN}s)"
+                f"feed disabilitato (circuit breaker trip #{self._circuit_breaker_trips}, "
+                f"retry tra {cooldown}s)"
             )
             self._available = False
 

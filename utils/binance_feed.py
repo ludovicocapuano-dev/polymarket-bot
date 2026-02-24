@@ -80,6 +80,8 @@ class BinanceFeed:
     _symbols: dict[str, SymbolData] = field(default_factory=dict)
     _running: bool = False
     _pair_to_sym: dict[str, str] = field(default_factory=dict)
+    _consecutive_disconnects: int = 0  # v9.2.2: tracking disconnessioni
+    _last_msg_at: float = 0.0  # v9.2.2: stale detection
 
     def __post_init__(self):
         for sym in SUPPORTED_SYMBOLS:
@@ -135,8 +137,13 @@ class BinanceFeed:
         while self._running:
             try:
                 async with websockets.connect(
-                    BINANCE_COMBINED_WS, ping_interval=20
+                    BINANCE_COMBINED_WS,
+                    ping_interval=20,
+                    ping_timeout=30,  # v9.2.2: timeout esplicito per pong
+                    close_timeout=10,
                 ) as ws:
+                    # v9.2.2: Reset contatore disconnessioni su connessione riuscita
+                    self._consecutive_disconnects = 0
                     symbols_str = ", ".join(s.upper() for s in SUPPORTED_SYMBOLS)
                     logger.info(
                         f"Binance feed multi-crypto connesso ({symbols_str}) "
@@ -145,6 +152,7 @@ class BinanceFeed:
                     async for msg in ws:
                         if not self._running:
                             break
+                        self._last_msg_at = time.time()
                         raw = json.loads(msg)
 
                         # Combined stream format:
@@ -159,11 +167,25 @@ class BinanceFeed:
                             self._handle_depth(stream_name, data)
 
             except websockets.ConnectionClosed:
-                logger.warning("Binance disconnesso, riconnessione...")
-                await asyncio.sleep(2)
+                self._consecutive_disconnects += 1
+                # v9.2.2: Backoff esponenziale con jitter (2s, 4s, 8s, 16s, max 30s)
+                import random
+                backoff = min(2 * (2 ** (self._consecutive_disconnects - 1)), 30)
+                jitter = random.uniform(0, backoff * 0.3)
+                wait = backoff + jitter
+                logger.warning(
+                    f"Binance disconnesso (#{self._consecutive_disconnects}), "
+                    f"riconnessione in {wait:.1f}s..."
+                )
+                await asyncio.sleep(wait)
             except Exception as e:
-                logger.error(f"Errore Binance: {e}")
-                await asyncio.sleep(5)
+                self._consecutive_disconnects += 1
+                import random
+                backoff = min(5 * (2 ** (self._consecutive_disconnects - 1)), 60)
+                jitter = random.uniform(0, backoff * 0.3)
+                wait = backoff + jitter
+                logger.error(f"Errore Binance: {e}, retry in {wait:.1f}s")
+                await asyncio.sleep(wait)
 
     def _handle_trade(self, stream_name: str, data: dict):
         """Gestisce messaggio @trade: aggiorna prezzo + trade flow."""
@@ -348,6 +370,12 @@ class BinanceFeed:
         elif weighted < -0.0001:
             return "DOWN", conf
         return "FLAT", 0.0
+
+    def is_stale(self, max_age: float = 60.0) -> bool:
+        """v9.2.2: Controlla se il feed e' stale (nessun messaggio recente)."""
+        if self._last_msg_at == 0:
+            return False  # non ancora connesso, non considerare stale
+        return (time.time() - self._last_msg_at) > max_age
 
     async def stop(self):
         self._running = False

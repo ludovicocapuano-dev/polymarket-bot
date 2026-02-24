@@ -290,7 +290,11 @@ class Redeemer:
             from web3 import Web3
 
             # Encode la chiamata redeemPositions
-            condition_id_bytes = bytes.fromhex(pos.condition_id.replace("0x", ""))
+            # v9.2.2: Pad conditionId a 32 bytes (bytes32) — GDELT/Gamma a volte
+            # ritorna conditionId troncato che causa revert ABI decoding
+            condition_id_hex = pos.condition_id.replace("0x", "")
+            condition_id_hex = condition_id_hex.zfill(64)  # pad sinistro a 32 bytes
+            condition_id_bytes = bytes.fromhex(condition_id_hex)
             collateral = Web3.to_checksum_address(USDC_ADDRESS)
 
             # Per mercati neg_risk, il target e' il NegRiskAdapter
@@ -315,7 +319,15 @@ class Redeemer:
             else:
                 redeem_data = self._ctf.encodeABI(fn_name="redeemPositions", args=redeem_args)
 
-            # Esegui attraverso il Safe proxy
+            # Validazione pre-redeem
+            if len(condition_id_bytes) != 32:
+                logger.error(
+                    f"[REDEEM] conditionId invalido ({len(condition_id_bytes)} bytes, "
+                    f"attesi 32): {pos.condition_id}"
+                )
+                return False
+
+            # Esegui attraverso il Safe proxy (con retry su revert)
             return self._exec_safe_transaction(target, redeem_data)
 
         except Exception as e:
@@ -326,8 +338,10 @@ class Redeemer:
         """
         Esegue una transazione attraverso il Gnosis Safe proxy.
         v5.9.3: Retry con backoff + fallback RPC per rate limit.
+        v9.2.2: Gas estimation + retry on revert con gas incrementato.
         """
         max_retries = 3
+        gas_override = 0  # 0 = usa estimation
         for attempt in range(max_retries):
             try:
                 from web3 import Web3
@@ -340,10 +354,11 @@ class Redeemer:
                 safe_nonce = self._safe.functions.nonce().call()
 
                 # Calcola il transaction hash del Safe
+                data_bytes = bytes.fromhex(data.replace("0x", ""))
                 tx_hash = self._safe.functions.getTransactionHash(
                     Web3.to_checksum_address(to),  # to
                     0,          # value
-                    bytes.fromhex(data.replace("0x", "")),  # data
+                    data_bytes,  # data
                     0,          # operation (Call)
                     0,          # safeTxGas
                     0,          # baseGas
@@ -364,11 +379,10 @@ class Redeemer:
                     + signed.v.to_bytes(1, "big")
                 )
 
-                # Costruisci e invia la transazione execTransaction
-                tx = self._safe.functions.execTransaction(
+                exec_fn = self._safe.functions.execTransaction(
                     Web3.to_checksum_address(to),
                     0,
-                    bytes.fromhex(data.replace("0x", "")),
+                    data_bytes,
                     0,   # operation
                     0,   # safeTxGas
                     0,   # baseGas
@@ -376,10 +390,25 @@ class Redeemer:
                     zero_addr,
                     zero_addr,
                     signature,
-                ).build_transaction({
+                )
+
+                # v9.2.2: Gas estimation con fallback
+                if gas_override > 0:
+                    gas_limit = gas_override
+                else:
+                    try:
+                        estimated = exec_fn.estimate_gas({"from": self._account.address})
+                        gas_limit = int(estimated * 1.3)  # 30% buffer
+                        logger.info(f"[REDEEM] Gas stimato: {estimated}, usando: {gas_limit}")
+                    except Exception as gas_err:
+                        gas_limit = 500_000
+                        logger.warning(f"[REDEEM] Gas estimation fallita ({gas_err}), fallback {gas_limit}")
+
+                # Costruisci e invia la transazione
+                tx = exec_fn.build_transaction({
                     "from": self._account.address,
                     "nonce": w3.eth.get_transaction_count(self._account.address),
-                    "gas": 500_000,
+                    "gas": gas_limit,
                     "gasPrice": w3.eth.gas_price,
                     "chainId": 137,
                 })
@@ -387,17 +416,31 @@ class Redeemer:
                 # Firma e invia la transazione
                 signed_tx = self._account.sign_transaction(tx)
                 tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
-                logger.info(f"[REDEEM] TX inviata: {tx_hash.hex()}")
+                logger.info(f"[REDEEM] TX inviata: {tx_hash.hex()} (gas={gas_limit})")
 
                 # Attendi conferma con retry su rate limit
                 for wait_attempt in range(3):
                     try:
                         receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
                         if receipt["status"] == 1:
-                            logger.info(f"[REDEEM] TX confermata! Block: {receipt['blockNumber']}")
+                            logger.info(
+                                f"[REDEEM] TX confermata! Block: {receipt['blockNumber']}, "
+                                f"gasUsed: {receipt['gasUsed']}"
+                            )
                             return True
                         else:
-                            logger.warning(f"[REDEEM] TX fallita (reverted)")
+                            # v9.2.2: Retry on revert con gas incrementato
+                            gas_used = receipt.get("gasUsed", 0)
+                            logger.warning(
+                                f"[REDEEM] TX reverted (gasUsed={gas_used}, "
+                                f"gasLimit={gas_limit}, attempt={attempt+1}/{max_retries})"
+                            )
+                            if attempt < max_retries - 1:
+                                # Incrementa gas del 50% per il prossimo tentativo
+                                gas_override = int(gas_limit * 1.5)
+                                logger.info(f"[REDEEM] Retry con gas={gas_override}")
+                                time.sleep(3)
+                                break  # esce dal wait loop, rientra nel for attempt
                             return False
                     except Exception as wait_err:
                         err_str = str(wait_err).lower()
@@ -412,13 +455,14 @@ class Redeemer:
                             self._switch_rpc()
                         else:
                             raise
-
-                # Se tutti i wait falliscono, la TX è stata inviata comunque
-                logger.warning(
-                    f"[REDEEM] TX inviata ma conferma non verificabile. "
-                    f"Controlla su polygonscan: 0x{tx_hash.hex()}"
-                )
-                return True  # Assume successo — la TX è on-chain
+                else:
+                    # Se il wait loop completa senza break (tutti i wait falliti)
+                    logger.warning(
+                        f"[REDEEM] TX inviata ma conferma non verificabile. "
+                        f"Controlla su polygonscan: 0x{tx_hash.hex()}"
+                    )
+                    return True  # Assume successo — la TX è on-chain
+                continue  # Il break dal wait loop ci porta qui per il retry
 
             except Exception as e:
                 err_str = str(e).lower()
