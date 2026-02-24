@@ -37,6 +37,7 @@ POLYGON_RPCS = [
 ]
 POLYGON_RPC = POLYGON_RPCS[0]  # backward compat
 GAMMA_API = "https://gamma-api.polymarket.com"
+DATA_API = "https://data-api.polymarket.com"
 
 # ABI minimale per redeemPositions
 REDEEM_ABI = json.loads("""[{
@@ -170,6 +171,29 @@ class Redeemer:
     def available(self) -> bool:
         return self._available
 
+    def fetch_redeemable_positions(self) -> list[dict]:
+        """
+        v9.2.3: Query Data API per posizioni redeemable.
+        Ritorna lista di dict con conditionId, market info, redeemable flag.
+        """
+        try:
+            resp = requests.get(
+                f"{DATA_API}/positions",
+                params={"user": self._proxy_address},
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                logger.warning(f"[REDEEM] Data API HTTP {resp.status_code}")
+                return []
+            data = resp.json()
+            items = data if isinstance(data, list) else data.get("data", data.get("positions", []))
+            redeemable = [p for p in items if p.get("redeemable", False)]
+            logger.info(f"[REDEEM] Data API: {len(items)} posizioni, {len(redeemable)} redeemable")
+            return redeemable
+        except Exception as e:
+            logger.warning(f"[REDEEM] Data API errore: {e}")
+            return []
+
     def check_and_redeem(self, open_trades: list) -> list[dict]:
         """
         Controlla mercati risolti e riscuote le vincite.
@@ -225,17 +249,87 @@ class Redeemer:
         return results
 
     def _find_resolved_markets(self, market_ids: set[str], trades: list) -> list[ResolvedPosition]:
-        """Cerca mercati risolti nella Gamma API e determina win/loss."""
+        """
+        v9.2.3: Cerca mercati risolti via Data API (primario) + Gamma API (fallback).
+        Data API fornisce flag `redeemable` autoritativo, eliminando inferenza dai prezzi.
+        """
         resolved = []
 
         # Mappa market_id -> lato del nostro trade (BUY_YES o BUY_NO)
         trade_sides = {}
+        trade_by_condition = {}  # conditionId -> trade
         for t in trades:
             if t.market_id in market_ids:
                 trade_sides[t.market_id] = t.side  # "BUY_YES" o "BUY_NO"
 
+        # ── Fonte primaria: Data API redeemable ──
+        found_condition_ids = set()
         try:
-            # Fetch mercati risolti recenti
+            redeemable = self.fetch_redeemable_positions()
+            for pos in redeemable:
+                cid = pos.get("conditionId", "") or pos.get("condition_id", "")
+                if not cid:
+                    continue
+
+                # Matcha con i nostri trade via conditionId o market slug
+                matched_mid = None
+                for mid in market_ids:
+                    # Il conditionId potrebbe essere nei dati del trade
+                    trade = trade_sides.get(mid)
+                    if trade is not None:
+                        matched_mid = mid
+                        break
+
+                # Fallback: matcha via asset/title se presente nella response
+                if not matched_mid:
+                    slug = pos.get("slug", "") or pos.get("market_slug", "")
+                    title = pos.get("title", "") or pos.get("question", "")
+                    for t in trades:
+                        if t.market_id in market_ids:
+                            t_title = getattr(t, "question", "") or getattr(t, "title", "")
+                            if slug and hasattr(t, "slug") and t.slug == slug:
+                                matched_mid = t.market_id
+                                break
+                            if t_title and title and t_title.lower() == title.lower():
+                                matched_mid = t.market_id
+                                break
+
+                if not matched_mid:
+                    continue
+
+                found_condition_ids.add(cid)
+                our_side = trade_sides.get(matched_mid, "BUY_YES")
+                we_bet_yes = "YES" in our_side.upper()
+
+                # Data API: outcome dalla posizione
+                outcome = pos.get("outcome", "") or pos.get("resolution", "")
+                if outcome:
+                    res_lower = outcome.lower().strip()
+                    resolved_yes = res_lower in ("yes", "y", "1", "true")
+                    won = (we_bet_yes and resolved_yes) or (not we_bet_yes and not resolved_yes)
+                else:
+                    # Se redeemable=true, assumiamo che abbiamo vinto
+                    won = True
+
+                resolved.append(ResolvedPosition(
+                    market_id=matched_mid,
+                    condition_id=cid,
+                    question=pos.get("title", pos.get("question", "?")),
+                    outcome=outcome or "redeemable",
+                    won=won,
+                    neg_risk=pos.get("negRisk", pos.get("neg_risk", False)),
+                ))
+
+        except Exception as e:
+            logger.warning(f"[REDEEM] Data API fallback a Gamma: {e}")
+
+        # ── Fallback: Gamma API per mercati non trovati via Data API ──
+        remaining_ids = market_ids - {r.market_id for r in resolved}
+        if not remaining_ids:
+            return resolved
+
+        logger.info(f"[REDEEM] Gamma fallback per {len(remaining_ids)} mercati non trovati via Data API")
+        try:
             resp = requests.get(
                 f"{GAMMA_API}/markets",
                 params={
@@ -251,7 +345,7 @@ class Redeemer:
 
             for m in markets:
                 mid = m.get("id", "")
-                if mid not in market_ids:
+                if mid not in remaining_ids:
                     continue
 
                 condition_id = m.get("conditionId", "")
@@ -262,10 +356,8 @@ class Redeemer:
                 neg_risk = m.get("negRisk", False)
 
                 if resolution:
-                    # Determina se abbiamo vinto in base al nostro lato
                     our_side = trade_sides.get(mid, "BUY_YES")
                     res_lower = resolution.lower().strip()
-                    # resolution tipicamente "Yes" o "No"
                     we_bet_yes = "YES" in our_side.upper()
                     resolved_yes = res_lower in ("yes", "y", "1", "true")
                     won = (we_bet_yes and resolved_yes) or (not we_bet_yes and not resolved_yes)
@@ -280,7 +372,7 @@ class Redeemer:
                     ))
 
         except Exception as e:
-            logger.warning(f"[REDEEM] Errore fetch mercati risolti: {e}")
+            logger.warning(f"[REDEEM] Errore fetch mercati risolti (Gamma): {e}")
 
         return resolved
 
@@ -290,10 +382,15 @@ class Redeemer:
             from web3 import Web3
 
             # Encode la chiamata redeemPositions
-            # v9.2.2: Pad conditionId a 32 bytes (bytes32) — GDELT/Gamma a volte
-            # ritorna conditionId troncato che causa revert ABI decoding
+            # v9.2.3: Strict validation (ispirato da Polymarket CLI B256 type)
+            # MAI pad silenzioso — un conditionId troncato indica bug nella fonte dati
             condition_id_hex = pos.condition_id.replace("0x", "")
-            condition_id_hex = condition_id_hex.zfill(64)  # pad sinistro a 32 bytes
+            if len(condition_id_hex) != 64 or not all(c in '0123456789abcdefABCDEF' for c in condition_id_hex):
+                logger.error(
+                    f"[REDEEM] conditionId malformato (len={len(condition_id_hex)}, "
+                    f"attesi 64 hex chars): {pos.condition_id!r}"
+                )
+                return False
             condition_id_bytes = bytes.fromhex(condition_id_hex)
             collateral = Web3.to_checksum_address(USDC_ADDRESS)
 
@@ -318,14 +415,6 @@ class Redeemer:
                 redeem_data = self._ctf.encode_abi("redeemPositions", redeem_args)
             else:
                 redeem_data = self._ctf.encodeABI(fn_name="redeemPositions", args=redeem_args)
-
-            # Validazione pre-redeem
-            if len(condition_id_bytes) != 32:
-                logger.error(
-                    f"[REDEEM] conditionId invalido ({len(condition_id_bytes)} bytes, "
-                    f"attesi 32): {pos.condition_id}"
-                )
-                return False
 
             # Esegui attraverso il Safe proxy (con retry su revert)
             return self._exec_safe_transaction(target, redeem_data)

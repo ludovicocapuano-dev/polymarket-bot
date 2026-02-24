@@ -746,6 +746,116 @@ class MultiStrategyBot:
         )
 
         results = []
+
+        # ── v9.2.3: Fast-path Data API — 1 chiamata per tutte le posizioni ──
+        data_api_resolved_mids = set()
+        has_redeemer = self.redeemer and self.redeemer.available
+        if has_redeemer:
+            try:
+                redeemable_positions = await asyncio.to_thread(
+                    self.redeemer.fetch_redeemable_positions
+                )
+                if redeemable_positions:
+                    # Build set di conditionId noti dai nostri trade (via Gamma cache)
+                    for pos in redeemable_positions:
+                        cid = pos.get("conditionId", "") or pos.get("condition_id", "")
+                        if not cid:
+                            continue
+
+                        # Matcha con trade_map via slug, title, o conditionId
+                        matched_mid = None
+                        slug = pos.get("slug", "") or pos.get("market_slug", "")
+                        title = pos.get("title", "") or pos.get("question", "")
+
+                        for mid, trade in trade_map.items():
+                            if mid in data_api_resolved_mids:
+                                continue
+                            # Match via conditionId se disponibile nel trade
+                            t_cid = getattr(trade, "condition_id", "") or getattr(trade, "conditionId", "")
+                            if t_cid and t_cid.replace("0x", "") == cid.replace("0x", ""):
+                                matched_mid = mid
+                                break
+                            # Match via slug
+                            if slug and hasattr(trade, "slug") and trade.slug == slug:
+                                matched_mid = mid
+                                break
+                            # Match via title
+                            t_title = getattr(trade, "question", "") or getattr(trade, "title", "")
+                            if t_title and title and t_title.lower() == title.lower():
+                                matched_mid = mid
+                                break
+
+                        if not matched_mid:
+                            continue
+
+                        trade = trade_map[matched_mid]
+                        our_side = getattr(trade, 'side', 'BUY_YES')
+                        we_bet_yes = "YES" in our_side.upper()
+
+                        # Determina outcome dalla posizione Data API
+                        outcome = pos.get("outcome", "") or pos.get("resolution", "")
+                        if outcome:
+                            res_lower = outcome.lower().strip()
+                            resolved_yes = res_lower in ("yes", "y", "1", "true")
+                            won = (we_bet_yes and resolved_yes) or (not we_bet_yes and not resolved_yes)
+                            resolution_str = f"{outcome} (Data API redeemable)"
+                        else:
+                            # redeemable=true senza outcome esplicito — assumiamo win
+                            won = True
+                            resolution_str = "redeemable (Data API)"
+
+                        self._resolved_cache.add(matched_mid)
+                        data_api_resolved_mids.add(matched_mid)
+
+                        # Tenta redeem on-chain
+                        redeemed = False
+                        if won:
+                            try:
+                                from utils.redeemer import ResolvedPosition
+                                rpos = ResolvedPosition(
+                                    market_id=matched_mid,
+                                    condition_id=cid,
+                                    question=title or "?",
+                                    outcome=outcome or "redeemable",
+                                    won=True,
+                                    neg_risk=pos.get("negRisk", pos.get("neg_risk", False)),
+                                )
+                                redeemed = self.redeemer._redeem_position(rpos)
+                            except Exception as e:
+                                logger.warning(f"[REDEEM] On-chain fallito (Data API): {e}", exc_info=True)
+
+                        results.append({
+                            "market_id": matched_mid,
+                            "won": won,
+                            "resolution": resolution_str,
+                            "redeemed": redeemed,
+                        })
+
+                        logger.info(
+                            f"[PNL] Mercato RISOLTO (Data API): '{title[:60]}' "
+                            f"→ {outcome or 'redeemable'} | Noi: {our_side} → "
+                            f"{'WIN ✓' if won else 'LOSS ✗'}"
+                        )
+
+                    if data_api_resolved_mids:
+                        logger.info(
+                            f"[PNL] Data API fast-path: {len(data_api_resolved_mids)} mercati risolti"
+                        )
+            except Exception as e:
+                logger.warning(f"[PNL] Data API fast-path errore, fallback a Gamma: {e}")
+
+        # ── Gamma per-market loop (skip mercati già trovati via Data API) ──
+        market_ids_to_check = [mid for mid in market_ids_to_check if mid not in data_api_resolved_mids]
+        if not market_ids_to_check and results:
+            # Tutti trovati via Data API
+            wins = sum(1 for r in results if r["won"])
+            losses = len(results) - wins
+            logger.info(
+                f"[PNL] Ciclo risoluzione: {len(results)} trovati "
+                f"({wins}W / {losses}L) — tutti via Data API"
+            )
+            return results
+
         for mid in market_ids_to_check:
             try:
                 # Query Gamma API per mercato specifico
