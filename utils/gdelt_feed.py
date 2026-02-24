@@ -92,6 +92,7 @@ class GDELTFeed:
     _cache: dict[str, NewsSentiment] = field(default_factory=dict)
     _available: bool | None = None  # None=non testato, True=ok, False=down
     _consecutive_errors: int = 0
+    _consecutive_rate_limits: int = 0  # v9.2.2: tracking 200 text-body rate limit
     _circuit_breaker_at: float = 0.0  # timestamp quando e' scattato
     _circuit_breaker_trips: int = 0  # v9.2.2: contatore trip per cooldown escalante
     _last_request_at: float = 0.0  # v9.2.1: rate limit tracking
@@ -101,6 +102,17 @@ class GDELTFeed:
             f"[GDELT] Feed inizializzato — "
             f"{len(GDELT_QUERIES)} categorie evento"
         )
+
+    @property
+    def is_healthy(self) -> bool:
+        """v9.2.2: True se il feed e' disponibile per query costose (per-mercato)."""
+        if self._available is False:
+            return False  # circuit breaker attivo
+        if self._consecutive_errors >= 2:
+            return False  # troppi errori recenti
+        if self._consecutive_rate_limits >= 2:
+            return False  # IP rate limited (200 text-body)
+        return True
 
     # ── Accesso dati ─────────────────────────────────────────────
 
@@ -286,11 +298,12 @@ class GDELTFeed:
                 if text.startswith("Please limit") or not text.startswith("{"):
                     logger.warning("[GDELT] Rate limit (200 con body testo) — attesa extra")
                     self._last_request_at = time.time() + 10  # v9.2.2: attesa piu' lunga
-                    # NON contare come errore (e' rate limit, non errore feed)
+                    self._consecutive_rate_limits += 1  # v9.2.2: tracking per is_healthy
                     return []
 
-                # Reset errori consecutivi
+                # Reset errori consecutivi e rate limit
                 self._consecutive_errors = 0
+                self._consecutive_rate_limits = 0
                 if self._available is None:
                     self._available = True
                     logger.info("[GDELT] API connessa — notizie disponibili")

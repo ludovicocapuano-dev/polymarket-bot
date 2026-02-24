@@ -398,9 +398,11 @@ class EventDrivenStrategy:
                     event_ns = market_ns
 
         # 2. Se Finlight ha < 3 articoli, prova GDELT come fallback
+        # v9.2.2: Solo query per-categoria (cachata). Query per-mercato solo se feed healthy
+        # per evitare che 168 mercati × 10s = 28 min blocchino il ciclo
         if event_ns.n_articles < 3 and self.gdelt:
             gdelt_ns = self.gdelt.get_event_sentiment(event_type)
-            if gdelt_ns.n_articles < 3:
+            if gdelt_ns.n_articles < 3 and self.gdelt.is_healthy:
                 gdelt_mkt_ns = self.gdelt.get_market_sentiment(
                     market.question, event_type
                 )
@@ -580,7 +582,8 @@ class EventDrivenStrategy:
 
         if self.finlight:
             f_ns = self.finlight.get_market_sentiment(question, event_type)
-        if self.gdelt:
+        # v9.2.2: Query per-mercato GDELT solo se feed healthy
+        if self.gdelt and self.gdelt.is_healthy:
             g_ns = self.gdelt.get_market_sentiment(question, event_type)
 
         if f_ns and g_ns:
