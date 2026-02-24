@@ -5,8 +5,8 @@ globs: ["strategies/*.py", "bot.py", "config.py"]
 
 # Regole Generali Strategie
 
-## Allocazione v9.1
-- high_prob_bond=30%, event_driven=25%, weather=20%, whale_copy=15%, data_driven=10%
+## Allocazione v9.2.1
+- high_prob_bond=30%, data_driven=30%, weather=20%, event_driven=15%, whale_copy=5%
 - arb_gabagool=0% (DISABILITATO v9.1: exploit incrementNonce), arbitrage=0% (DISABILITATO v9.1)
 - crypto_5min=0% (ELIMINATO), market_making=0% (ELIMINATO)
 - Somma DEVE essere 100%. Config valida o il bot non parte.

@@ -2,19 +2,20 @@
 - Rispondi sempre in italiano
 - Nessuna convenzione particolare di codice
 
-# Progetto: Polymarket Multi-Strategy Trading Bot (v9.1.0)
+# Progetto: Polymarket Multi-Strategy Trading Bot (v9.2.1)
 Repo: https://github.com/ludovicocapuano-dev/polymarket-bot (privato)
 Bot automatico di trading su Polymarket con 5 strategie attive (4 eliminate per performance negativa o sicurezza).
 v8.0 ottimizzato con analisi Becker Dataset (115M trade, 381K mercati risolti).
 v8.1: integrazione GDELT feed per event_driven + configurazione .claude/ (rules, agents, commands).
 v9.0: architettura agentica a 6 layer (Signal Validator, Monitoring, Storage, Orchestrator, Risk, Execution).
 v9.1: arb disabilitate per exploit incrementNonce(), weather max_bet cappato a $15, bugfix vari.
+v9.2.1: VPIN toxic flow detection, VAMP pricing (Stoikov), flash move protection, riallocazione post-Gemchange.
 
 ## Architettura v9.0 — 6 Layer
 
 | Layer | Componente | Descrizione |
 |-------|-----------|-------------|
-| Layer 2 | Signal Validator + Devil's Advocate | 7 gate checks pre-esecuzione, contraddittorio deterministico |
+| Layer 2 | Signal Validator + Devil's Advocate | 8 gate checks pre-esecuzione (v9.2.1: +VPIN), contraddittorio deterministico |
 | Layer 5 | Attribution + Drift + Calibration | Brier score, concept drift detection, suggerimenti parametri |
 | Layer 0 | PostgreSQL + Redis | Storage persistente + event bus (opzionale, graceful degradation) |
 | Layer 1 | Orchestrator Agent | Prioritizzazione mercati (CRITICAL/HIGH/MEDIUM/LOW/SKIP) |
@@ -37,7 +38,7 @@ v9.1: arb disabilitate per exploit incrementNonce(), weather max_bet cappato a $
     - `market_making.py` — DISABILITATO v7.0 (necessita $2K+ budget)
     - `whale_copy.py` — copy trading (v8.0: size-aware filtering, copy fraction adattiva)
   - `validators/` — Layer 2: Signal Validator (v9.0)
-    - `signal_validator.py` — UnifiedSignal, SignalReport, 7 gate checks (edge, confidence, resolution, liquidity, spread, EV, DA)
+    - `signal_validator.py` — UnifiedSignal, SignalReport, 8 gate checks (edge, confidence, resolution, liquidity, spread, EV, DA, VPIN)
     - `devils_advocate.py` — Contraddittorio deterministico (sport blacklist, edge sospetto, overconfident, volume basso, losing streak)
     - `signal_converter.py` — Adattatori da ogni strategia a UnifiedSignal (from_event/bond/whale/prediction/weather_opportunity)
   - `monitoring/` — Layer 5: Feedback Loop (v9.0)
@@ -56,7 +57,8 @@ v9.1: arb disabilitate per exploit incrementNonce(), weather max_bet cappato a $
     - `execution_agent.py` — ExecutionAgent: LIMIT_MAKER (<=\$30), TWAP tranche \$15/2s (>\$30)
   - `migrate_json_to_pg.py` — Script migrazione one-shot JSON → PostgreSQL
   - `utils/gdelt_feed.py` — client GDELT API v2 (news globali + tone, gratuito, v8.1)
-  - `utils/risk_manager.py` — Kelly sizing, triple barrier, stop-loss cooldown, correlation check v9.0
+  - `utils/vpin_monitor.py` — VPIN toxic flow detection (Easley, Lopez de Prado, O'Hara 2012) v9.2.1
+  - `utils/risk_manager.py` — Kelly sizing, triple barrier, stop-loss cooldown, correlation check, flash move + VPIN v9.2.1
   - `utils/whale_profiler.py` — Profiler wallet whale (whitelist automatica)
   - `.claude/rules/` — regole modulari per strategia (event-driven, risk, merge, general)
   - `.claude/agents/` — agenti custom (becker-analyst, strategy-debugger)
@@ -67,22 +69,42 @@ v9.1: arb disabilitate per exploit incrementNonce(), weather max_bet cappato a $
   - `analyze_strategy.py`
   - `strategy_config.json`
 
-## Strategie e allocazione (v9.1.0)
+## Strategie e allocazione (v9.2.1)
 | Strategia      | Allocazione | Descrizione                                    |
 |----------------|-------------|------------------------------------------------|
 | high_prob_bond | 30%         | Bond ad alta prob (politics boost +0.12)       |
-| event_driven   | 25%         | News-reactive + CATEGORY_CONFIG + GDELT merge  |
+| data_driven    | 30%         | Prediction data-driven (v9.2.1: -5% da 35%)   |
 | weather        | 20%         | Mercati meteo (MAX_WEATHER_BET=$15 v9.1)       |
-| whale_copy     | 15%         | Copy trading size-aware (sweet spot $1K-$100K) |
-| data_driven    | 10%         | Prediction data-driven (crypto ben calibrato)  |
+| event_driven   | 15%         | News-reactive + NLP edge (v9.2.1: +5% da 10%) |
+| whale_copy     | 5%          | Copy trading size-aware (segnali rari)         |
 | arb_gabagool   | 0%          | DISABILITATO v9.1: exploit incrementNonce()    |
 | arbitrage      | 0%          | DISABILITATO v9.1: exploit incrementNonce()    |
 | crypto_5min    | 0%          | ELIMINATO v7.0: Kelly negativo, fees 3.15%     |
 | market_making  | 0%          | ELIMINATO v7.0: necessita $2K+ budget          |
 
+## Modifiche v9.2.1 (Stoikov + riallocazione post-Gemchange)
+### VPIN Toxic Flow Detection
+- **VPINMonitor** (`utils/vpin_monitor.py`): implementa VPIN (Easley, Lopez de Prado, O'Hara 2012) per detectare informed trading
+- Gate #8 nel Signal Validator: blocca trade se VPIN >= 0.7 (toxic flow)
+- Integrato in `risk_manager.can_trade()` come check aggiuntivo
+- Feed dati dal WS price feed via callback `on_trade`
+### VAMP Pricing (Stoikov)
+- **VAMP** (Volume Adjusted Mid Price) in `polymarket_ws_feed.py`: prezzo mid pesato per quantita' bid/ask
+- Formula: `(best_bid * ask_qty + best_ask * bid_qty) / (bid_qty + ask_qty)`
+- Fallback a mid-price classico se mancano le quantita'
+- Sostituisce il mid-price semplice in tutti gli eventi WS (book_update, price_change)
+### Flash Move Protection
+- Detecta movimenti di prezzo rapidi (>5c in 60s) che indicano informed trading o manipolazione
+- Integrato in `risk_manager.can_trade()`: blocca trade su mercati in flash move
+- Tracking tramite `_price_history` (deque maxlen=20) su ogni token WS
+### Riallocazione post-Gemchange
+- **data_driven** 35→30%: edge floor 0.060 sospetto (artificialmente inflato), diversificazione
+- **event_driven** 10→15%: NLP edge (FinBERT/GDELT) non dipende da latenza, politics piu' profittevole (Becker: +$18.6M PnL)
+- Motivazione: articolo Gemchange documenta compressione margini arb (finestra 12.3s→2.7s), competizione e' su velocita' non su analisi fondamentale
+
 ## Modifiche v9.0.0 (Architettura Agentica a 6 Layer)
 ### Layer 2: Signal Validator + Devil's Advocate
-- **SignalValidator** con 7 gate checks: min edge (>=0.02), confidence (>=60%), resolution clarity (<30gg), liquidita' (>=2x size), spread (<=5%), EV positivo post-fee, Devil's Advocate
+- **SignalValidator** con 8 gate checks: min edge (>=0.02), confidence (>=60%), resolution clarity (<30gg), liquidita' (>=2x size), spread (<=5%), EV positivo post-fee, Devil's Advocate, VPIN toxic flow (v9.2.1)
 - **DevilsAdvocate** fast-path: sport blacklist per bond, edge sospetto (>0.20 non-arb), overconfident senza news, volume <$500, losing streak (3+)
 - **SignalConverter**: adattatori da ogni strategia a UnifiedSignal normalizzato
 - Arb gabagool e arbitrage DISABILITATI v9.1 (exploit incrementNonce())
@@ -181,7 +203,10 @@ v9.1: arb disabilitate per exploit incrementNonce(), weather max_bet cappato a $
 - Il bot ha un risk manager integrato con Kelly criterion (proporzionale per strategia)
 - La strategia event_driven usa Finlight + GDELT per news sentiment in tempo reale (merge multi-fonte)
 - Il risk manager ha stop-loss cooldown (4h) per evitare loop distruttivi
-- Il Signal Validator filtra trade a bassa qualita' PRIMA dell'esecuzione
+- Il Signal Validator filtra trade a bassa qualita' PRIMA dell'esecuzione (8 gate checks, incluso VPIN v9.2.1)
+- VPIN monitor blocca trade su mercati con toxic flow (informed trading >= 0.7)
+- Flash move protection blocca trade su mercati con price velocity > 5c/60s
+- VAMP (Volume Adjusted Mid Price) sostituisce mid-price semplice nel WS feed
 - Le strategie arb (gabagool, arbitrage) sono DISABILITATE per exploit incrementNonce() — NON riabilitare senza verifica settlement on-chain atomica
 - Il Correlation Monitor limita esposizione per tema (max 40% capitale)
 - Il Drift Detector segnala cali di win rate >30% vs storico
