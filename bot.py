@@ -39,6 +39,7 @@ from utils.finlight_feed import FinlightFeed
 from utils.gdelt_feed import GDELTFeed
 from utils.nansen_feed import NansenFeed
 from utils.dome_feed import DomeFeed
+from utils.polymarket_ws_feed import PolymarketWSFeed
 from utils.risk_manager import RiskManager
 from utils.redeemer import Redeemer
 
@@ -161,6 +162,7 @@ class MultiStrategyBot:
         self.gdelt_feed = GDELTFeed()
         self.nansen_feed = NansenFeed()
         self.dome_feed = DomeFeed()
+        self.ws_feed = PolymarketWSFeed()
         self.risk = RiskManager(config.risk)
 
         # Ricarica posizioni aperte dal disco (sopravvive ai restart)
@@ -259,6 +261,7 @@ class MultiStrategyBot:
         self._usdc_balance = 0.0
         self._resolve_last_check = 0.0
         self._resolved_cache: set[str] = set()
+        self._shared_markets_cache: list = []
 
         # ── v9.0: Layer 2 — Signal Validator + Devil's Advocate ──
         self.devils_advocate = DevilsAdvocate(risk_manager=self.risk)
@@ -331,6 +334,7 @@ class MultiStrategyBot:
         await asyncio.gather(
             self.binance.connect(),
             self.uma_monitor.start(),  # v5.9.2: UMA resolution monitor
+            self.ws_feed.connect(),    # v9.2: Polymarket WS price feed
             self._main_loop(),
             self._dashboard_loop(),
         )
@@ -352,15 +356,27 @@ class MultiStrategyBot:
                 self._cycle += 1
                 paper = self.config.paper_trading
 
-                # ── Fetch mercati UNA SOLA VOLTA per ciclo ──
-                # Evita 4+ chiamate API separate (una per strategia)
-                shared_markets = self.api.fetch_markets(limit=400)
-                if not shared_markets:
-                    logger.warning(f"Ciclo #{self._cycle}: 0 mercati dall'API, skip")
-                    await asyncio.sleep(self.config.poll_interval)
-                    continue
-
-                logger.debug(f"Ciclo #{self._cycle}: {len(shared_markets)} mercati fetchati")
+                # ── v9.2: Fetch ibrido REST + WebSocket ──
+                # REST full refresh ogni 20 cicli (~60s) o se WS non disponibile
+                # WS aggiorna solo i prezzi tra un refresh e l'altro
+                if self._cycle == 1 or self._cycle % 20 == 0 or not self.ws_feed.available:
+                    shared_markets = self.api.fetch_markets(limit=400)
+                    if not shared_markets:
+                        logger.warning(f"Ciclo #{self._cycle}: 0 mercati dall'API, skip")
+                        await asyncio.sleep(self.config.poll_interval)
+                        continue
+                    self._shared_markets_cache = shared_markets
+                    self.ws_feed.register_markets(shared_markets)
+                    ws_tag = " (REST)" if not self.ws_feed.available else " (REST+WS sync)"
+                    logger.debug(
+                        f"Ciclo #{self._cycle}: {len(shared_markets)} mercati fetchati{ws_tag}"
+                    )
+                else:
+                    # Usa cache con prezzi aggiornati dal WS
+                    shared_markets = self.ws_feed.update_prices(self._shared_markets_cache)
+                    logger.debug(
+                        f"Ciclo #{self._cycle}: {len(shared_markets)} mercati da cache WS"
+                    )
 
                 # ── v9.0: Orchestrator — prioritizzazione mercati ──
                 try:
@@ -1078,6 +1094,7 @@ class MultiStrategyBot:
         if not self.config.paper_trading:
             self.api.cancel_all()
         await self.binance.stop()
+        await self.ws_feed.stop()
         self.risk.save_trades()
 
         # v9.0: Cleanup storage

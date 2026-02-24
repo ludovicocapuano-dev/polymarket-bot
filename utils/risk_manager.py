@@ -182,6 +182,7 @@ class RiskManager:
                 del self._stop_loss_cooldown[market_id]
 
         # v7.0: Anti-hedging — blocca posizioni opposte sullo stesso mercato
+        # v9.2: Anti-stacking — blocca re-entry stessa direzione sullo stesso mercato
         if market_id and side:
             side_upper = side.upper()
             for t in self.open_trades:
@@ -193,6 +194,13 @@ class RiskManager:
                         return False, (
                             f"Anti-hedge: gia' {existing_side} su mercato {market_id[:12]} "
                             f"({t.strategy}), blocco {side_upper}"
+                        )
+                    # Stessa direzione = stacking (rischio concentrato)
+                    if ("YES" in side_upper and "YES" in existing_side) or \
+                       ("NO" in side_upper and "NO" in existing_side):
+                        return False, (
+                            f"Anti-stack: gia' {existing_side} ${t.size:.2f} su mercato "
+                            f"{market_id[:12]} ({t.strategy}), blocco re-entry"
                         )
 
         # v7.0: Exposure limit — max 15% del capitale su un singolo mercato
