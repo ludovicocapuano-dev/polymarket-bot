@@ -2,7 +2,7 @@
 - Rispondi sempre in italiano
 - Nessuna convenzione particolare di codice
 
-# Progetto: Polymarket Multi-Strategy Trading Bot (v9.2.1)
+# Progetto: Polymarket Multi-Strategy Trading Bot (v9.2.2)
 Repo: https://github.com/ludovicocapuano-dev/polymarket-bot (privato)
 Bot automatico di trading su Polymarket con 5 strategie attive (4 eliminate per performance negativa o sicurezza).
 v8.0 ottimizzato con analisi Becker Dataset (115M trade, 381K mercati risolti).
@@ -10,6 +10,7 @@ v8.1: integrazione GDELT feed per event_driven + configurazione .claude/ (rules,
 v9.0: architettura agentica a 6 layer (Signal Validator, Monitoring, Storage, Orchestrator, Risk, Execution).
 v9.1: arb disabilitate per exploit incrementNonce(), weather max_bet cappato a $15, bugfix vari.
 v9.2.1: VPIN toxic flow detection, VAMP pricing (Stoikov), flash move protection, riallocazione post-Gemchange.
+v9.2.2: fix feed P0/P1 (redeemer conditionId, GDELT rate limit, Finlight backoff, whale API migration, Binance WS).
 
 ## Architettura v9.0 — 6 Layer
 
@@ -36,7 +37,7 @@ v9.2.1: VPIN toxic flow detection, VAMP pricing (Stoikov), flash move protection
     - `event_driven.py` — news-reactive + sentiment (v8.0: CATEGORY_CONFIG per-categoria)
     - `high_prob_bond.py` — obbligazioni ad alta prob (v8.0: politics boost, sports hard blacklist)
     - `market_making.py` — DISABILITATO v7.0 (necessita $2K+ budget)
-    - `whale_copy.py` — copy trading (v8.0: size-aware filtering, copy fraction adattiva)
+    - `whale_copy.py` — copy trading (v8.0: size-aware filtering, v9.2.2: migrazione endpoint data-api.polymarket.com)
   - `validators/` — Layer 2: Signal Validator (v9.0)
     - `signal_validator.py` — UnifiedSignal, SignalReport, 8 gate checks (edge, confidence, resolution, liquidity, spread, EV, DA, VPIN)
     - `devils_advocate.py` — Contraddittorio deterministico (sport blacklist, edge sospetto, overconfident, volume basso, losing streak)
@@ -56,8 +57,11 @@ v9.2.1: VPIN toxic flow detection, VAMP pricing (Stoikov), flash move protection
   - `execution/` — Layer 4: Execution Engine (v9.0)
     - `execution_agent.py` — ExecutionAgent: LIMIT_MAKER (<=\$30), TWAP tranche \$15/2s (>\$30)
   - `migrate_json_to_pg.py` — Script migrazione one-shot JSON → PostgreSQL
-  - `utils/gdelt_feed.py` — client GDELT API v2 (news globali + tone, gratuito, v8.1)
+  - `utils/gdelt_feed.py` — client GDELT API v2 (news globali + tone, gratuito, v9.2.2: rate limit 10s, query semplici, circuit breaker escalante)
   - `utils/vpin_monitor.py` — VPIN toxic flow detection (Easley, Lopez de Prado, O'Hara 2012) v9.2.1
+  - `utils/finlight_feed.py` — client Finlight API v2 (news + sentiment, v9.2.2: exponential backoff su 429)
+  - `utils/binance_feed.py` — feed multi-crypto Binance WS (v9.2.2: backoff esponenziale con jitter, stale detection)
+  - `utils/redeemer.py` — auto-redeem posizioni risolte via Safe proxy (v9.2.2: conditionId padding, gas estimation, retry on revert)
   - `utils/risk_manager.py` — Kelly sizing, triple barrier, stop-loss cooldown, correlation check, flash move + VPIN v9.2.1
   - `utils/whale_profiler.py` — Profiler wallet whale (whitelist automatica)
   - `.claude/rules/` — regole modulari per strategia (event-driven, risk, merge, general)
@@ -101,6 +105,33 @@ v9.2.1: VPIN toxic flow detection, VAMP pricing (Stoikov), flash move protection
 - **data_driven** 35→30%: edge floor 0.060 sospetto (artificialmente inflato), diversificazione
 - **event_driven** 10→15%: NLP edge (FinBERT/GDELT) non dipende da latenza, politics piu' profittevole (Becker: +$18.6M PnL)
 - Motivazione: articolo Gemchange documenta compressione margini arb (finestra 12.3s→2.7s), competizione e' su velocita' non su analisi fondamentale
+
+## Modifiche v9.2.2 (Feed reliability + Redeemer fix)
+### Redeemer TX reverted (P0)
+- **conditionId padding**: pad a 32 bytes (bytes32) con `zfill(64)` — causa principale del revert (Gamma API ritornava conditionId troncato)
+- **Gas estimation**: `estimate_gas()` con 30% buffer, fallback a 500K se estimation fallisce
+- **Retry on revert**: fino a 3 tentativi con gas incrementato +50% ad ogni retry
+- **Log migliorato**: gasUsed/gasLimit per diagnosi, validazione pre-redeem
+### GDELT rate limit fix (P0/P1)
+- **Query semplici**: 1 query singola per categoria (era 2 combinate con OR che causavano timeout sistematici)
+- **Intervallo 10s** tra richieste (era 5.5s, insufficiente per IP flaggati)
+- **Timeout 30s** (era 20s per query combinate)
+- **200 text-body non conta come errore**: GDELT ritorna 200 con "Please limit requests..." — gestito senza incrementare errori circuit breaker
+- **Circuit breaker escalante**: cooldown 60s→180s→300s→600s in base al numero di trip (era fisso 300s)
+### Finlight exponential backoff (P1)
+- **Backoff esponenziale** su 429: 30s→60s→120s→240s→300s (cap), con counter e timestamp per retry
+- **Backoff check** prima di ogni fetch — evita richieste inutili durante backoff
+- **Reset su successo**: counter azzerato dopo risposta 200
+### Whale API endpoint migration (P0)
+- **Endpoint migrato**: `gamma-api.polymarket.com` → `data-api.polymarket.com` (vecchio ritornava 404)
+- **Parametro aggiornato**: `address=` → `user=` per endpoint `/activity`
+- **Filtro trade type**: solo BUY/TRADE (skip REDEEM, SELL)
+- **Profiles endpoint** migrato a `data-api.polymarket.com/profiles/`
+### Binance WS stability (P2)
+- **Backoff esponenziale con jitter**: 2s→4s→8s→16s→max 30s su ConnectionClosed, con random jitter 30%
+- **ping_timeout=30s, close_timeout=10s** espliciti (era solo ping_interval=20)
+- **Tracking disconnessioni**: contatore consecutivo, reset su connessione riuscita
+- **`is_stale()`**: metodo per detection dati vecchi (nessun messaggio da >60s)
 
 ## Modifiche v9.0.0 (Architettura Agentica a 6 Layer)
 ### Layer 2: Signal Validator + Devil's Advocate
@@ -210,6 +241,11 @@ v9.2.1: VPIN toxic flow detection, VAMP pricing (Stoikov), flash move protection
 - Le strategie arb (gabagool, arbitrage) sono DISABILITATE per exploit incrementNonce() — NON riabilitare senza verifica settlement on-chain atomica
 - Il Correlation Monitor limita esposizione per tema (max 40% capitale)
 - Il Drift Detector segnala cali di win rate >30% vs storico
+- Il redeemer auto-riscuote vincite da mercati risolti via Safe proxy — conditionId DEVE essere 32 bytes (v9.2.2)
+- GDELT usa query semplici (1 per categoria) con intervallo 10s e circuit breaker escalante (v9.2.2)
+- Finlight ha exponential backoff su 429 (30s→300s cap) — API key potrebbe avere quota limitata
+- Whale copy usa `data-api.polymarket.com` (NON gamma-api, ritorna 404 dal 2026)
+- Binance WS ha backoff esponenziale con jitter su disconnessione (v9.2.2)
 - Becker Dataset in `/root/becker-dataset/data/` — fonte delle ottimizzazioni v8.0
 - Setup PG+Redis: `apt install postgresql redis-server && pip install psycopg2-binary redis`
 - Env vars storage: `DATABASE_DSN=postgresql://localhost/polymarket_bot`, `REDIS_URL=redis://localhost:6379`
