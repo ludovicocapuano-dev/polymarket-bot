@@ -40,6 +40,7 @@ from utils.gdelt_feed import GDELTFeed
 from utils.nansen_feed import NansenFeed
 from utils.dome_feed import DomeFeed
 from utils.polymarket_ws_feed import PolymarketWSFeed
+from utils.vpin_monitor import VPINMonitor
 from utils.risk_manager import RiskManager
 from utils.redeemer import Redeemer
 
@@ -163,6 +164,7 @@ class MultiStrategyBot:
         self.nansen_feed = NansenFeed()
         self.dome_feed = DomeFeed()
         self.ws_feed = PolymarketWSFeed()
+        self.vpin_monitor = VPINMonitor()  # v9.2.1: VPIN toxic flow detection
         self.risk = RiskManager(config.risk)
 
         # Ricarica posizioni aperte dal disco (sopravvive ai restart)
@@ -265,7 +267,10 @@ class MultiStrategyBot:
 
         # ── v9.0: Layer 2 — Signal Validator + Devil's Advocate ──
         self.devils_advocate = DevilsAdvocate(risk_manager=self.risk)
-        self.signal_validator = SignalValidator(devil_advocate=self.devils_advocate)
+        self.signal_validator = SignalValidator(
+            devil_advocate=self.devils_advocate,
+            vpin_monitor=self.vpin_monitor,  # v9.2.1: gate #8 VPIN toxic flow
+        )
 
         # ── v9.0: Layer 5 — Monitoring & Attribution ──
         self.attribution = AttributionEngine()
@@ -275,6 +280,9 @@ class MultiStrategyBot:
         # ── v9.0: Layer 3 — Correlation Monitor & Tail Risk ──
         self.correlation_monitor = CorrelationMonitor(risk_manager=self.risk)
         self.risk.correlation_monitor = self.correlation_monitor
+        self.risk.ws_feed = self.ws_feed  # v9.2.1: flash move protection
+        self.risk.vpin_monitor = self.vpin_monitor  # v9.2.1: VPIN toxic flow
+        self.ws_feed.on_trade = self.vpin_monitor.record_trade  # v9.2.1: feed VPIN
         self.tail_risk = TailRiskAgent(risk_manager=self.risk)
 
         # ── v9.0: Layer 1 — Orchestrator ──
@@ -320,7 +328,7 @@ class MultiStrategyBot:
         paper = self.config.paper_trading
         logger.info(f"Bot avviato in modalita' {'PAPER' if paper else 'LIVE'}")
         logger.info(
-            f"Allocazione v7.0: BOND={self.config.allocation.high_prob_bond}% "
+            f"Allocazione v9.2.1: BOND={self.config.allocation.high_prob_bond}% "
             f"GAB={self.config.allocation.arb_gabagool}% "
             f"WEATHER={self.config.allocation.weather}% "
             f"ARB={self.config.allocation.arbitrage}% "
