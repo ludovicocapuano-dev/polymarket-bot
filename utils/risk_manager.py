@@ -82,6 +82,10 @@ class RiskManager:
 
         # v9.0: Correlation monitor (iniettato da bot.py)
         self.correlation_monitor = None
+        # v9.2.1: WS feed per flash move protection (iniettato da bot.py)
+        self.ws_feed = None
+        # v9.2.1: VPIN monitor per toxic flow detection (iniettato da bot.py)
+        self.vpin_monitor = None
         # v9.0: Database (iniettato da bot.py)
         self.db = None
 
@@ -244,6 +248,19 @@ class RiskManager:
                     f"Fees/Vol gate: fee rt ${rt_fee:.4f} > 30% "
                     f"vol attesa ${expected_vol:.4f} (ratio={rt_fee/expected_vol:.1%})"
                 )
+
+        # v9.2.1: Flash Move Protection (Stoikov) — blocca trade su mercati
+        # con price velocity > 5¢ in 60s (informed trading / manipolazione)
+        if market_id and self.ws_feed:
+            is_flash, flash_reason = self.ws_feed.is_flash_move(market_id)
+            if is_flash:
+                return False, f"Flash move protection: {flash_reason}"
+
+        # v9.2.1: VPIN toxic flow — blocca trade su mercati con informed trading
+        if market_id and self.vpin_monitor:
+            is_toxic, vpin_reason = self.vpin_monitor.check_toxicity(market_id)
+            if is_toxic:
+                return False, f"VPIN toxic flow: {vpin_reason}"
 
         # v9.0: Correlation monitor — max 40% capitale per tema
         if self.correlation_monitor and market_id:

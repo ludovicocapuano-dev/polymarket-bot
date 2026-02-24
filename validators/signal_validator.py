@@ -1,7 +1,7 @@
 """
-Signal Validator v9.0 — Gate finale prima dell'esecuzione.
+Signal Validator v9.2.1 — Gate finale prima dell'esecuzione.
 
-7 gate checks:
+8 gate checks:
 1. Min edge threshold (>=0.02)
 2. Confidence >= 60%
 3. Resolution clarity (end_date < 30gg)
@@ -9,6 +9,7 @@ Signal Validator v9.0 — Gate finale prima dell'esecuzione.
 5. Spread <= 5%
 6. EV positivo dopo fee round-trip
 7. Non flaggato dal Devil's Advocate
+8. VPIN < 0.7 (no toxic flow — Easley, López de Prado, O'Hara 2012)
 """
 
 from dataclasses import dataclass, field
@@ -55,7 +56,7 @@ class SignalReport:
     devil_advocate_reason: str = ""
 
 class SignalValidator:
-    """Valida segnali con 7 gate checks prima dell'esecuzione."""
+    """Valida segnali con 8 gate checks prima dell'esecuzione."""
 
     # Fee rate Polymarket taker
     FEE_RATE = 0.0625
@@ -66,9 +67,11 @@ class SignalValidator:
     MAX_DAYS_TO_RESOLUTION = 30
     MIN_LIQUIDITY_MULTIPLIER = 2.0
     MAX_SPREAD = 0.05
+    VPIN_TOXIC_THRESHOLD = 0.7  # v9.2.1: VPIN > 0.7 = toxic flow
 
-    def __init__(self, devil_advocate=None):
+    def __init__(self, devil_advocate=None, vpin_monitor=None):
         self.devil_advocate = devil_advocate
+        self.vpin_monitor = vpin_monitor  # v9.2.1
 
     def validate(self, signal: UnifiedSignal, trade_size: float) -> SignalReport:
         """Esegue 7 gate checks e ritorna un SignalReport."""
@@ -136,6 +139,16 @@ class SignalValidator:
                 failed.append(f"devil_advocate=FLAGGED: {da_reason}")
         else:
             passed.append("devil_advocate=disabled")
+
+        # Gate 8: VPIN toxic flow (v9.2.1 Stoikov)
+        if self.vpin_monitor and signal.market_id:
+            vpin = self.vpin_monitor.get_vpin(signal.market_id)
+            if vpin < self.VPIN_TOXIC_THRESHOLD:
+                passed.append(f"vpin={vpin:.3f} < {self.VPIN_TOXIC_THRESHOLD}")
+            else:
+                failed.append(f"vpin={vpin:.3f} >= {self.VPIN_TOXIC_THRESHOLD} (toxic flow)")
+        else:
+            passed.append("vpin=disabled")
 
         # Calcola score (0-1)
         total_checks = len(passed) + len(failed)

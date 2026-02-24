@@ -8,6 +8,10 @@ Architettura v9.2:
 - Graceful degradation: se WS down, bot torna a REST ogni ciclo
 - Pattern: segue binance_feed.py (websockets + asyncio)
 
+v9.2.1 (Stoikov):
+- VAMP (Volume Adjusted Mid Price): prezzo mid pesato per quantità bid/ask
+- Flash Move Protection: blocca trade su mercati con price velocity > 5¢/60s
+
 URL: wss://ws-subscriptions-clob.polymarket.com/ws/market
 """
 
@@ -16,6 +20,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
+from collections import deque
 
 import websockets
 
@@ -25,6 +30,11 @@ WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 MAX_ASSETS_PER_CONN = 500
 REST_REVALIDATION_INTERVAL = 60  # secondi
 STALE_THRESHOLD = 30  # secondi senza update = dato stale
+
+# v9.2.1 Stoikov: Flash Move Protection
+FLASH_MOVE_THRESHOLD = 0.05  # 5 centesimi
+FLASH_MOVE_WINDOW = 60.0     # secondi
+FLASH_MOVE_COOLDOWN = 300.0  # 5 minuti di blocco
 
 
 @dataclass
@@ -36,8 +46,12 @@ class TokenState:
     price: float = 0.0
     best_bid: float = 0.0
     best_ask: float = 0.0
+    bid_qty: float = 0.0       # v9.2.1: quantità al best bid (per VAMP)
+    ask_qty: float = 0.0       # v9.2.1: quantità al best ask (per VAMP)
     last_trade_price: float = 0.0
     updated_at: float = 0.0
+    # v9.2.1: Flash Move tracking — ultime 20 osservazioni prezzo
+    _price_history: deque = field(default_factory=lambda: deque(maxlen=20))
 
 
 class PolymarketWSFeed:
@@ -61,6 +75,9 @@ class PolymarketWSFeed:
         self._messages_received: int = 0
         self._last_message_at: float = 0.0
         self._ws_connections: list = []
+        # v9.2.1: Callback per notificare trade al VPIN monitor
+        # Signature: on_trade(market_id: str, price: float, size: float)
+        self.on_trade = None
 
     def register_markets(self, markets: list) -> None:
         """
@@ -198,26 +215,33 @@ class PolymarketWSFeed:
                 asks = event.get("asks", [])
                 if bids:
                     token.best_bid = float(bids[0].get("price", 0))
+                    token.bid_qty = float(bids[0].get("size", 0))
                 if asks:
                     token.best_ask = float(asks[0].get("price", 0))
-                # Aggiorna price dal midpoint se abbiamo bid/ask
-                if token.best_bid > 0 and token.best_ask > 0:
-                    token.price = (token.best_bid + token.best_ask) / 2
-                elif token.best_bid > 0:
-                    token.price = token.best_bid
+                    token.ask_qty = float(asks[0].get("size", 0))
+                # v9.2.1: VAMP (Stoikov) — prezzo mid pesato per quantità
+                token.price = self._calc_vamp(token)
                 token.updated_at = now
+                token._price_history.append((now, token.price))
 
             elif event_type == "price_change":
-                price = event.get("price")
-                if price is not None:
-                    token.price = float(price)
                 bid = event.get("bid")
                 ask = event.get("ask")
                 if bid is not None:
                     token.best_bid = float(bid)
                 if ask is not None:
                     token.best_ask = float(ask)
+                # Aggiorna quantità se presenti
+                bid_size = event.get("bid_size")
+                ask_size = event.get("ask_size")
+                if bid_size is not None:
+                    token.bid_qty = float(bid_size)
+                if ask_size is not None:
+                    token.ask_qty = float(ask_size)
+                # v9.2.1: VAMP
+                token.price = self._calc_vamp(token)
                 token.updated_at = now
+                token._price_history.append((now, token.price))
 
             elif event_type == "last_trade_price":
                 ltp = event.get("last_trade_price")
@@ -227,6 +251,14 @@ class PolymarketWSFeed:
                     if now - token.updated_at > 5:
                         token.price = float(ltp)
                     token.updated_at = now
+                    token._price_history.append((now, token.price))
+                    # v9.2.1: Notifica VPIN monitor
+                    if self.on_trade:
+                        size = float(event.get("size", 0)) or 1.0
+                        try:
+                            self.on_trade(token.market_id, float(ltp), size)
+                        except Exception:
+                            pass
 
             elif event_type == "tick_size_change":
                 # Ignoriamo, non rilevante per i prezzi
@@ -238,8 +270,71 @@ class PolymarketWSFeed:
                     try:
                         token.price = float(price)
                         token.updated_at = now
+                        token._price_history.append((now, token.price))
                     except (ValueError, TypeError):
                         pass
+
+    @staticmethod
+    def _calc_vamp(token: TokenState) -> float:
+        """
+        v9.2.1: VAMP — Volume Adjusted Mid Price (Stoikov).
+
+        VAMP = (best_bid * ask_qty + best_ask * bid_qty) / (bid_qty + ask_qty)
+
+        Intuizione: se l'ask ha poco volume, il "vero" prezzo è più vicino
+        all'ask (poca resistenza a salire). Se il bid ha poco volume, il
+        prezzo è più vicino al bid (poca resistenza a scendere).
+
+        Fallback: mid-price classico se mancano le quantità.
+        """
+        if token.best_bid > 0 and token.best_ask > 0:
+            if token.bid_qty > 0 and token.ask_qty > 0:
+                # VAMP formula
+                return (
+                    (token.best_bid * token.ask_qty + token.best_ask * token.bid_qty)
+                    / (token.bid_qty + token.ask_qty)
+                )
+            # Fallback: mid-price semplice
+            return (token.best_bid + token.best_ask) / 2
+        if token.best_bid > 0:
+            return token.best_bid
+        if token.best_ask > 0:
+            return token.best_ask
+        return token.price
+
+    def is_flash_move(self, market_id: str) -> tuple[bool, str]:
+        """
+        v9.2.1: Flash Move Protection (Stoikov).
+
+        Detecta movimenti di prezzo rapidi (>5¢ in 60s) che indicano
+        informed trading o manipolazione. Ritorna (True, reason) se
+        il mercato è in flash move, (False, "") altrimenti.
+        """
+        tids = self._market_tokens.get(market_id)
+        if not tids:
+            return False, ""
+
+        now = time.time()
+
+        for tid in tids:
+            token = self._tokens.get(tid)
+            if not token or len(token._price_history) < 2:
+                continue
+
+            # Controlla delta prezzo nella finestra temporale
+            recent_price = token._price_history[-1]  # (ts, price)
+            for ts, price in token._price_history:
+                if now - ts <= FLASH_MOVE_WINDOW:
+                    delta = abs(recent_price[1] - price)
+                    if delta >= FLASH_MOVE_THRESHOLD:
+                        return True, (
+                            f"Flash move: {token.side} token {tid[:12]} "
+                            f"delta={delta:.3f} in "
+                            f"{now - ts:.0f}s (>{FLASH_MOVE_THRESHOLD}¢/{FLASH_MOVE_WINDOW:.0f}s)"
+                        )
+                    break  # Solo il primo punto nella finestra
+
+        return False, ""
 
     def update_prices(self, markets: list) -> list:
         """
@@ -303,12 +398,22 @@ class PolymarketWSFeed:
             1 for t in self._tokens.values()
             if t.updated_at > 0 and (now - t.updated_at) < STALE_THRESHOLD
         )
+        vamp_tokens = sum(
+            1 for t in self._tokens.values()
+            if t.bid_qty > 0 and t.ask_qty > 0
+        )
+        flash_markets = sum(
+            1 for mid in self._market_tokens
+            if self.is_flash_move(mid)[0]
+        )
         return {
             "connected": self._connected,
             "available": self.available,
             "messages_received": self._messages_received,
             "total_tokens": len(self._tokens),
             "fresh_tokens": fresh_tokens,
+            "vamp_tokens": vamp_tokens,
+            "flash_move_markets": flash_markets,
             "last_message_age": round(now - self._last_message_at, 1) if self._last_message_at > 0 else -1,
             "markets_tracked": len(self._market_tokens),
         }
