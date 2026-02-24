@@ -2,7 +2,7 @@
 - Rispondi sempre in italiano
 - Nessuna convenzione particolare di codice
 
-# Progetto: Polymarket Multi-Strategy Trading Bot (v9.2.3)
+# Progetto: Polymarket Multi-Strategy Trading Bot (v10.0)
 Repo: https://github.com/ludovicocapuano-dev/polymarket-bot (privato)
 Bot automatico di trading su Polymarket con 5 strategie attive (4 eliminate per performance negativa o sicurezza).
 v8.0 ottimizzato con analisi Becker Dataset (115M trade, 381K mercati risolti).
@@ -12,13 +12,14 @@ v9.1: arb disabilitate per exploit incrementNonce(), weather max_bet cappato a $
 v9.2.1: VPIN toxic flow detection, VAMP pricing (Stoikov), flash move protection, riallocazione post-Gemchange.
 v9.2.2: fix feed P0/P1 (redeemer conditionId, GDELT rate limit, Finlight backoff, whale API migration, Binance WS).
 v9.2.3: Data API redeemable fast-path (1 chiamata vs N), strict conditionId validation (no zfill).
+v10.0: Empirical Kelly con Monte Carlo — position sizing data-driven (bootstrap 10K paths, CV_edge haircut).
 
 ## Architettura v9.0 — 6 Layer
 
 | Layer | Componente | Descrizione |
 |-------|-----------|-------------|
 | Layer 2 | Signal Validator + Devil's Advocate | 8 gate checks pre-esecuzione (v9.2.1: +VPIN), contraddittorio deterministico |
-| Layer 5 | Attribution + Drift + Calibration | Brier score, concept drift detection, suggerimenti parametri |
+| Layer 5 | Attribution + Drift + Calibration + Empirical Kelly | Brier score, concept drift, suggerimenti parametri, MC position sizing (v10.0) |
 | Layer 0 | PostgreSQL + Redis | Storage persistente + event bus (opzionale, graceful degradation) |
 | Layer 1 | Orchestrator Agent | Prioritizzazione mercati (CRITICAL/HIGH/MEDIUM/LOW/SKIP) |
 | Layer 3 | Correlation Monitor + Tail Risk | Max 40% per tema, VaR 95%, worst-case analysis |
@@ -46,7 +47,8 @@ v9.2.3: Data API redeemable fast-path (1 chiamata vs N), strict conditionId vali
   - `monitoring/` — Layer 5: Feedback Loop (v9.0)
     - `attribution.py` — AttributionEngine: P&L per segnale, Brier score, alpha decay
     - `drift_detector.py` — DriftDetector: concept drift (win rate calo >30%), microstructure drift (spread)
-    - `calibration.py` — CalibrationEngine: suggerimenti min_edge e kelly_fraction basati su Brier/alpha
+    - `calibration.py` — CalibrationEngine: suggerimenti min_edge e kelly_fraction basati su Brier/alpha/MC (v10.0: check Monte Carlo)
+    - `empirical_kelly.py` — EmpiricalKelly: Monte Carlo bootstrap 10K paths, CV_edge haircut, cache 1h (v10.0)
   - `storage/` — Layer 0: Persistenza (v9.0, opzionale)
     - `database.py` — PostgreSQL: tabelle trades, market_snapshots, calibration_log, drift_alerts
     - `redis_bus.py` — Redis Pub/Sub + cache con fallback in-memory
@@ -63,7 +65,7 @@ v9.2.3: Data API redeemable fast-path (1 chiamata vs N), strict conditionId vali
   - `utils/finlight_feed.py` — client Finlight API v2 (news + sentiment, v9.2.2: exponential backoff su 429)
   - `utils/binance_feed.py` — feed multi-crypto Binance WS (v9.2.2: backoff esponenziale con jitter, stale detection)
   - `utils/redeemer.py` — auto-redeem posizioni risolte via Safe proxy (v9.2.3: Data API redeemable, strict conditionId, gas estimation, retry on revert)
-  - `utils/risk_manager.py` — Kelly sizing, triple barrier, stop-loss cooldown, correlation check, flash move + VPIN v9.2.1
+  - `utils/risk_manager.py` — Kelly sizing (v10.0: empirical Kelly blend), triple barrier, stop-loss cooldown, correlation check, flash move + VPIN v9.2.1
   - `utils/whale_profiler.py` — Profiler wallet whale (whitelist automatica)
   - `.claude/rules/` — regole modulari per strategia (event-driven, risk, merge, general)
   - `.claude/agents/` — agenti custom (becker-analyst, strategy-debugger)
@@ -86,6 +88,29 @@ v9.2.3: Data API redeemable fast-path (1 chiamata vs N), strict conditionId vali
 | arbitrage      | 0%          | DISABILITATO v9.1: exploit incrementNonce()    |
 | crypto_5min    | 0%          | ELIMINATO v7.0: Kelly negativo, fees 3.15%     |
 | market_making  | 0%          | ELIMINATO v7.0: necessita $2K+ budget          |
+
+## Modifiche v10.0 (Empirical Kelly con Monte Carlo)
+### Empirical Kelly — position sizing data-driven
+- **EmpiricalKelly** (`monitoring/empirical_kelly.py`): sostituisce Kelly fractions statiche con haircut derivato da bootstrap resampling
+- Formula: `f_empirical = 1 - CV_edge`, dove `CV_edge = std(path_means) / mean(path_means)` su 10K paths MC
+- Bootstrap: `(10000, n_trades)` indici random con replacement, wealth curves via log1p→cumsum→exp
+- **DD95**: 95th percentile max drawdown per path (running max → drawdown → percentile)
+- Cache 1h, ricalcolo ogni 500 cicli o 10 nuovi trade chiusi, minimo 30 trade per attivare
+### Blend 70/30 in kelly_size()
+- `base_frac = base_frac * (0.70 * emp_factor + 0.30)` — 30% statico come prior bayesiano
+- Evita che CV_edge rumoroso (pochi trade) porti base_frac a zero
+- Se < 30 trade o cache scaduta → fallback sizing statico v9.x (nessuna modifica)
+### CalibrationEngine Check MC
+- Check 3 in `analyze()`: se `f_empirical < 0.50` suggerisce riduzione Kelly, se `> 0.85` (n>=50) suggerisce +10%
+- Mostra CV_edge e DD95 nel suggerimento
+### Fallback e sicurezza
+- numpy mancante → `empirical_kelly = None`, sizing statico
+- < 30 trade → `update()` ritorna None, sizing statico
+- Cache >2h → `get_adjustment_factor()` ritorna None, sizing statico
+- CV_edge = 1.0 (edge <= 0) → `f_empirical = 0.0`, blend → `base_frac * 0.30` (floor 30%)
+- Eccezione in MC → try/except in bot.py, log warning, sizing statico
+### Performance
+- numpy vectorized, 10K paths x 100 trade = ~27ms
 
 ## Modifiche v9.2.1 (Stoikov + riallocazione post-Gemchange)
 ### VPIN Toxic Flow Detection
@@ -159,8 +184,9 @@ v9.2.3: Data API redeemable fast-path (1 chiamata vs N), strict conditionId vali
 ### Layer 5: Monitoring & Feedback Loop
 - **AttributionEngine**: traccia ogni trade entry→exit con Brier score, alpha decay per strategia
 - **DriftDetector**: allarme se win rate recente cala >30% vs storico, monitoring spread
-- **CalibrationEngine**: suggerisce aumento min_edge se Brier >0.35, riduzione Kelly se alpha <0.50
-- Attribution registrata dopo ogni close_trade(), drift/calibration analizzati ogni 500 cicli
+- **CalibrationEngine**: suggerisce aumento min_edge se Brier >0.35, riduzione Kelly se alpha <0.50, check MC v10.0
+- **EmpiricalKelly** (v10.0): Monte Carlo bootstrap 10K paths per Kelly fraction data-driven, ricalcolo ogni 500 cicli
+- Attribution registrata dopo ogni close_trade(), drift/calibration/empirical kelly analizzati ogni 500 cicli
 
 ### Layer 0: PostgreSQL + Redis Storage
 - **Database** PostgreSQL: tabelle trades, market_snapshots, calibration_log, drift_alerts con indici
@@ -237,7 +263,7 @@ v9.2.3: Data API redeemable fast-path (1 chiamata vs N), strict conditionId vali
 - Eliminati crypto_5min e market_making (performance negativa)
 
 ## Stack tecnico
-- Python, requests, asyncio
+- Python, requests, asyncio, numpy
 - API: Polymarket CLOB, Gamma API, Data API, Finlight v2, GDELT v2, Binance, LunarCrush, CryptoQuant, Nansen
 - NLP: FinBERT (ProsusAI/finbert) con fallback VADER
 - Storage: PostgreSQL + Redis (opzionali, graceful degradation a JSON + in-memory)
@@ -246,7 +272,7 @@ v9.2.3: Data API redeemable fast-path (1 chiamata vs N), strict conditionId vali
 
 ## Note importanti
 - Il file `.env` contiene chiavi private e API keys — mai leggerlo o mostrarlo
-- Il bot ha un risk manager integrato con Kelly criterion (proporzionale per strategia)
+- Il bot ha un risk manager integrato con Kelly criterion (proporzionale per strategia, v10.0: haircut empirico MC)
 - La strategia event_driven usa Finlight + GDELT per news sentiment in tempo reale (merge multi-fonte)
 - Il risk manager ha stop-loss cooldown (4h) per evitare loop distruttivi
 - Il Signal Validator filtra trade a bassa qualita' PRIMA dell'esecuzione (8 gate checks, incluso VPIN v9.2.1)
@@ -256,6 +282,7 @@ v9.2.3: Data API redeemable fast-path (1 chiamata vs N), strict conditionId vali
 - Le strategie arb (gabagool, arbitrage) sono DISABILITATE per exploit incrementNonce() — NON riabilitare senza verifica settlement on-chain atomica
 - Il Correlation Monitor limita esposizione per tema (max 40% capitale)
 - Il Drift Detector segnala cali di win rate >30% vs storico
+- L'Empirical Kelly (v10.0) richiede numpy e almeno 30 trade chiusi per strategia — sotto questa soglia usa sizing statico v9.x
 - Il redeemer auto-riscuote vincite da mercati risolti via Safe proxy — conditionId DEVE essere esattamente 64 hex chars (v9.2.3: strict validation, no padding)
 - Il redeemer usa Data API (`data-api.polymarket.com/positions`) come fonte primaria per detectare posizioni redeemable (v9.2.3), Gamma API come fallback
 - GDELT usa query semplici (1 per categoria) con intervallo 10s e circuit breaker escalante (v9.2.2)
