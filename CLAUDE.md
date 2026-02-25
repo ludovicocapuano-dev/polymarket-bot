@@ -336,5 +336,6 @@ v10.1.0: 10 bug critici profitability + spread dinamico pmxt data-driven.
 - pmxt orderbook archive in `archive.pmxt.dev/Polymarket` — fonte calibrazione spread v10.1 (download: `/dumps/polymarket_orderbook_YYYY-MM-DDTHH.parquet`)
 - Setup PG+Redis: `apt install postgresql redis-server && pip install psycopg2-binary redis`
 - Env vars storage: `DATABASE_DSN=postgresql://localhost/polymarket_bot`, `REDIS_URL=redis://localhost:6379`
-- Avvio: `python bot.py` (paper) / `python bot.py --live` (reale)
+- Avvio: `python bot.py` (paper) / `python bot.py --live` (reale). Per live serve `echo 'CONFERMO' | python3 bot.py --live`
+- **Balance/allowance**: se il log mostra `not enough balance / allowance` (HTTP 400 dal CLOB), il wallet proxy Safe non ha USDC sufficienti o l'allowance verso il CTF Exchange è scaduta. Verificare: (1) saldo USDC sul Safe proxy su Polygonscan, (2) allowance ERC-20 verso `0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E` (CTF Exchange). Il bot continua a girare e riprova al ciclo successivo
 - Repo GitHub: https://github.com/ludovicocapuano-dev/polymarket-bot (privato)
