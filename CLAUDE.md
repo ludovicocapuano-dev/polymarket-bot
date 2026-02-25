@@ -2,7 +2,7 @@
 - Rispondi sempre in italiano
 - Nessuna convenzione particolare di codice
 
-# Progetto: Polymarket Multi-Strategy Trading Bot (v10.0.1)
+# Progetto: Polymarket Multi-Strategy Trading Bot (v10.1.0)
 Repo: https://github.com/ludovicocapuano-dev/polymarket-bot (privato)
 Bot automatico di trading su Polymarket con 5 strategie attive (4 eliminate per performance negativa o sicurezza).
 v8.0 ottimizzato con analisi Becker Dataset (115M trade, 381K mercati risolti).
@@ -14,12 +14,13 @@ v9.2.2: fix feed P0/P1 (redeemer conditionId, GDELT rate limit, Finlight backoff
 v9.2.3: Data API redeemable fast-path (1 chiamata vs N), strict conditionId validation (no zfill).
 v10.0: Empirical Kelly con Monte Carlo — position sizing data-driven (bootstrap 10K paths, CV_edge haircut).
 v10.0.1: fix redeemer GS013 — CTF-only routing (bypass NRA bug) + firma v=1 (msg.sender == owner).
+v10.1.0: 10 bug critici profitability + spread dinamico pmxt data-driven.
 
 ## Architettura v9.0 — 6 Layer
 
 | Layer | Componente | Descrizione |
 |-------|-----------|-------------|
-| Layer 2 | Signal Validator + Devil's Advocate | 8 gate checks pre-esecuzione (v9.2.1: +VPIN), contraddittorio deterministico |
+| Layer 2 | Signal Validator + Devil's Advocate | 8 gate checks pre-esecuzione (v10.1: EV net-of-fees, REVIEW accepted, MIN_CONF 0.50), contraddittorio deterministico |
 | Layer 5 | Attribution + Drift + Calibration + Empirical Kelly | Brier score, concept drift, suggerimenti parametri, MC position sizing (v10.0) |
 | Layer 0 | PostgreSQL + Redis | Storage persistente + event bus (opzionale, graceful degradation) |
 | Layer 1 | Orchestrator Agent | Prioritizzazione mercati (CRITICAL/HIGH/MEDIUM/LOW/SKIP) |
@@ -42,7 +43,7 @@ v10.0.1: fix redeemer GS013 — CTF-only routing (bypass NRA bug) + firma v=1 (m
     - `market_making.py` — DISABILITATO v7.0 (necessita $2K+ budget)
     - `whale_copy.py` — copy trading (v8.0: size-aware filtering, v9.2.2: migrazione endpoint data-api.polymarket.com)
   - `validators/` — Layer 2: Signal Validator (v9.0)
-    - `signal_validator.py` — UnifiedSignal, SignalReport, 8 gate checks (edge, confidence, resolution, liquidity, spread, EV, DA, VPIN)
+    - `signal_validator.py` — UnifiedSignal, SignalReport, 8 gate checks (edge, confidence, resolution, liquidity, spread, EV net-of-fees, DA, VPIN) (v10.1: Gate 6 semplificato, MIN_CONFIDENCE 0.50)
     - `devils_advocate.py` — Contraddittorio deterministico (sport blacklist, edge sospetto, overconfident, volume basso, losing streak)
     - `signal_converter.py` — Adattatori da ogni strategia a UnifiedSignal (from_event/bond/whale/prediction/weather_opportunity)
   - `monitoring/` — Layer 5: Feedback Loop (v9.0)
@@ -66,7 +67,7 @@ v10.0.1: fix redeemer GS013 — CTF-only routing (bypass NRA bug) + firma v=1 (m
   - `utils/finlight_feed.py` — client Finlight API v2 (news + sentiment, v9.2.2: exponential backoff su 429)
   - `utils/binance_feed.py` — feed multi-crypto Binance WS (v9.2.2: backoff esponenziale con jitter, stale detection)
   - `utils/redeemer.py` — auto-redeem posizioni risolte via Safe proxy (v10.0.1: CTF-only routing, firma v=1; v9.2.3: Data API redeemable, strict conditionId)
-  - `utils/risk_manager.py` — Kelly sizing (v10.0: empirical Kelly blend), triple barrier, stop-loss cooldown, correlation check, flash move + VPIN v9.2.1
+  - `utils/risk_manager.py` — Kelly sizing (v10.1: spread dinamico pmxt, kurtosis haircut condizionale, empirical Kelly blend), triple barrier, stop-loss cooldown, correlation check, flash move + VPIN v9.2.1
   - `utils/whale_profiler.py` — Profiler wallet whale (whitelist automatica)
   - `.claude/rules/` — regole modulari per strategia (event-driven, risk, merge, general)
   - `.claude/agents/` — agenti custom (becker-analyst, strategy-debugger)
@@ -89,6 +90,26 @@ v10.0.1: fix redeemer GS013 — CTF-only routing (bypass NRA bug) + firma v=1 (m
 | arbitrage      | 0%          | DISABILITATO v9.1: exploit incrementNonce()    |
 | crypto_5min    | 0%          | ELIMINATO v7.0: Kelly negativo, fees 3.15%     |
 | market_making  | 0%          | ELIMINATO v7.0: necessita $2K+ budget          |
+
+## Modifiche v10.1.0 (10 bug critici profitability + spread dinamico pmxt)
+### Bug fix profitability (10 fix)
+1. **Doppio fee counting Signal Validator** (`signal_validator.py`): Gate 6 sottraeva fee da edge già net-of-fees → `ev = signal.edge` direttamente
+2. **win_prob sbagliata nel Kelly** (`bot.py`): passava `ev.confidence` (qualità segnale 0.5-0.9) invece di probabilità di vincita → ora `min(price + edge, 0.95/0.99)`
+3. **Doppia correzione fat-tail** (`risk_manager.py`): kurtosis haircut 0.50x + Empirical Kelly = doppia correzione → kurtosis applicato SOLO se `emp_factor is None`
+4. **NO-bias filter bloccava weather** (`risk_manager.py`): weather compra YES >0.80 legittimamente → aggiunto `"weather"` alle esenzioni
+5. **Edge gate proxy sbagliato** (`risk_manager.py`): `abs(0.5 - price)` non è edge reale, filtrava trade legittimi → commentato (Kelly + validator EV gate coprono)
+6. **Weather fee errata** (`weather.py`): usava fee 0.005 ma weather markets sono fee-free su Polymarket → `fee = 0.0`
+7. **MAX_BET_SIZE env default** (`config.py`): default "25" non allineato con v8.0 → cambiato a "40"
+8. **Bond certainty_score > 1.0** (`high_prob_bond.py`): politics+finance boost poteva eccedere 1.0 → `return min(score, 1.0)`
+9. **Segnali REVIEW scartati** (`bot.py`): segnali REVIEW con edge alto venivano silenziosamente ignorati → accettati se `edge >= 0.04` con log
+10. **Confidence gate troppo restrittivo** (`signal_validator.py`): `MIN_CONFIDENCE` 0.60→0.50 (soft gate: 1 fail→REVIEW, non SKIP)
+### Spread dinamico pmxt data-driven
+- **Fonte dati**: pmxt orderbook archive (`archive.pmxt.dev`), 500K+ price_change events, 500 mercati (Feb 2026)
+- **`_estimate_spread_cost(price)`** in `risk_manager.py`: sostituisce hardcoded `spread_cost = 0.005`
+- Calibrazione per zona di prezzo (mediana spread effettivo / 2 per exit taker):
+  - Bond 93-100c: 0.005 (invariato), High 80-93c: 0.010, **Mid 20-80c: 0.020** (era 0.005, 4x sottostimato), Longshot <20c: 0.010
+- Usato in `kelly_size()` e nel `Fees/Vol gate` di `can_trade()`
+- Impatto: Kelly sizing più accurato per weather/event-driven nella mid-range (meno trade con payoff inflato)
 
 ## Modifiche v10.0 (Empirical Kelly con Monte Carlo)
 ### Empirical Kelly — position sizing data-driven
@@ -192,7 +213,7 @@ v10.0.1: fix redeemer GS013 — CTF-only routing (bypass NRA bug) + firma v=1 (m
 
 ## Modifiche v9.0.0 (Architettura Agentica a 6 Layer)
 ### Layer 2: Signal Validator + Devil's Advocate
-- **SignalValidator** con 8 gate checks: min edge (>=0.02), confidence (>=60%), resolution clarity (<30gg), liquidita' (>=2x size), spread (<=5%), EV positivo post-fee, Devil's Advocate, VPIN toxic flow (v9.2.1)
+- **SignalValidator** con 8 gate checks: min edge (>=0.02), confidence (>=50% v10.1), resolution clarity (<30gg), liquidita' (>=2x size), spread (<=5%), EV positivo net-of-fees (v10.1), Devil's Advocate, VPIN toxic flow (v9.2.1)
 - **DevilsAdvocate** fast-path: sport blacklist per bond, edge sospetto (>0.20 non-arb), overconfident senza news, volume <$500, losing streak (3+)
 - **SignalConverter**: adattatori da ogni strategia a UnifiedSignal normalizzato
 - Arb gabagool e arbitrage DISABILITATI v9.1 (exploit incrementNonce())
@@ -292,7 +313,7 @@ v10.0.1: fix redeemer GS013 — CTF-only routing (bypass NRA bug) + firma v=1 (m
 - Il bot ha un risk manager integrato con Kelly criterion (proporzionale per strategia, v10.0: haircut empirico MC)
 - La strategia event_driven usa Finlight + GDELT per news sentiment in tempo reale (merge multi-fonte)
 - Il risk manager ha stop-loss cooldown (4h) per evitare loop distruttivi
-- Il Signal Validator filtra trade a bassa qualita' PRIMA dell'esecuzione (8 gate checks, incluso VPIN v9.2.1)
+- Il Signal Validator filtra trade a bassa qualita' PRIMA dell'esecuzione (8 gate checks, incluso VPIN v9.2.1). Gate 6 (EV) usa edge direttamente (net-of-fees, v10.1). MIN_CONFIDENCE=0.50 (v10.1). Segnali REVIEW con edge>=0.04 vengono accettati (v10.1)
 - VPIN monitor blocca trade su mercati con toxic flow (informed trading >= 0.7)
 - Flash move protection blocca trade su mercati con price velocity > 5c/60s
 - VAMP (Volume Adjusted Mid Price) sostituisce mid-price semplice nel WS feed
@@ -308,7 +329,11 @@ v10.0.1: fix redeemer GS013 — CTF-only routing (bypass NRA bug) + firma v=1 (m
 - Finlight ha exponential backoff su 429 (30s→300s cap) — API key potrebbe avere quota limitata
 - Whale copy usa `data-api.polymarket.com` (NON gamma-api, ritorna 404 dal 2026)
 - Binance WS ha backoff esponenziale con jitter su disconnessione (v9.2.2)
+- Lo spread_cost nel Kelly sizing è dinamico per zona di prezzo (v10.1: pmxt data-driven). NON riportare a hardcoded 0.005
+- Weather markets sono fee-free su Polymarket (v10.1): `fee = 0.0` in weather.py. NON aggiungere fee
+- Kurtosis haircut si applica SOLO se Empirical Kelly non è attivo (v10.1). NON applicare entrambi insieme
 - Becker Dataset in `/root/becker-dataset/data/` — fonte delle ottimizzazioni v8.0
+- pmxt orderbook archive in `archive.pmxt.dev/Polymarket` — fonte calibrazione spread v10.1 (download: `/dumps/polymarket_orderbook_YYYY-MM-DDTHH.parquet`)
 - Setup PG+Redis: `apt install postgresql redis-server && pip install psycopg2-binary redis`
 - Env vars storage: `DATABASE_DSN=postgresql://localhost/polymarket_bot`, `REDIS_URL=redis://localhost:6379`
 - Avvio: `python bot.py` (paper) / `python bot.py --live` (reale)
