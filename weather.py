@@ -260,7 +260,7 @@ class WeatherStrategy:
         price_no = market.prices.get("no", 0.5)
 
         # Fee deduction: non-crypto markets use ~0.005 fee rate
-        fee = price_yes * (1 - price_yes) * 0.005
+        fee = 0.0  # weather markets sono fee-free su Polymarket
         edge_yes = forecast_prob - price_yes - fee
         edge_no = (1.0 - forecast_prob) - price_no - fee
 

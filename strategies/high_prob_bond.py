@@ -443,7 +443,7 @@ class HighProbBondStrategy:
         if any(kw in q for kw in FINANCE_KW):
             score += 0.08
 
-        return score  # max 0.90 + category boost
+        return min(score, 1.0)  # cap a 1.0
 
     def _days_to_resolution(self, market: Market, now: datetime) -> float | None:
         """

@@ -528,10 +528,14 @@ class MultiStrategyBot:
                                 break
                             signal = from_event_opportunity(ev)
                             kelly = self.risk.kelly_size(
-                                ev.confidence, signal.price, "event_driven"
+                                min(signal.price + signal.edge, 0.95), signal.price, "event_driven"
                             )
                             report = self.signal_validator.validate(signal, trade_size=kelly)
-                            if report.result == ValidationResult.TRADE:
+                            if report.result == ValidationResult.TRADE or (
+                                report.result == ValidationResult.REVIEW and signal.edge >= 0.04
+                            ):
+                                if report.result == ValidationResult.REVIEW:
+                                    logger.info(f"[EVENT] REVIEW accepted: edge={signal.edge:.4f} >= 0.04")
                                 self.attribution.record_entry(
                                     ev.market.tokens.get(ev.side.lower(), ""),
                                     "event_driven", getattr(ev, 'signal_type', 'structural'),
@@ -552,10 +556,14 @@ class MultiStrategyBot:
                                     break
                                 signal = from_bond_opportunity(opp)
                                 kelly = self.risk.kelly_size(
-                                    opp.certainty_score, opp.price_yes, "high_prob_bond"
+                                    min(signal.price + signal.edge, 0.99), opp.price_yes, "high_prob_bond"
                                 )
                                 report = self.signal_validator.validate(signal, trade_size=kelly)
-                                if report.result == ValidationResult.TRADE:
+                                if report.result == ValidationResult.TRADE or (
+                                    report.result == ValidationResult.REVIEW and signal.edge >= 0.04
+                                ):
+                                    if report.result == ValidationResult.REVIEW:
+                                        logger.info(f"[BOND] REVIEW accepted: edge={signal.edge:.4f} >= 0.04")
                                     self.attribution.record_entry(
                                         opp.market.tokens.get("yes", ""),
                                         "high_prob_bond", "bond", opp.market.category,

@@ -63,7 +63,7 @@ class SignalValidator:
 
     # Soglie gate
     MIN_EDGE = 0.02
-    MIN_CONFIDENCE = 0.60
+    MIN_CONFIDENCE = 0.50
     MAX_DAYS_TO_RESOLUTION = 30
     MIN_LIQUIDITY_MULTIPLIER = 2.0
     MAX_SPREAD = 0.05
@@ -114,19 +114,12 @@ class SignalValidator:
         else:
             failed.append(f"spread={signal.spread:.4f} > {self.MAX_SPREAD}")
 
-        # Gate 6: EV positivo dopo fee round-trip
-        price = signal.price
-        if 0 < price < 1:
-            entry_fee = price * (1.0 - price) * self.FEE_RATE
-            exit_fee = price * (1.0 - price) * self.FEE_RATE
-            total_fee = entry_fee + exit_fee + 0.005  # + spread
-            ev = signal.edge - total_fee
-            if ev > 0:
-                passed.append(f"EV={ev:.4f} > 0 (fee_rt={total_fee:.4f})")
-            else:
-                failed.append(f"EV={ev:.4f} <= 0 (fee_rt={total_fee:.4f})")
+        # Gate 6: EV positivo — edge arriva già net-of-fees dalle strategie
+        ev = signal.edge
+        if ev > 0:
+            passed.append(f"EV={ev:.4f} > 0 (net-of-fees)")
         else:
-            passed.append("EV check skipped (price out of range)")
+            failed.append(f"EV={ev:.4f} <= 0 (net-of-fees)")
 
         # Gate 7: Devil's Advocate
         da_flagged = False

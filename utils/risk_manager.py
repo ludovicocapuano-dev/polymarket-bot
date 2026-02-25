@@ -169,7 +169,7 @@ class RiskManager:
         # Block BUY_YES when price > $0.80 (risk/reward terrible: risk $0.80 for $0.20)
         # Prefer BUY_NO in these situations instead
         # v7.5: Esenzione per high_prob_bond (compra YES near-certain by design)
-        if side and "YES" in side.upper() and price > 0.80 and strategy != "high_prob_bond":
+        if side and "YES" in side.upper() and price > 0.80 and strategy not in ("high_prob_bond", "weather"):
             return False, f"NO-bias filter: YES @${price:.2f} > $0.80 (prefer NO side)"
 
         # v8.0: Stop-loss cooldown — blocca ri-acquisto dopo stop loss
@@ -223,27 +223,22 @@ class RiskManager:
                     f"> max ${max_exposure:.2f} (15%)"
                 )
 
-        # v7.2: Edge gate — blocca trade se edge < 2x costo stimato round-trip
-        if price > 0:
-            rt_fee = 2 * price * (1.0 - price) * self.FEE_RATE + 0.005  # round-trip + spread
-            min_edge = 2.0 * rt_fee
-            # Usa 'edge' implicito dal prezzo se non passato esplicitamente
-            # Il check effettivo sara' nel Kelly (b <= 0 blocca gia'),
-            # ma qui filtriamo trade con margine troppo sottile
-            if 0 < price < 1 and size > 0:
-                implied_edge = abs(0.5 - price)  # proxy: distanza da 50/50
-                # Solo per trade con prezzo vicino a 50/50 dove edge e' minimo
-                if implied_edge < min_edge and strategy not in ("arb_gabagool", "arbitrage"):
-                    return False, (
-                        f"Edge gate: edge stimato {implied_edge:.4f} < "
-                        f"2x costo {min_edge:.4f} (rt_fee={rt_fee:.4f})"
-                    )
+        # v7.2: Edge gate — RIMOSSO v10.1: abs(0.5 - price) non è edge reale.
+        # Kelly (b*p-q <= 0 → size=0) e il validator EV gate coprono già il caso.
+        # if price > 0:
+        #     rt_fee = 2 * price * (1.0 - price) * self.FEE_RATE + 0.005
+        #     min_edge = 2.0 * rt_fee
+        #     if 0 < price < 1 and size > 0:
+        #         implied_edge = abs(0.5 - price)
+        #         if implied_edge < min_edge and strategy not in ("arb_gabagool", "arbitrage"):
+        #             return False, (...)
+
 
         # v7.3: Fees/Vol ratio gate (Bouchaud Theory of Financial Risk)
         # Blocca trade quando le fee round-trip superano il 30% della volatilità attesa.
         # Per prezzi estremi (vicini a 0 o 1), le fee mangiano qualsiasi profitto possibile.
         if price > 0 and price < 1:
-            rt_fee = 2.0 * price * (1.0 - price) * self.FEE_RATE + 0.005
+            rt_fee = 2.0 * price * (1.0 - price) * self.FEE_RATE + self._estimate_spread_cost(price)
             expected_vol = price * (1.0 - price)  # vol binomiale del prezzo
             if expected_vol > 0 and rt_fee > 0.30 * expected_vol:
                 return False, (
@@ -297,6 +292,22 @@ class RiskManager:
     # Fee rate Polymarket (taker). Maker = 0.
     FEE_RATE = 0.0625
 
+    @staticmethod
+    def _estimate_spread_cost(price: float) -> float:
+        """
+        v10.1: Spread cost stimato per exit taker, basato su pmxt orderbook data.
+        Dati: 500K+ price_change events, 500 mercati (Feb 2026).
+        Spread = costo di attraversamento del book in uscita (exit taker).
+        """
+        if price >= 0.93:
+            return 0.005   # bond zone: spread stretto, exit cost ~metà di 0.010
+        elif price >= 0.80:
+            return 0.010   # high: spread moderato
+        elif price >= 0.20:
+            return 0.020   # mid range (weather/event): spread ampio
+        else:
+            return 0.010   # longshot: spread moderato
+
     def kelly_size(
         self,
         win_prob: float,
@@ -334,7 +345,7 @@ class RiskManager:
         else:
             entry_fee = price * (1.0 - price) * self.FEE_RATE
         exit_fee = price * (1.0 - price) * self.FEE_RATE  # exit sempre taker
-        spread_cost = 0.005  # 0.5% stimato
+        spread_cost = self._estimate_spread_cost(price)  # v10.1: pmxt data-driven
         total_cost = entry_fee + exit_fee + spread_cost
 
         # Payoff netto dopo fee round-trip
@@ -348,13 +359,6 @@ class RiskManager:
         if kelly <= 0:
             return 0.0
 
-        # v7.3: Fat Tail Kelly Correction (Bouchaud + Taleb + Vince)
-        # Kelly standard assume distribuzioni gaussiane, ma i prediction market
-        # hanno code grasse (kurtosis >> 3). Senza correzione, Kelly sovrastima
-        # la size ottimale. Formula: kelly *= 1/(1 + kurtosis/4)
-        KURTOSIS_PROXY = 4.0  # tipica per prediction markets
-        kelly *= 1.0 / (1.0 + KURTOSIS_PROXY / 4.0)
-
         # Dynamic fraction per strategia
         base_frac = self.KELLY_FRACTIONS.get(strategy, self.config.kelly_fraction)
 
@@ -363,11 +367,18 @@ class RiskManager:
             base_frac = min(base_frac * 1.30, 0.40)  # Cap 2/5 Kelly
 
         # v10.0: Empirical Kelly — haircut data-driven basato su MC
+        emp_factor = None
         if self.empirical_kelly is not None:
             emp_factor = self.empirical_kelly.get_adjustment_factor(strategy)
             if emp_factor is not None:
                 # Blend 70% empirical + 30% statico (floor di sicurezza)
                 base_frac = base_frac * (0.70 * emp_factor + 0.30)
+
+        # v7.3: Fat Tail Kelly Correction (Bouchaud + Taleb + Vince)
+        # Applicato SOLO se Empirical Kelly non è attivo (altrimenti doppia correzione fat-tail)
+        if emp_factor is None:
+            KURTOSIS_PROXY = 4.0  # tipica per prediction markets
+            kelly *= 1.0 / (1.0 + KURTOSIS_PROXY / 4.0)
 
         frac = kelly * base_frac
 
