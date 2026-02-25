@@ -394,12 +394,11 @@ class Redeemer:
             condition_id_bytes = bytes.fromhex(condition_id_hex)
             collateral = Web3.to_checksum_address(USDC_ADDRESS)
 
-            # Per mercati neg_risk, il target e' il NegRiskAdapter
-            # Per mercati normali, il target e' il CTF direttamente
-            if pos.neg_risk:
-                target = Web3.to_checksum_address(NEG_RISK_ADAPTER)
-            else:
-                target = Web3.to_checksum_address(CTF_ADDRESS)
+            # v10.0.1: Sempre via CTF direttamente (anche neg_risk).
+            # Il Safe proxy ha un bug ABI (GS013) con certi indirizzi target
+            # (es. NegRiskAdapter). CTF.redeemPositions gestisce tutte le
+            # condizioni, incluse neg_risk — verificato via simulazione on-chain.
+            target = Web3.to_checksum_address(CTF_ADDRESS)
 
             # Encode dei dati della chiamata
             # web3.py v6+: encode_abi (snake_case), v5: encodeABI (camelCase)
@@ -434,38 +433,22 @@ class Redeemer:
         for attempt in range(max_retries):
             try:
                 from web3 import Web3
-                from eth_account.messages import defunct_hash_message
 
                 w3 = self._w3
                 zero_addr = "0x0000000000000000000000000000000000000000"
 
-                # Ottieni il nonce del Safe
-                safe_nonce = self._safe.functions.nonce().call()
-
-                # Calcola il transaction hash del Safe
                 data_bytes = bytes.fromhex(data.replace("0x", ""))
-                tx_hash = self._safe.functions.getTransactionHash(
-                    Web3.to_checksum_address(to),  # to
-                    0,          # value
-                    data_bytes,  # data
-                    0,          # operation (Call)
-                    0,          # safeTxGas
-                    0,          # baseGas
-                    0,          # gasPrice
-                    zero_addr,  # gasToken
-                    zero_addr,  # refundReceiver
-                    safe_nonce,  # _nonce
-                ).call()
 
-                # Firma il tx hash con la chiave EOA
-                sign_fn = getattr(self._account, 'unsafe_sign_hash', None) or getattr(self._account, 'signHash')
-                signed = sign_fn(tx_hash)
-
-                # Costruisci la firma nel formato Safe (r, s, v)
+                # v10.0.1: Firma v=1 (approved hash / msg.sender == owner).
+                # In Safe v1.3.0 checkNSignatures, v=1 verifica:
+                #   require(msg.sender == currentOwner || approvedHashes[...])
+                # Poiche' il tx e' inviato dall'EOA (owner), il check passa
+                # senza bisogno di ECDSA. Piu' robusto del signing tradizionale
+                # che soffriva di GS013 con certi target address.
                 signature = (
-                    signed.r.to_bytes(32, "big")
-                    + signed.s.to_bytes(32, "big")
-                    + signed.v.to_bytes(1, "big")
+                    int(self._account.address, 16).to_bytes(32, "big")
+                    + b"\x00" * 32
+                    + b"\x01"
                 )
 
                 exec_fn = self._safe.functions.execTransaction(
