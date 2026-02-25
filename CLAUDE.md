@@ -2,7 +2,7 @@
 - Rispondi sempre in italiano
 - Nessuna convenzione particolare di codice
 
-# Progetto: Polymarket Multi-Strategy Trading Bot (v10.0)
+# Progetto: Polymarket Multi-Strategy Trading Bot (v10.0.1)
 Repo: https://github.com/ludovicocapuano-dev/polymarket-bot (privato)
 Bot automatico di trading su Polymarket con 5 strategie attive (4 eliminate per performance negativa o sicurezza).
 v8.0 ottimizzato con analisi Becker Dataset (115M trade, 381K mercati risolti).
@@ -13,6 +13,7 @@ v9.2.1: VPIN toxic flow detection, VAMP pricing (Stoikov), flash move protection
 v9.2.2: fix feed P0/P1 (redeemer conditionId, GDELT rate limit, Finlight backoff, whale API migration, Binance WS).
 v9.2.3: Data API redeemable fast-path (1 chiamata vs N), strict conditionId validation (no zfill).
 v10.0: Empirical Kelly con Monte Carlo — position sizing data-driven (bootstrap 10K paths, CV_edge haircut).
+v10.0.1: fix redeemer GS013 — CTF-only routing (bypass NRA bug) + firma v=1 (msg.sender == owner).
 
 ## Architettura v9.0 — 6 Layer
 
@@ -64,7 +65,7 @@ v10.0: Empirical Kelly con Monte Carlo — position sizing data-driven (bootstra
   - `utils/vpin_monitor.py` — VPIN toxic flow detection (Easley, Lopez de Prado, O'Hara 2012) v9.2.1
   - `utils/finlight_feed.py` — client Finlight API v2 (news + sentiment, v9.2.2: exponential backoff su 429)
   - `utils/binance_feed.py` — feed multi-crypto Binance WS (v9.2.2: backoff esponenziale con jitter, stale detection)
-  - `utils/redeemer.py` — auto-redeem posizioni risolte via Safe proxy (v9.2.3: Data API redeemable, strict conditionId, gas estimation, retry on revert)
+  - `utils/redeemer.py` — auto-redeem posizioni risolte via Safe proxy (v10.0.1: CTF-only routing, firma v=1; v9.2.3: Data API redeemable, strict conditionId)
   - `utils/risk_manager.py` — Kelly sizing (v10.0: empirical Kelly blend), triple barrier, stop-loss cooldown, correlation check, flash move + VPIN v9.2.1
   - `utils/whale_profiler.py` — Profiler wallet whale (whitelist automatica)
   - `.claude/rules/` — regole modulari per strategia (event-driven, risk, merge, general)
@@ -111,6 +112,22 @@ v10.0: Empirical Kelly con Monte Carlo — position sizing data-driven (bootstra
 - Eccezione in MC → try/except in bot.py, log warning, sizing statico
 ### Performance
 - numpy vectorized, 10K paths x 100 trade = ~27ms
+
+## Modifiche v10.0.1 (Fix redeemer GS013)
+### Root cause
+- Il Safe proxy Polymarket (`0x22051C50...`) con implementazione custom (`0xE51abdf8...`) ha un bug ABI: `execTransaction` reverta con GS013 ("Signatures data too short") per certi indirizzi target (NegRiskAdapter) con data non-vuoto
+- Tutti e 3 i mercati falliti erano `negRisk=True` → routing via NRA → GS013
+- L'encoding ABI era corretto (verificato byte per byte), il problema è nel decoder del Safe custom
+### Fix 1: CTF-only routing
+- **Rimosso branch neg_risk → NRA**: tutte le redemption passano direttamente per CTF (`0x4D97DCd97eC945f40cF65F87097ACe5EA0476045`)
+- `CTF.redeemPositions()` gestisce tutte le condizioni incluse neg_risk — verificato via simulazione on-chain
+### Fix 2: Firma v=1 (msg.sender == owner)
+- **Rimossa firma ECDSA**: sostituita con signature v=1 (`r=owner_address, s=0x00, v=1`)
+- In Safe v1.3.0 `checkNSignatures`, v=1 verifica `msg.sender == currentOwner` — nessun signing necessario quando l'EOA (owner) invia la TX
+- Rimossi: `getTransactionHash`, `defunct_hash_message`, logica di signing
+### Verifica
+- Simulazione eth_call OK per tutti e 3 i mercati falliti (1389999, 1413735, 1413736)
+- Redemption manuale on-chain riuscita per tutti e 3
 
 ## Modifiche v9.2.1 (Stoikov + riallocazione post-Gemchange)
 ### VPIN Toxic Flow Detection
@@ -283,7 +300,9 @@ v10.0: Empirical Kelly con Monte Carlo — position sizing data-driven (bootstra
 - Il Correlation Monitor limita esposizione per tema (max 40% capitale)
 - Il Drift Detector segnala cali di win rate >30% vs storico
 - L'Empirical Kelly (v10.0) richiede numpy e almeno 30 trade chiusi per strategia — sotto questa soglia usa sizing statico v9.x
-- Il redeemer auto-riscuote vincite da mercati risolti via Safe proxy — conditionId DEVE essere esattamente 64 hex chars (v9.2.3: strict validation, no padding)
+- Il redeemer auto-riscuote vincite da mercati risolti via Safe proxy — SEMPRE via CTF direttamente, MAI via NRA (v10.0.1: bypass bug GS013 del Safe custom)
+- Il redeemer usa firma v=1 (msg.sender == owner) invece di ECDSA — piu' robusto con il Safe proxy Polymarket (v10.0.1)
+- conditionId DEVE essere esattamente 64 hex chars (v9.2.3: strict validation, no padding)
 - Il redeemer usa Data API (`data-api.polymarket.com/positions`) come fonte primaria per detectare posizioni redeemable (v9.2.3), Gamma API come fallback
 - GDELT usa query semplici (1 per categoria) con intervallo 10s e circuit breaker escalante (v9.2.2)
 - Finlight ha exponential backoff su 429 (30s→300s cap) — API key potrebbe avere quota limitata
