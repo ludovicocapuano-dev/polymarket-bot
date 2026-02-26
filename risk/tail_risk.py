@@ -1,8 +1,12 @@
 """
-Tail Risk Agent v9.0 — Analisi worst-case e VaR.
+Tail Risk Agent v10.2 — CVaR (Expected Shortfall) + VaR.
+
+MIT 18.S096 Lecture 14 (Kempthorne): CVaR = E[Loss | Loss > VaR]
+Cattura la severità della coda, non solo la soglia.
 
 - Worst-case: tutte le posizioni perdono
-- VaR 95%: ~40% esposizione (assumendo 60% WR)
+- VaR 95%: approssimazione normale binomiale
+- CVaR 95%: expected shortfall (media delle perdite oltre VaR)
 - Alert se max_loss > 50% capitale
 """
 
@@ -17,6 +21,7 @@ logger = logging.getLogger(__name__)
 class TailRiskReport:
     max_loss_scenario: float    # $ persi se TUTTE le posizioni perdono
     var_95: float               # Value at Risk al 95%
+    cvar_95: float = 0.0        # v10.2: CVaR (Expected Shortfall) al 95%
     concentrated_positions: list[dict] = field(default_factory=list)  # posizioni > 10% capitale
     risk_level: str = "NORMAL"  # NORMAL, ELEVATED, CRITICAL
     n_positions: int = 0
@@ -29,6 +34,7 @@ class TailRiskReport:
             f"TailRisk[{self.risk_level}] "
             f"MaxLoss=${self.max_loss_scenario:+.2f} "
             f"VaR95=${self.var_95:.2f} "
+            f"CVaR95=${self.cvar_95:.2f} "
             f"Exposed=${self.total_exposed:.2f}/{self.capital:.2f} "
             f"({self.exposure_pct:.1%}) "
             f"Pos={self.n_positions} "
@@ -37,7 +43,7 @@ class TailRiskReport:
 
 
 class TailRiskAgent:
-    """Analisi tail risk per il portafoglio."""
+    """Analisi tail risk per il portafoglio con CVaR."""
 
     # Soglie
     CRITICAL_LOSS_PCT = 0.50    # >50% capitale = CRITICAL
@@ -49,10 +55,10 @@ class TailRiskAgent:
         self.risk_manager = risk_manager
 
     def analyze(self) -> TailRiskReport:
-        """Esegue analisi tail risk completa."""
+        """Esegue analisi tail risk completa con CVaR."""
         if not self.risk_manager:
             return TailRiskReport(
-                max_loss_scenario=0, var_95=0, risk_level="NORMAL"
+                max_loss_scenario=0, var_95=0, cvar_95=0, risk_level="NORMAL"
             )
 
         rm = self.risk_manager
@@ -61,7 +67,7 @@ class TailRiskAgent:
 
         if not open_trades:
             return TailRiskReport(
-                max_loss_scenario=0, var_95=0, risk_level="NORMAL",
+                max_loss_scenario=0, var_95=0, cvar_95=0, risk_level="NORMAL",
                 capital=capital
             )
 
@@ -70,22 +76,33 @@ class TailRiskAgent:
         # Worst-case: tutte le posizioni perdono
         max_loss = -total_exposed
 
-        # VaR 95%: usando distribuzione binomiale
-        # Con WR=60%, la probabilità di perdere > X posizioni è calcolata
-        # Semplificazione: VaR95 ≈ 40% dell'esposizione totale
-        # (basato su: con 60% WR, nel 5% worst case perdiamo ~40% extra)
+        # VaR 95%: usando distribuzione binomiale con approssimazione normale
         n = len(open_trades)
         avg_size = total_exposed / n if n > 0 else 0
 
-        # Stima perdite nel 5% worst case usando approssimazione normale
-        # E[losses] = n * (1-WR)
-        # Std = sqrt(n * WR * (1-WR))
+        # E[losses] = n * (1-WR), Std = sqrt(n * WR * (1-WR))
         # VaR95 = E[losses] + 1.645 * Std
         wr = self.ASSUMED_WIN_RATE
         expected_losses = n * (1 - wr)
         std_losses = math.sqrt(n * wr * (1 - wr)) if n > 0 else 0
         var_95_count = expected_losses + 1.645 * std_losses
         var_95 = min(var_95_count * avg_size, total_exposed)
+
+        # ── CVaR 95% (Expected Shortfall) — MIT 18.S096 Lecture 14 ──
+        # CVaR = E[Loss | Loss > VaR]
+        # Per distribuzione normale: CVaR_alpha = mu + sigma * phi(z_alpha) / (1-alpha)
+        # dove phi è la PDF normale e z_alpha = 1.645 per alpha=0.95
+        #
+        # phi(1.645) = 0.10314 (standard normal PDF at z=1.645)
+        # CVaR_95 = mean_loss + sigma * 0.10314 / 0.05 = mean_loss + sigma * 2.063
+        PHI_Z95 = 0.10314  # standard normal PDF at z=1.645
+        ALPHA = 0.95
+        mean_loss_dollars = expected_losses * avg_size
+        std_loss_dollars = std_losses * avg_size
+        cvar_95 = min(
+            mean_loss_dollars + std_loss_dollars * PHI_Z95 / (1.0 - ALPHA),
+            total_exposed
+        )
 
         # Posizioni concentrate (>10% capitale)
         concentrated = []
@@ -111,6 +128,7 @@ class TailRiskAgent:
         report = TailRiskReport(
             max_loss_scenario=max_loss,
             var_95=var_95,
+            cvar_95=cvar_95,
             concentrated_positions=concentrated,
             risk_level=risk_level,
             n_positions=n,
@@ -124,6 +142,11 @@ class TailRiskAgent:
             logger.warning(
                 f"[TAIL_RISK] CRITICAL: max loss ${abs(max_loss):.2f} "
                 f"= {loss_pct:.1%} del capitale!"
+            )
+        if cvar_95 > capital * 0.40:
+            logger.warning(
+                f"[TAIL_RISK] CVaR95=${cvar_95:.2f} > 40% capitale "
+                f"— rischio coda elevato"
             )
 
         return report

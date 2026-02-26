@@ -48,7 +48,7 @@ class EmpiricalKelly:
     l'incertezza dell'edge e calcolare un fattore di haircut.
     """
 
-    MIN_TRADES = 30               # minimo trade chiusi per attivare
+    MIN_TRADES = 15               # v10.2: ridotto da 30 — blend 70/30 compensa rumore
     N_PATHS = 10_000              # paths Monte Carlo
     DRAWDOWN_PERCENTILE = 95      # target percentile per max drawdown
     MAX_CACHE_AGE = 3600          # cache valida 1 ora

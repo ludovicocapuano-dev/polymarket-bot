@@ -386,12 +386,13 @@ class DataDrivenStrategy:
 
     def _analyze_general_market(self, market: Market) -> Prediction | None:
         """
-        Analizza mercati non-crypto cercando anomalie di prezzo.
-        Segnali di informazione asimmetrica:
-        - Mispricing: YES + NO != 1.0
-        - Spread anomalo: ampio = incertezza = opportunita'
-        - Mercati sbilanciati con volume significativo
+        v10.2: DISABILITATO — segnali general hanno EV~0.
+        YES+NO!=1.0 e' quasi sempre quote staleness, non mispricing reale.
+        Segnale contrarian non ha ancoraggio fondamentale.
+        Il capitale viene rediretto alla sotto-strategia crypto che ha edge.
         """
+        return None
+        # === CODICE ORIGINALE SOTTO (preservato per riferimento) ===
         market_prob = market.prices.get("yes", 0.5)
         price_no = market.prices.get("no", 0.5)
         total = market_prob + price_no

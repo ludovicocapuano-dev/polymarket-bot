@@ -298,6 +298,7 @@ class MultiStrategyBot:
         self.orchestrator = OrchestratorAgent()
 
         # ── v9.0: Layer 4 — Execution Engine ──
+        # v10.2 TODO: route trade >0 through execution_agent.execute_plan() for TWAP
         self.execution_agent = ExecutionAgent(api=self.api)
 
         # ── v9.0: Layer 0 — Storage (graceful: se non configurato, noop) ──
@@ -398,6 +399,12 @@ class MultiStrategyBot:
                 # ── v9.0: Orchestrator — prioritizzazione mercati ──
                 try:
                     orch_tasks = await self.orchestrator.prioritize(shared_markets)
+                    # v10.2: Enforce orchestrator routing — rimuovi SKIP markets
+                    if hasattr(self, '_priority_map') and self._priority_map:
+                        shared_markets = [
+                            m for m in shared_markets
+                            if self._priority_map.get(m.id, 'LOW') != 'SKIP'
+                        ]
                     if orch_tasks:
                         # Classifica temi per il correlation monitor
                         for task in orch_tasks:
@@ -710,7 +717,7 @@ class MultiStrategyBot:
                     except Exception as e:
                         logger.warning(f"[v10.0] Errore empirical kelly: {e}")
 
-                # ── v9.0: Tail Risk (ogni 200 cicli) ──
+                # ── v9.0: Tail Risk + Portfolio VaR (ogni 200 cicli) ──
                 if self._cycle % 200 == 0 and self._cycle > 0:
                     try:
                         tail_report = self.tail_risk.analyze()
@@ -720,8 +727,25 @@ class MultiStrategyBot:
                                 f"${abs(tail_report.max_loss_scenario):.2f} "
                                 f"({tail_report.exposure_pct:.0%} capitale)"
                             )
+                        if tail_report.cvar_95 > 0:
+                            logger.info(
+                                f"[TAIL_RISK] CVaR95=${tail_report.cvar_95:.2f} "
+                                f"(VaR95=${tail_report.var_95:.2f})"
+                            )
                     except Exception as e:
                         logger.warning(f"[v9.0] Errore tail risk: {e}")
+                    # v10.2: Portfolio VaR con matrice di covarianza
+                    try:
+                        if self.correlation_monitor:
+                            pvar = self.correlation_monitor.portfolio_var()
+                            if pvar["n_positions"] > 1:
+                                logger.info(
+                                    f"[PORTFOLIO_VAR] VaR95=${pvar['portfolio_var']:.2f} "
+                                    f"diversification={pvar['diversification_ratio']:.2%} "
+                                    f"({pvar['n_positions']} pos)"
+                                )
+                    except Exception as e:
+                        logger.warning(f"[v10.2] Errore portfolio VaR: {e}")
 
                 # Salva trade periodicamente
                 if self._cycle % 10 == 0:

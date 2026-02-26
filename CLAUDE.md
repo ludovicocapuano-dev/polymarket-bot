@@ -91,6 +91,37 @@ v10.1.0: 10 bug critici profitability + spread dinamico pmxt data-driven.
 | crypto_5min    | 0%          | ELIMINATO v7.0: Kelly negativo, fees 3.15%     |
 | market_making  | 0%          | ELIMINATO v7.0: necessita $2K+ budget          |
 
+
+## Modifiche v10.2.0 (6 fix profittabilita')
+### Fix P0: Segnali general data_driven disabilitati
+- `_analyze_general_market()` ritorna None immediatamente
+- YES+NO!=1.0 e' quasi sempre quote staleness, non mispricing reale
+- Segnale contrarian senza ancoraggio fondamentale
+- 30% allocazione ora va interamente alla sotto-strategia crypto (edge reale)
+
+### Fix P0: Whale win_rate fallback corretto
+- Wallet con PnL>0 ma no wins/losses: fallback 0.58→0.62 (sopra soglia MIN_WHALE_WIN_RATE)
+- Wallet senza dati verificabili: fallback 0.57→0.0 (rifiutato)
+- API exception: fallback 0.57→0.0 (rifiutato)
+- Ora solo wallet con dati reali o PnL positivo confermato passano il filtro
+
+### Fix P1: EmpiricalKelly MIN_TRADES 30→15
+- Riduce il periodo di undersizing sistematico (kurtosis haircut 50%)
+- Il blend 70/30 (empirical/prior) compensa il rumore con meno trade
+- Attivazione in ~1-2 settimane invece di 4-8
+
+### Fix P2: Weather smart_buy
+- buy_market() (taker) sostituito con smart_buy() (maker-first)
+- Meno slippage sugli ordini weather
+
+### Fix P2: ExecutionAgent TODO
+- Marcato per collegamento futuro (TWAP per trade >0)
+- Attualmente tutti i trade passano direttamente a smart_buy()
+
+### Fix P2: Orchestrator SKIP filtering
+- Mercati classificati SKIP (volume < 100) vengono ora esclusi da shared_markets
+- Riduce cicli di calcolo inutili su mercati dormienti
+
 ## Modifiche v10.1.0 (10 bug critici profitability + spread dinamico pmxt)
 ### Bug fix profitability (10 fix)
 1. **Doppio fee counting Signal Validator** (`signal_validator.py`): Gate 6 sottraeva fee da edge già net-of-fees → `ev = signal.edge` direttamente

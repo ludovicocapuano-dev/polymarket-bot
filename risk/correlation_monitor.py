@@ -1,12 +1,15 @@
 """
-Correlation Monitor v9.0 — Limite esposizione per tema.
+Correlation Monitor v10.2 — Portfolio VaR con matrice di covarianza.
 
-Max 40% capitale per tema (politics, crypto, weather, geopolitical, sports, finance).
-Previene cluster risk: se tutto il portafoglio è su politics e un black swan
-politico colpisce, si perde tutto.
+MIT 18.S096 Lecture 7 (Abbott): VaR = z * sqrt(w^T * Sigma * w)
+MIT 18.S096 Lecture 14 (Kempthorne): CVaR = E[Loss | Loss > VaR]
+
+v9.0: Limite 40% per tema (keyword-based)
+v10.2: Portfolio VaR con covarianza stimata + diversification ratio
 """
 
 import logging
+import math
 from collections import defaultdict
 from typing import Optional
 
@@ -49,9 +52,16 @@ THEME_KEYWORDS = {
 
 MAX_THEME_EXPOSURE_PCT = 0.40  # 40% del capitale
 
+# ── Correlazioni stimate per tema (MIT Lecture 7: Abbott) ──
+# Intra-tema: posizioni nello stesso tema sono correlate
+# Inter-tema: posizioni in temi diversi hanno bassa correlazione
+# Basato su: prediction markets hanno binary outcomes che clusterizzano per tema
+RHO_INTRA = 0.40   # correlazione dentro lo stesso tema
+RHO_INTER = 0.10   # correlazione tra temi diversi
+
 
 class CorrelationMonitor:
-    """Monitora esposizione per tema e blocca trade che superano il limite."""
+    """Monitora esposizione per tema e calcola Portfolio VaR."""
 
     def __init__(self, risk_manager=None):
         self.risk_manager = risk_manager
@@ -132,3 +142,120 @@ class CorrelationMonitor:
             theme = self._market_themes.get(t.market_id, "other")
             report[theme] += t.size
         return dict(report)
+
+    # ── Portfolio VaR con matrice di covarianza (MIT 18.S096) ──────
+
+    def portfolio_var(self, confidence: float = 0.95) -> dict:
+        """
+        v10.2: Portfolio VaR con matrice di covarianza (MIT 18.S096 Lecture 7).
+
+        Formula: VaR = z * sqrt(w^T * Sigma * w)
+        dove:
+        - w = vettore esposizioni ($) per posizione
+        - Sigma = matrice covarianza stimata (rho * sigma_i * sigma_j)
+        - z = 1.645 (95%) o 2.33 (99%)
+
+        Sigma stimata con correlazioni per tema:
+        - Stesso tema (rho_intra=0.40): elections correlano con elections
+        - Temi diversi (rho_inter=0.10): elections poco correlate con weather
+
+        sigma_i per binary outcome: sqrt(p_i * (1 - p_i)) * size_i
+
+        Returns dict con: portfolio_var, sum_individual_var, diversification_ratio
+        """
+        if not self.risk_manager or not self.risk_manager.open_trades:
+            return {
+                "portfolio_var": 0.0,
+                "sum_individual_var": 0.0,
+                "diversification_ratio": 1.0,
+                "n_positions": 0,
+            }
+
+        open_trades = self.risk_manager.open_trades
+        n = len(open_trades)
+
+        # z-score per confidence level
+        z = 1.645 if confidence <= 0.95 else 2.33
+
+        # Calcola sigma (volatilità $) per ogni posizione
+        # Per binary outcome: sigma = size * sqrt(p * (1-p))
+        sigmas = []
+        themes = []
+        for t in open_trades:
+            p = max(0.01, min(0.99, t.price))  # clamp per evitare sigma=0
+            sigma_i = t.size * math.sqrt(p * (1.0 - p))
+            sigmas.append(sigma_i)
+            themes.append(self._market_themes.get(t.market_id, "other"))
+
+        # VaR individuale (sum, senza correlazione)
+        sum_individual_var = z * sum(sigmas)
+
+        # Portfolio variance: w^T * Sigma * w
+        # Sigma_ij = rho_ij * sigma_i * sigma_j
+        # Calcoliamo la forma quadratica direttamente (O(n^2), n = posizioni aperte)
+        portfolio_variance = 0.0
+        for i in range(n):
+            for j in range(n):
+                if i == j:
+                    rho = 1.0
+                elif themes[i] == themes[j]:
+                    rho = RHO_INTRA
+                else:
+                    rho = RHO_INTER
+                portfolio_variance += rho * sigmas[i] * sigmas[j]
+
+        portfolio_var = z * math.sqrt(max(0.0, portfolio_variance))
+
+        # Diversification ratio: quanto il portafoglio beneficia della diversificazione
+        # 1.0 = nessun beneficio (tutto correlato), <1.0 = diversificazione riduce rischio
+        diversification_ratio = (
+            portfolio_var / sum_individual_var if sum_individual_var > 0 else 1.0
+        )
+
+        result = {
+            "portfolio_var": round(portfolio_var, 2),
+            "sum_individual_var": round(sum_individual_var, 2),
+            "diversification_ratio": round(diversification_ratio, 4),
+            "n_positions": n,
+        }
+
+        logger.info(
+            f"[PORTFOLIO_VAR] VaR95=${portfolio_var:.2f} "
+            f"(individuale=${sum_individual_var:.2f}, "
+            f"diversification={diversification_ratio:.2%})"
+        )
+
+        return result
+
+    def portfolio_cvar(self, confidence: float = 0.95) -> float:
+        """
+        v10.2: Portfolio CVaR (Expected Shortfall) — MIT 18.S096 Lecture 14.
+
+        CVaR = E[Loss | Loss > VaR]
+        Per normale: CVaR = sigma_portfolio * phi(z) / (1-alpha)
+        dove phi(z) è la PDF standard normale al quantile z.
+        """
+        var_report = self.portfolio_var(confidence)
+        portfolio_var_val = var_report["portfolio_var"]
+
+        if portfolio_var_val <= 0:
+            return 0.0
+
+        # z e phi(z) per il livello di confidenza
+        if confidence <= 0.95:
+            z = 1.645
+            phi_z = 0.10314  # PDF standard normale a z=1.645
+        else:
+            z = 2.33
+            phi_z = 0.02652  # PDF standard normale a z=2.33
+
+        alpha = confidence
+        # sigma_portfolio = portfolio_var / z
+        sigma_p = portfolio_var_val / z if z > 0 else 0
+        cvar = sigma_p * phi_z / (1.0 - alpha)
+
+        logger.debug(
+            f"[PORTFOLIO_CVAR] CVaR{confidence:.0%}=${cvar:.2f} "
+            f"(VaR=${portfolio_var_val:.2f})"
+        )
+        return round(cvar, 2)

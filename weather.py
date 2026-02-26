@@ -551,7 +551,8 @@ class WeatherStrategy:
 
             self.risk.close_trade(token_id, won=won, pnl=pnl)
         else:
-            result = self.api.buy_market(token_id, size)
+            # v10.2: smart_buy per maker-first pricing (was buy_market)
+            result = self.api.smart_buy(token_id, size)
             if result:
                 # v7.4: Aggiorna prezzo con fill reale dal CLOB
                 if isinstance(result, dict) and result.get("_fill_price"):

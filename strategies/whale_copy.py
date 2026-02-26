@@ -451,19 +451,20 @@ class WhaleCopyStrategy:
                 if wins + losses > 0:
                     stats["win_rate"] = wins / (wins + losses)
                 elif stats["total_trades"] > 0 and stats["pnl_30d"] > 0:
-                    # Stima conservativa basata su PnL positivo
-                    stats["win_rate"] = 0.58
+                    # v10.2: PnL positivo su wallet curato → fallback sopra soglia
+                    stats["win_rate"] = 0.62
                 else:
-                    # Whale noti hanno win rate documentato alto
-                    # Usa stima conservativa per i wallet nella lista
-                    stats["win_rate"] = 0.57
-                    stats["total_trades"] = max(stats["total_trades"], 100)
+                    # v10.2: nessun dato verificabile → rifiuta (0.0 < MIN_WHALE_WIN_RATE)
+                    stats["win_rate"] = 0.0
+                    logger.warning(
+                        f"[WHALE] No win/loss data per {address[:10]}... — win_rate=0.0 (reject)"
+                    )
 
         except Exception as e:
             logger.warning(f"[WHALE] Errore fetch stats {address[:10]}...: {e}")
-            # Fallback per wallet noti: usa stime conservative documentate
-            stats["win_rate"] = 0.57
-            stats["total_trades"] = 100
+            # v10.2: API failure → nessun dato verificabile, rifiuta
+            stats["win_rate"] = 0.0
+            stats["total_trades"] = 0
 
         self._whale_stats[address] = stats
         return stats
@@ -504,7 +505,9 @@ class WhaleCopyStrategy:
                 self._load_whitelist()
 
             wl_entry = self._whitelist.get(wt.wallet_address)
-            if wl_entry and wl_entry.get("recommendation") == "SKIP":
+            wl_entry = self._whitelist.get(wt.wallet_address)
+            if wl_entry and wl_entry.get("recommendation") == "SKIP" and wl_entry.get("score", 0) > 0:
+                # v10.2: ignora SKIP se score=0 (data_quality=INSUFFICIENT)
                 logger.debug(
                     f"[WHALE] SKIP profiler: {wt.whale_name} "
                     f"score={wl_entry.get('score', 0):.2f}"

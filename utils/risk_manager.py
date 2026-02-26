@@ -453,12 +453,18 @@ class RiskManager:
 
     def _recent_volatility(self, strategy: str, lookback: int = 20) -> float:
         """
-        v7.3: Stima volatilità recente con MAD (Bouchaud) — robusto a outlier.
+        v10.2: GARCH(1,1) con exponential weighting (MIT 18.S096 Lectures 7+9).
 
-        Usa Median Absolute Deviation invece di varianza perché:
-        1. Robusto a outlier (code grasse)
-        2. Breakdown point 50% vs 0% della varianza
-        3. MAD * 1.4826 = stima consistente di sigma per dati gaussiani
+        Sostituisce MAD con GARCH(1,1):
+          sigma_t^2 = omega + alpha * epsilon_{t-1}^2 + beta * sigma_{t-1}^2
+
+        Exponential weighting (lambda=0.94, RiskMetrics/Abbott) per la media:
+        pesa dati recenti più delle osservazioni vecchie.
+
+        Vantaggi vs MAD:
+        1. Cattura volatility clustering (dopo un loss grande, vol resta alta)
+        2. Forward-looking (predice vol prossimo periodo, non solo misura passato)
+        3. Reattivo a regime change (exp weighting sulla media)
         """
         recent = [
             t.pnl for t in self.trades
@@ -468,12 +474,31 @@ class RiskManager:
         if len(recent) < 3:
             return 0.0  # non abbastanza dati per stimare
 
-        sorted_pnl = sorted(recent)
-        n = len(sorted_pnl)
-        median = sorted_pnl[n // 2]
-        mad = sum(abs(x - median) for x in sorted_pnl) / n
-        # MAD → stima sigma (fattore di conversione gaussiano)
-        return mad * 1.4826
+        # Exponential weighting per media (lambda=0.94, MIT Lecture 7: Abbott)
+        EW_LAMBDA = 0.94
+        weights = [EW_LAMBDA ** i for i in range(len(recent) - 1, -1, -1)]
+        w_sum = sum(weights)
+        mean_pnl = sum(w * x for w, x in zip(weights, recent)) / w_sum
+
+        # Residui (demeaned PnL)
+        residuals = [x - mean_pnl for x in recent]
+
+        # Varianza incondizionata (exp-weighted) come inizializzazione
+        var_unconditional = sum(w * r ** 2 for w, r in zip(weights, residuals)) / w_sum
+
+        # GARCH(1,1) parameters (MIT Lecture 9: Kempthorne)
+        # alpha + beta < 1 per stazionarietà
+        ALPHA = 0.06   # reattività a shock (peso dell'innovazione)
+        BETA = 0.93    # persistenza (peso della varianza passata)
+        # omega calibrato per E[sigma^2] = var_unconditional
+        OMEGA = var_unconditional * (1.0 - ALPHA - BETA)
+
+        # GARCH(1,1) recursion: sigma_t^2 = omega + alpha*e_{t-1}^2 + beta*sigma_{t-1}^2
+        sigma_sq = var_unconditional  # init alla varianza incondizionata
+        for r in residuals:
+            sigma_sq = OMEGA + ALPHA * r ** 2 + BETA * sigma_sq
+
+        return max(sigma_sq ** 0.5, 0.0)
 
     def open_trade(self, trade: Trade):
         self.trades.append(trade)
