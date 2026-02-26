@@ -2,7 +2,7 @@
 - Rispondi sempre in italiano
 - Nessuna convenzione particolare di codice
 
-# Progetto: Polymarket Multi-Strategy Trading Bot (v10.1.0)
+# Progetto: Polymarket Multi-Strategy Trading Bot (v10.2.0)
 Repo: https://github.com/ludovicocapuano-dev/polymarket-bot (privato)
 Bot automatico di trading su Polymarket con 5 strategie attive (4 eliminate per performance negativa o sicurezza).
 v8.0 ottimizzato con analisi Becker Dataset (115M trade, 381K mercati risolti).
@@ -15,6 +15,7 @@ v9.2.3: Data API redeemable fast-path (1 chiamata vs N), strict conditionId vali
 v10.0: Empirical Kelly con Monte Carlo — position sizing data-driven (bootstrap 10K paths, CV_edge haircut).
 v10.0.1: fix redeemer GS013 — CTF-only routing (bypass NRA bug) + firma v=1 (msg.sender == owner).
 v10.1.0: 10 bug critici profitability + spread dinamico pmxt data-driven.
+v10.2.0: GARCH(1,1) + CVaR + Portfolio VaR (MIT 18.S096) + 6 fix profittabilità.
 
 ## Architettura v9.0 — 6 Layer
 
@@ -24,7 +25,7 @@ v10.1.0: 10 bug critici profitability + spread dinamico pmxt data-driven.
 | Layer 5 | Attribution + Drift + Calibration + Empirical Kelly | Brier score, concept drift, suggerimenti parametri, MC position sizing (v10.0) |
 | Layer 0 | PostgreSQL + Redis | Storage persistente + event bus (opzionale, graceful degradation) |
 | Layer 1 | Orchestrator Agent | Prioritizzazione mercati (CRITICAL/HIGH/MEDIUM/LOW/SKIP) |
-| Layer 3 | Correlation Monitor + Tail Risk | Max 40% per tema, VaR 95%, worst-case analysis |
+| Layer 3 | Correlation Monitor + Tail Risk | Max 40% per tema, Portfolio VaR/CVaR con covarianza (v10.2), worst-case analysis |
 | Layer 4 | Execution Engine | TWAP per trade >$30, LIMIT_MAKER per trade piccoli |
 
 ## Struttura
@@ -33,7 +34,7 @@ v10.1.0: 10 bug critici profitability + spread dinamico pmxt data-driven.
   - `config.py` — configurazione centralizzata (da .env) + db_dsn/redis_url v9.0
   - `.env` — credenziali e parametri (NON toccare/leggere)
   - `crypto_5min.py` — DISABILITATO v7.0 (fees > edge)
-  - `weather.py` — strategia mercati meteo (v8.0: rilassato filtro price>0.85)
+  - `weather.py` — strategia mercati meteo (v8.0: rilassato filtro price>0.85, v10.2: smart_buy maker-first)
   - `weather_feed.py` — feed previsioni meteo multi-provider
   - `finbert_feed.py` — feed FinBERT/VADER per NLP sentiment analysis
   - `strategies/` — strategie di trading
@@ -41,7 +42,7 @@ v10.1.0: 10 bug critici profitability + spread dinamico pmxt data-driven.
     - `event_driven.py` — news-reactive + sentiment (v8.0: CATEGORY_CONFIG per-categoria)
     - `high_prob_bond.py` — obbligazioni ad alta prob (v8.0: politics boost, sports hard blacklist)
     - `market_making.py` — DISABILITATO v7.0 (necessita $2K+ budget)
-    - `whale_copy.py` — copy trading (v8.0: size-aware filtering, v9.2.2: migrazione endpoint data-api.polymarket.com)
+    - `whale_copy.py` — copy trading (v8.0: size-aware filtering, v9.2.2: migrazione endpoint data-api.polymarket.com, v10.2: win_rate fallback strict)
   - `validators/` — Layer 2: Signal Validator (v9.0)
     - `signal_validator.py` — UnifiedSignal, SignalReport, 8 gate checks (edge, confidence, resolution, liquidity, spread, EV net-of-fees, DA, VPIN) (v10.1: Gate 6 semplificato, MIN_CONFIDENCE 0.50)
     - `devils_advocate.py` — Contraddittorio deterministico (sport blacklist, edge sospetto, overconfident, volume basso, losing streak)
@@ -50,15 +51,15 @@ v10.1.0: 10 bug critici profitability + spread dinamico pmxt data-driven.
     - `attribution.py` — AttributionEngine: P&L per segnale, Brier score, alpha decay
     - `drift_detector.py` — DriftDetector: concept drift (win rate calo >30%), microstructure drift (spread)
     - `calibration.py` — CalibrationEngine: suggerimenti min_edge e kelly_fraction basati su Brier/alpha/MC (v10.0: check Monte Carlo)
-    - `empirical_kelly.py` — EmpiricalKelly: Monte Carlo bootstrap 10K paths, CV_edge haircut, cache 1h (v10.0)
+    - `empirical_kelly.py` — EmpiricalKelly: Monte Carlo bootstrap 10K paths, CV_edge haircut, cache 1h, MIN_TRADES=15 (v10.0, v10.2)
   - `storage/` — Layer 0: Persistenza (v9.0, opzionale)
     - `database.py` — PostgreSQL: tabelle trades, market_snapshots, calibration_log, drift_alerts
     - `redis_bus.py` — Redis Pub/Sub + cache con fallback in-memory
   - `agents/` — Layer 1: Orchestrator (v9.0)
     - `orchestrator.py` — OrchestratorAgent: prioritizza mercati per volume/prezzo/anomaly, routing a strategie
   - `risk/` — Layer 3: Risk avanzato (v9.0)
-    - `correlation_monitor.py` — CorrelationMonitor: max 40% capitale per tema (politics, crypto, weather, etc.)
-    - `tail_risk.py` — TailRiskAgent: VaR 95%, max loss scenario, posizioni concentrate
+    - `correlation_monitor.py` — CorrelationMonitor: max 40% per tema + Portfolio VaR/CVaR con matrice di covarianza (v10.2: MIT 18.S096)
+    - `tail_risk.py` — TailRiskAgent: VaR 95% + CVaR 95% (Expected Shortfall, v10.2), max loss scenario, posizioni concentrate
   - `execution/` — Layer 4: Execution Engine (v9.0)
     - `execution_agent.py` — ExecutionAgent: LIMIT_MAKER (<=\$30), TWAP tranche \$15/2s (>\$30)
   - `migrate_json_to_pg.py` — Script migrazione one-shot JSON → PostgreSQL
@@ -67,7 +68,7 @@ v10.1.0: 10 bug critici profitability + spread dinamico pmxt data-driven.
   - `utils/finlight_feed.py` — client Finlight API v2 (news + sentiment, v9.2.2: exponential backoff su 429)
   - `utils/binance_feed.py` — feed multi-crypto Binance WS (v9.2.2: backoff esponenziale con jitter, stale detection)
   - `utils/redeemer.py` — auto-redeem posizioni risolte via Safe proxy (v10.0.1: CTF-only routing, firma v=1; v9.2.3: Data API redeemable, strict conditionId)
-  - `utils/risk_manager.py` — Kelly sizing (v10.1: spread dinamico pmxt, kurtosis haircut condizionale, empirical Kelly blend), triple barrier, stop-loss cooldown, correlation check, flash move + VPIN v9.2.1
+  - `utils/risk_manager.py` — Kelly sizing (v10.2: GARCH(1,1) + exp weighting per volatilità, spread dinamico pmxt, kurtosis haircut condizionale, empirical Kelly blend), triple barrier, stop-loss cooldown, correlation check, flash move + VPIN v9.2.1
   - `utils/whale_profiler.py` — Profiler wallet whale (whitelist automatica)
   - `.claude/rules/` — regole modulari per strategia (event-driven, risk, merge, general)
   - `.claude/agents/` — agenti custom (becker-analyst, strategy-debugger)
@@ -92,7 +93,32 @@ v10.1.0: 10 bug critici profitability + spread dinamico pmxt data-driven.
 | market_making  | 0%          | ELIMINATO v7.0: necessita $2K+ budget          |
 
 
-## Modifiche v10.2.0 (6 fix profittabilita')
+## Modifiche v10.2.0 (GARCH + CVaR + Portfolio VaR + 6 fix profittabilità)
+### GARCH(1,1) + Exponential Weighting (MIT 18.S096 Lectures 7+9)
+- **`_recent_volatility()`** in `risk_manager.py`: MAD sostituita con GARCH(1,1)
+- Formula: `σ²_t = ω + α·ε²_{t-1} + β·σ²_{t-1}` (α=0.06 shock, β=0.93 persistenza)
+- ω calibrato su varianza incondizionata: `ω = var * (1 - α - β)`
+- Media calcolata con exponential weighting λ=0.94 (RiskMetrics, Abbott)
+- Cattura volatility clustering: dopo un loss grande la vol resta alta → Kelly riduce size automaticamente
+- Forward-looking: predice vol del prossimo periodo, non solo misura il passato
+
+### CVaR — Expected Shortfall (MIT 18.S096 Lecture 14)
+- **`cvar_95`** aggiunto a `TailRiskReport` in `tail_risk.py`
+- Formula normale: `CVaR = μ_loss + σ_loss · φ(z) / (1-α)` dove φ(1.645)=0.10314
+- CVaR cattura la **severità** della coda (media delle perdite oltre VaR), non solo la soglia
+- Warning se CVaR95 > 40% capitale
+- Loggato ogni 200 cicli accanto al VaR
+
+### Portfolio VaR con matrice di covarianza (MIT 18.S096 Lecture 7)
+- **`portfolio_var()`** in `correlation_monitor.py`: `VaR = z · √(w^T · Σ · w)`
+- σ_i per binary outcome: `size · √(p · (1-p))`
+- Σ stimata con correlazioni per tema:
+  - Stesso tema (rho_intra=0.40): elections correlano con elections
+  - Temi diversi (rho_inter=0.10): elections poco correlate con weather
+- **Diversification ratio**: `portfolio_var / sum_individual_var` — misura il beneficio della diversificazione
+- **`portfolio_cvar()`**: Expected Shortfall del portafoglio (`σ_p · φ(z) / (1-α)`)
+- Loggato ogni 200 cicli con n_positions e diversification ratio
+
 ### Fix P0: Segnali general data_driven disabilitati
 - `_analyze_general_market()` ritorna None immediatamente
 - YES+NO!=1.0 e' quasi sempre quote staleness, non mispricing reale
@@ -148,7 +174,7 @@ v10.1.0: 10 bug critici profitability + spread dinamico pmxt data-driven.
 - Formula: `f_empirical = 1 - CV_edge`, dove `CV_edge = std(path_means) / mean(path_means)` su 10K paths MC
 - Bootstrap: `(10000, n_trades)` indici random con replacement, wealth curves via log1p→cumsum→exp
 - **DD95**: 95th percentile max drawdown per path (running max → drawdown → percentile)
-- Cache 1h, ricalcolo ogni 500 cicli o 10 nuovi trade chiusi, minimo 30 trade per attivare
+- Cache 1h, ricalcolo ogni 500 cicli o 10 nuovi trade chiusi, minimo 15 trade per attivare (v10.2: ridotto da 30)
 ### Blend 70/30 in kelly_size()
 - `base_frac = base_frac * (0.70 * emp_factor + 0.30)` — 30% statico come prior bayesiano
 - Evita che CV_edge rumoroso (pochi trade) porti base_frac a zero
@@ -158,7 +184,7 @@ v10.1.0: 10 bug critici profitability + spread dinamico pmxt data-driven.
 - Mostra CV_edge e DD95 nel suggerimento
 ### Fallback e sicurezza
 - numpy mancante → `empirical_kelly = None`, sizing statico
-- < 30 trade → `update()` ritorna None, sizing statico
+- < 15 trade (v10.2: era 30) → `update()` ritorna None, sizing statico
 - Cache >2h → `get_adjustment_factor()` ritorna None, sizing statico
 - CV_edge = 1.0 (edge <= 0) → `f_empirical = 0.0`, blend → `base_frac * 0.30` (floor 30%)
 - Eccezione in MC → try/except in bot.py, log warning, sizing statico
@@ -275,8 +301,10 @@ v10.1.0: 10 bug critici profitability + spread dinamico pmxt data-driven.
 - **CorrelationMonitor**: max 40% capitale per tema (politics, crypto, weather, geopolitical, sports, finance)
 - Classificazione automatica per keyword da question/category/tags
 - Integrato in `can_trade()` del risk manager
-- **TailRiskAgent**: VaR 95% con approssimazione normale, max loss scenario, posizioni concentrate (>10% capitale)
-- Analisi ogni 200 cicli, alert CRITICAL se max loss >50% capitale
+- v10.2: **Portfolio VaR** con matrice di covarianza (`z · √(w^T·Σ·w)`), correlazioni intra-tema 0.40, inter-tema 0.10
+- v10.2: **Portfolio CVaR** (Expected Shortfall) e **diversification ratio**
+- **TailRiskAgent**: VaR 95% + CVaR 95% (v10.2: Expected Shortfall), max loss scenario, posizioni concentrate (>10% capitale)
+- Analisi ogni 200 cicli, alert CRITICAL se max loss >50% capitale, warning se CVaR95 > 40% capitale
 
 ### Layer 4: Execution Engine
 - **ExecutionAgent**: LIMIT_MAKER per trade <=\$30, TWAP per trade >\$30
@@ -341,7 +369,7 @@ v10.1.0: 10 bug critici profitability + spread dinamico pmxt data-driven.
 
 ## Note importanti
 - Il file `.env` contiene chiavi private e API keys — mai leggerlo o mostrarlo
-- Il bot ha un risk manager integrato con Kelly criterion (proporzionale per strategia, v10.0: haircut empirico MC)
+- Il bot ha un risk manager integrato con Kelly criterion (proporzionale per strategia, v10.0: haircut empirico MC, v10.2: volatilità GARCH(1,1))
 - La strategia event_driven usa Finlight + GDELT per news sentiment in tempo reale (merge multi-fonte)
 - Il risk manager ha stop-loss cooldown (4h) per evitare loop distruttivi
 - Il Signal Validator filtra trade a bassa qualita' PRIMA dell'esecuzione (8 gate checks, incluso VPIN v9.2.1). Gate 6 (EV) usa edge direttamente (net-of-fees, v10.1). MIN_CONFIDENCE=0.50 (v10.1). Segnali REVIEW con edge>=0.04 vengono accettati (v10.1)
@@ -349,9 +377,12 @@ v10.1.0: 10 bug critici profitability + spread dinamico pmxt data-driven.
 - Flash move protection blocca trade su mercati con price velocity > 5c/60s
 - VAMP (Volume Adjusted Mid Price) sostituisce mid-price semplice nel WS feed
 - Le strategie arb (gabagool, arbitrage) sono DISABILITATE per exploit incrementNonce() — NON riabilitare senza verifica settlement on-chain atomica
-- Il Correlation Monitor limita esposizione per tema (max 40% capitale)
+- Il Correlation Monitor limita esposizione per tema (max 40% capitale) e calcola Portfolio VaR/CVaR con matrice di covarianza (v10.2)
 - Il Drift Detector segnala cali di win rate >30% vs storico
-- L'Empirical Kelly (v10.0) richiede numpy e almeno 30 trade chiusi per strategia — sotto questa soglia usa sizing statico v9.x
+- L'Empirical Kelly (v10.0) richiede numpy e almeno 15 trade chiusi per strategia (v10.2: ridotto da 30) — sotto questa soglia usa sizing statico v9.x
+- La volatilità nel Kelly sizing usa GARCH(1,1) con exponential weighting λ=0.94 (v10.2: MIT 18.S096). NON riportare a MAD
+- Il CVaR (Expected Shortfall) nel tail_risk cattura la severità della coda, non solo la soglia VaR (v10.2: MIT 18.S096)
+- Il Portfolio VaR usa correlazioni stimate per tema (rho_intra=0.40, rho_inter=0.10). Diversification ratio < 1.0 indica beneficio della diversificazione
 - Il redeemer auto-riscuote vincite da mercati risolti via Safe proxy — SEMPRE via CTF direttamente, MAI via NRA (v10.0.1: bypass bug GS013 del Safe custom)
 - Il redeemer usa firma v=1 (msg.sender == owner) invece di ECDSA — piu' robusto con il Safe proxy Polymarket (v10.0.1)
 - conditionId DEVE essere esattamente 64 hex chars (v9.2.3: strict validation, no padding)
