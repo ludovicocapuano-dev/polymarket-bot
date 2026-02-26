@@ -505,7 +505,6 @@ class WhaleCopyStrategy:
                 self._load_whitelist()
 
             wl_entry = self._whitelist.get(wt.wallet_address)
-            wl_entry = self._whitelist.get(wt.wallet_address)
             if wl_entry and wl_entry.get("recommendation") == "SKIP" and wl_entry.get("score", 0) > 0:
                 # v10.2: ignora SKIP se score=0 (data_quality=INSUFFICIENT)
                 logger.debug(

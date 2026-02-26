@@ -69,7 +69,7 @@ v10.2.0: GARCH(1,1) + CVaR + Portfolio VaR (MIT 18.S096) + 6 fix profittabilità
   - `utils/binance_feed.py` — feed multi-crypto Binance WS (v9.2.2: backoff esponenziale con jitter, stale detection)
   - `utils/redeemer.py` — auto-redeem posizioni risolte via Safe proxy (v10.0.1: CTF-only routing, firma v=1; v9.2.3: Data API redeemable, strict conditionId)
   - `utils/risk_manager.py` — Kelly sizing (v10.2: GARCH(1,1) + exp weighting per volatilità, spread dinamico pmxt, kurtosis haircut condizionale, empirical Kelly blend), triple barrier, stop-loss cooldown, correlation check, flash move + VPIN v9.2.1
-  - `utils/whale_profiler.py` — Profiler wallet whale (whitelist automatica)
+  - `utils/whale_profiler.py � Profiler wallet whale (whitelist automatica, v10.2: migrato a data-api)
   - `.claude/rules/` — regole modulari per strategia (event-driven, risk, merge, general)
   - `.claude/agents/` — agenti custom (becker-analyst, strategy-debugger)
   - `.claude/commands/` — slash commands (/backtest, /strategy-status, /pnl-report)
@@ -401,3 +401,18 @@ v10.2.0: GARCH(1,1) + CVaR + Portfolio VaR (MIT 18.S096) + 6 fix profittabilità
 - Avvio: `python bot.py` (paper) / `python bot.py --live` (reale). Per live serve `echo 'CONFERMO' | python3 bot.py --live`
 - **Balance/allowance**: se il log mostra `not enough balance / allowance` (HTTP 400 dal CLOB), il wallet proxy Safe non ha USDC sufficienti o l'allowance verso il CTF Exchange è scaduta. Verificare: (1) saldo USDC sul Safe proxy su Polygonscan, (2) allowance ERC-20 verso `0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E` (CTF Exchange). Il bot continua a girare e riprova al ciclo successivo
 - Repo GitHub: https://github.com/ludovicocapuano-dev/polymarket-bot (privato)
+### Fix P0: Whale Profiler migrato a Data API
+- `_fetch_full_trade_history()` in `whale_profiler.py`: endpoint migrato da `gamma-api.polymarket.com/activity` (404 dal 2026) a `data-api.polymarket.com/activity`
+- Parametro cambiato: `address=` → `user=` (allineato con whale_copy v9.2.2)
+- Parsing side: usa `outcomeIndex` (0=YES, 1=NO) della Data API
+- Parsing size: priorità a `usdcSize` (Data API) su `size`
+- Filtra `REDEEM` nel profiling (erano contati come trade)
+- **Soglie data_quality abbassate**: HIGH=100t/5m (era 20m), MEDIUM=50t/3m (era 10m), LOW=15t/1m (era 5m)
+  - Motivazione: Data API limit=200 comprime la diversità per whale che tradano molti lotti sullo stesso mercato
+- Risultato: da 0 COPY / 3 WATCH / 7 SKIP → 5 COPY / 1 WATCH / 4 SKIP
+
+### Fix P1: whale_copy SKIP filter con score check
+- `wl_entry.get("recommendation") == "SKIP"` ora richiede anche `score > 0`
+- Wallet con score=0 (INSUFFICIENT data → SKIP di default) non vengono filtrati — trattati come "nessun dato" e valutati normalmente da win_rate/size
+- Evita che il profiler blocchi whale validi semplicemente perché i dati API sono insufficienti
+

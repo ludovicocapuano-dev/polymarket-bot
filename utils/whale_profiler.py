@@ -226,19 +226,21 @@ class WhaleProfiler:
 
     def _fetch_full_trade_history(self, address: str) -> list[dict]:
         """
-        Fetch storico trade completo via Gamma API.
+        Fetch storico trade completo via Data API.
+        v10.2: migrato da gamma-api (404 dal 2026) a data-api.polymarket.com.
+        Endpoint: GET /activity?user=ADDRESS&limit=200
         NON applica il filtro 120s di whale_copy — serve tutto lo storico.
         """
         trades = []
         try:
             resp = self._session.get(
-                "https://gamma-api.polymarket.com/activity",
-                params={"address": address, "limit": 200},
+                "https://data-api.polymarket.com/activity",
+                params={"user": address, "limit": 200},
                 timeout=15,
             )
             if resp.status_code != 200:
                 logger.debug(
-                    f"[WHALE_PROFILER] API activity status={resp.status_code} "
+                    f"[WHALE_PROFILER] data-api HTTP {resp.status_code} "
                     f"per {address[:10]}..."
                 )
                 return []
@@ -247,6 +249,11 @@ class WhaleProfiler:
             items = data if isinstance(data, list) else data.get("data", data.get("positions", []))
 
             for item in items:
+                # Filtra solo BUY/TRADE (skip REDEEM, SELL per profiling)
+                trade_type = item.get("type", "").upper()
+                if trade_type in ("REDEEM",):
+                    continue
+
                 market_id = (
                     item.get("conditionId", "") or
                     item.get("market_id", "") or
@@ -256,18 +263,27 @@ class WhaleProfiler:
                 if not market_id:
                     continue
 
+                # Side: data-api usa outcomeIndex (0=YES, 1=NO) e side ("BUY"/"SELL")
                 side = item.get("side", item.get("outcome", ""))
                 if isinstance(side, str):
                     side = side.upper()
-                    if side in ("BUY", "LONG"):
-                        side = item.get("outcome", "YES").upper()
+                    if side in ("BUY", "LONG", ""):
+                        idx = item.get("outcomeIndex", item.get("outcome_index", -1))
+                        if idx == 0:
+                            side = "YES"
+                        elif idx == 1:
+                            side = "NO"
+                        elif side in ("YES", "NO"):
+                            pass
+                        else:
+                            side = item.get("outcome", "YES").upper()
                     elif side in ("SELL", "SHORT"):
                         side = "SELL"
 
                 price = float(item.get("price", item.get("avgPrice", 0)))
-                size = float(item.get("size", item.get("usdcSize", item.get("value", 0))))
+                size = float(item.get("usdcSize", item.get("size", item.get("value", 0))))
 
-                # Timestamp
+                # Timestamp (data-api usa unix timestamp in secondi)
                 ts_raw = item.get("timestamp", item.get("createdAt", item.get("created_at", "")))
                 ts = self._parse_timestamp(ts_raw)
 
@@ -576,12 +592,16 @@ class WhaleProfiler:
         return "WATCH"
 
     def _assess_data_quality(self, n_trades: int, n_markets: int) -> str:
-        """Valuta qualita' dati in base a quantita'."""
-        if n_trades >= 100 and n_markets >= 20:
+        """
+        Valuta qualita' dati in base a quantita'.
+        v10.2: soglie mercati abbassate — Data API limit=200 comprime
+        la diversita' per whale che fanno molti trade/mercato (informed traders).
+        """
+        if n_trades >= 100 and n_markets >= 5:
             return "HIGH"
-        if n_trades >= 50 and n_markets >= 10:
+        if n_trades >= 50 and n_markets >= 3:
             return "MEDIUM"
-        if n_trades >= 20 and n_markets >= 5:
+        if n_trades >= 15 and n_markets >= 1:
             return "LOW"
         return "INSUFFICIENT"
 
