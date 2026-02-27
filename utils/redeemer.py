@@ -376,7 +376,7 @@ class Redeemer:
 
         return resolved
 
-    def _redeem_position(self, pos: ResolvedPosition) -> bool:
+    def _redeem_position(self, pos: ResolvedPosition) -> bool | None:
         """Riscuote una posizione chiamando redeemPositions via Safe proxy."""
         try:
             from web3 import Web3
@@ -393,6 +393,34 @@ class Redeemer:
                 return False
             condition_id_bytes = bytes.fromhex(condition_id_hex)
             collateral = Web3.to_checksum_address(USDC_ADDRESS)
+
+            # v10.2.1: Pre-check on-chain — verifica che la condizione sia risolta
+            # sul CTF PRIMA di tentare il redeem. La Data API può dire "redeemable"
+            # prima che reportPayouts sia minato on-chain (~24s di race condition).
+            # Se payoutDenominator == 0, la condizione non è ancora risolta on-chain.
+            try:
+                payout_denom_abi = [{
+                    "constant": True,
+                    "inputs": [{"name": "", "type": "bytes32"}],
+                    "name": "payoutDenominator",
+                    "outputs": [{"name": "", "type": "uint256"}],
+                    "stateMutability": "view",
+                    "type": "function",
+                }]
+                ctf_check = self._w3.eth.contract(
+                    address=Web3.to_checksum_address(CTF_ADDRESS),
+                    abi=payout_denom_abi,
+                )
+                payout_denom = ctf_check.functions.payoutDenominator(condition_id_bytes).call()
+                if payout_denom == 0:
+                    logger.info(
+                        f"[REDEEM] Condizione {pos.condition_id[:16]}... non ancora "
+                        f"risolta on-chain (payoutDenominator=0), riprovo al prossimo ciclo"
+                    )
+                    return None  # None = non ancora risolvibile, ritenta
+            except Exception as e:
+                logger.warning(f"[REDEEM] Pre-check payoutDenominator fallito: {e}")
+                # Procedi comunque — il gas estimation catturerà eventuali errori
 
             # v10.0.1: Sempre via CTF direttamente (anche neg_risk).
             # Il Safe proxy ha un bug ABI (GS013) con certi indirizzi target

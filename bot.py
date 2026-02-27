@@ -854,9 +854,6 @@ class MultiStrategyBot:
                             won = True
                             resolution_str = "redeemable (Data API)"
 
-                        self._resolved_cache.add(matched_mid)
-                        data_api_resolved_mids.add(matched_mid)
-
                         # Tenta redeem on-chain
                         redeemed = False
                         if won:
@@ -873,6 +870,19 @@ class MultiStrategyBot:
                                 redeemed = self.redeemer._redeem_position(rpos)
                             except Exception as e:
                                 logger.warning(f"[REDEEM] On-chain fallito (Data API): {e}", exc_info=True)
+
+                        # v10.2.1: Se redeem ritorna None, la condizione non è
+                        # ancora risolta on-chain (race condition Data API vs chain).
+                        # NON chiudere il trade — riprova al prossimo ciclo.
+                        if redeemed is None:
+                            logger.info(
+                                f"[PNL] Mercato {matched_mid} non ancora risolvibile "
+                                f"on-chain, riprovo al prossimo ciclo"
+                            )
+                            continue
+
+                        self._resolved_cache.add(matched_mid)
+                        data_api_resolved_mids.add(matched_mid)
 
                         results.append({
                             "market_id": matched_mid,
@@ -973,8 +983,6 @@ class MultiStrategyBot:
                 won = (we_bet_yes and yes_won) or (not we_bet_yes and not yes_won)
                 resolution_str = f"YES (prices={outcome_prices_raw})" if yes_won else f"NO (prices={outcome_prices_raw})"
 
-                self._resolved_cache.add(mid)
-
                 # Tenta redeem on-chain se disponibile
                 redeemed = False
                 has_redeemer = self.redeemer and self.redeemer.available
@@ -996,6 +1004,16 @@ class MultiStrategyBot:
                         redeemed = self.redeemer._redeem_position(pos)
                     except Exception as e:
                         logger.warning(f"[REDEEM] On-chain fallito: {e}", exc_info=True)
+
+                # v10.2.1: Se redeem ritorna None, condizione non risolta on-chain
+                if redeemed is None:
+                    logger.info(
+                        f"[PNL] Mercato {mid} non ancora risolvibile "
+                        f"on-chain (Gamma), riprovo al prossimo ciclo"
+                    )
+                    continue
+
+                self._resolved_cache.add(mid)
 
                 results.append({
                     "market_id": mid,
