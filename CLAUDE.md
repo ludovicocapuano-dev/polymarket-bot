@@ -2,7 +2,7 @@
 - Rispondi sempre in italiano
 - Nessuna convenzione particolare di codice
 
-# Progetto: Polymarket Multi-Strategy Trading Bot (v10.2.0)
+# Progetto: Polymarket Multi-Strategy Trading Bot (v10.2.1)
 Repo: https://github.com/ludovicocapuano-dev/polymarket-bot (privato)
 Bot automatico di trading su Polymarket con 5 strategie attive (4 eliminate per performance negativa o sicurezza).
 v8.0 ottimizzato con analisi Becker Dataset (115M trade, 381K mercati risolti).
@@ -16,6 +16,7 @@ v10.0: Empirical Kelly con Monte Carlo — position sizing data-driven (bootstra
 v10.0.1: fix redeemer GS013 — CTF-only routing (bypass NRA bug) + firma v=1 (msg.sender == owner).
 v10.1.0: 10 bug critici profitability + spread dinamico pmxt data-driven.
 v10.2.0: GARCH(1,1) + CVaR + Portfolio VaR (MIT 18.S096) + 6 fix profittabilità.
+v10.2.1: fix race condition redeem — pre-check payoutDenominator on-chain + retry automatico.
 
 ## Architettura v9.0 — 6 Layer
 
@@ -69,7 +70,7 @@ v10.2.0: GARCH(1,1) + CVaR + Portfolio VaR (MIT 18.S096) + 6 fix profittabilità
   - `utils/binance_feed.py` — feed multi-crypto Binance WS (v9.2.2: backoff esponenziale con jitter, stale detection)
   - `utils/redeemer.py` — auto-redeem posizioni risolte via Safe proxy (v10.0.1: CTF-only routing, firma v=1; v9.2.3: Data API redeemable, strict conditionId)
   - `utils/risk_manager.py` — Kelly sizing (v10.2: GARCH(1,1) + exp weighting per volatilità, spread dinamico pmxt, kurtosis haircut condizionale, empirical Kelly blend), triple barrier, stop-loss cooldown, correlation check, flash move + VPIN v9.2.1
-  - `utils/whale_profiler.py � Profiler wallet whale (whitelist automatica, v10.2: migrato a data-api)
+  - `utils/whale_profiler.py � Profiler wallet whale (whitelist automatica, v10.2: migrato a data-api)
   - `.claude/rules/` — regole modulari per strategia (event-driven, risk, merge, general)
   - `.claude/agents/` — agenti custom (becker-analyst, strategy-debugger)
   - `.claude/commands/` — slash commands (/backtest, /strategy-status, /pnl-report)
@@ -147,6 +148,24 @@ v10.2.0: GARCH(1,1) + CVaR + Portfolio VaR (MIT 18.S096) + 6 fix profittabilità
 ### Fix P2: Orchestrator SKIP filtering
 - Mercati classificati SKIP (volume < 100) vengono ora esclusi da shared_markets
 - Riduce cicli di calcolo inutili su mercati dormienti
+
+## Modifiche v10.2.1 (Fix race condition redeem)
+### Root cause
+- Data API reporta `redeemable=true` ~24 secondi prima che `reportPayouts` sia minato on-chain
+- Il redeem reverta con GS013 (Safe proxy) perché il CTF non ha ancora il payout settato
+- Il trade veniva chiuso internamente e aggiunto a `_resolved_cache` → mai ritentato
+- Token on-chain restavano bloccati permanentemente
+
+### Fix: Pre-check payoutDenominator + retry
+- **`_redeem_position()`** in `redeemer.py`: controlla `payoutDenominator` sul CTF prima del redeem
+  - Se `== 0`: condizione non risolta on-chain → ritorna `None` (non `False`)
+  - Se pre-check fallisce (RPC error): procede comunque (gas estimation catturerà errori)
+- **`bot.py`** (Data API path + Gamma path): se redeem ritorna `None`:
+  - NON chiude il trade da `open_trades`
+  - NON aggiunge a `_resolved_cache`
+  - Mercato ritentato automaticamente al ciclo successivo (~30s)
+- Distinzione: `None` = "non ancora risolvibile, ritenta" vs `False` = "TX fallita, chiudi trade"
+- Type hint aggiornato: `_redeem_position() -> bool | None`
 
 ## Modifiche v10.1.0 (10 bug critici profitability + spread dinamico pmxt)
 ### Bug fix profitability (10 fix)
@@ -387,6 +406,7 @@ v10.2.0: GARCH(1,1) + CVaR + Portfolio VaR (MIT 18.S096) + 6 fix profittabilità
 - Il redeemer usa firma v=1 (msg.sender == owner) invece di ECDSA — piu' robusto con il Safe proxy Polymarket (v10.0.1)
 - conditionId DEVE essere esattamente 64 hex chars (v9.2.3: strict validation, no padding)
 - Il redeemer usa Data API (`data-api.polymarket.com/positions`) come fonte primaria per detectare posizioni redeemable (v9.2.3), Gamma API come fallback
+- Il redeemer pre-verifica `payoutDenominator` on-chain prima del redeem (v10.2.1). Se la condizione non è risolta, ritorna `None` → bot riprova al ciclo successivo. Race condition Data API vs chain ~24s
 - GDELT usa query semplici (1 per categoria) con intervallo 10s e circuit breaker escalante (v9.2.2)
 - Finlight ha exponential backoff su 429 (30s→300s cap) — API key potrebbe avere quota limitata
 - Whale copy usa `data-api.polymarket.com` (NON gamma-api, ritorna 404 dal 2026)
