@@ -2,7 +2,7 @@
 - Rispondi sempre in italiano
 - Nessuna convenzione particolare di codice
 
-# Progetto: Polymarket Multi-Strategy Trading Bot (v10.2.1)
+# Progetto: Polymarket Multi-Strategy Trading Bot (v10.3)
 Repo: https://github.com/ludovicocapuano-dev/polymarket-bot (privato)
 Bot automatico di trading su Polymarket con 5 strategie attive (4 eliminate per performance negativa o sicurezza).
 v8.0 ottimizzato con analisi Becker Dataset (115M trade, 381K mercati risolti).
@@ -17,6 +17,7 @@ v10.0.1: fix redeemer GS013 — CTF-only routing (bypass NRA bug) + firma v=1 (m
 v10.1.0: 10 bug critici profitability + spread dinamico pmxt data-driven.
 v10.2.0: GARCH(1,1) + CVaR + Portfolio VaR (MIT 18.S096) + 6 fix profittabilità.
 v10.2.1: fix race condition redeem — pre-check payoutDenominator on-chain + retry automatico.
+v10.3: Avellaneda-Stoikov optimal execution — bid ottimale con inventario, volatilità binaria p(1-p) e VPIN premium.
 
 ## Architettura v9.0 — 6 Layer
 
@@ -27,7 +28,7 @@ v10.2.1: fix race condition redeem — pre-check payoutDenominator on-chain + re
 | Layer 0 | PostgreSQL + Redis | Storage persistente + event bus (opzionale, graceful degradation) |
 | Layer 1 | Orchestrator Agent | Prioritizzazione mercati (CRITICAL/HIGH/MEDIUM/LOW/SKIP) |
 | Layer 3 | Correlation Monitor + Tail Risk | Max 40% per tema, Portfolio VaR/CVaR con covarianza (v10.2), worst-case analysis |
-| Layer 4 | Execution Engine | TWAP per trade >$30, LIMIT_MAKER per trade piccoli |
+| Layer 4 | Execution Engine | TWAP per trade >$30, LIMIT_MAKER con A-S optimal bid (v10.3) |
 
 ## Struttura
 - `/root/polymarket_toolkit/` — codice principale del bot
@@ -35,7 +36,7 @@ v10.2.1: fix race condition redeem — pre-check payoutDenominator on-chain + re
   - `config.py` — configurazione centralizzata (da .env) + db_dsn/redis_url v9.0
   - `.env` — credenziali e parametri (NON toccare/leggere)
   - `crypto_5min.py` — DISABILITATO v7.0 (fees > edge)
-  - `weather.py` — strategia mercati meteo (v8.0: rilassato filtro price>0.85, v10.2: smart_buy maker-first)
+  - `weather.py` — strategia mercati meteo (v8.0: rilassato filtro price>0.85, v10.3: smart_buy A-S + fix target_price mancante)
   - `weather_feed.py` — feed previsioni meteo multi-provider
   - `finbert_feed.py` — feed FinBERT/VADER per NLP sentiment analysis
   - `strategies/` — strategie di trading
@@ -69,6 +70,7 @@ v10.2.1: fix race condition redeem — pre-check payoutDenominator on-chain + re
   - `utils/finlight_feed.py` — client Finlight API v2 (news + sentiment, v9.2.2: exponential backoff su 429)
   - `utils/binance_feed.py` — feed multi-crypto Binance WS (v9.2.2: backoff esponenziale con jitter, stale detection)
   - `utils/redeemer.py` — auto-redeem posizioni risolte via Safe proxy (v10.0.1: CTF-only routing, firma v=1; v9.2.3: Data API redeemable, strict conditionId)
+  - `utils/avellaneda_stoikov.py` — Avellaneda-Stoikov optimal execution per prediction markets [0,1] (v10.3: reservation price, optimal half-spread, VPIN premium)
   - `utils/risk_manager.py` — Kelly sizing (v10.2: GARCH(1,1) + exp weighting per volatilità, spread dinamico pmxt, kurtosis haircut condizionale, empirical Kelly blend), triple barrier, stop-loss cooldown, correlation check, flash move + VPIN v9.2.1
   - `utils/whale_profiler.py � Profiler wallet whale (whitelist automatica, v10.2: migrato a data-api)
   - `.claude/rules/` — regole modulari per strategia (event-driven, risk, merge, general)
@@ -93,6 +95,31 @@ v10.2.1: fix race condition redeem — pre-check payoutDenominator on-chain + re
 | crypto_5min    | 0%          | ELIMINATO v7.0: Kelly negativo, fees 3.15%     |
 | market_making  | 0%          | ELIMINATO v7.0: necessita $2K+ budget          |
 
+
+## Modifiche v10.3 (Avellaneda-Stoikov Optimal Execution)
+### Modello A-S adattato per prediction markets [0,1]
+- **`utils/avellaneda_stoikov.py`** (NUOVO): modulo standalone con matematica A-S
+- **Reservation price**: `r = s − q × γ × σ²τ` (shift down per inventario esistente)
+- **Optimal half-spread**: `δ/2 = γ_spread × σ²τ / 2 + vpin_premium` (semi-spread con adverse selection)
+- **Optimal bid**: `bid = r − δ/2`, clippato a `[best_bid, min(mid, target)]`
+- **Varianza binaria**: `σ²τ = p(1−p)` (varianza naturale del binary outcome — max a p=0.5, zero a 0 e 1)
+- **Due γ separati**: `GAMMA_INVENTORY=0.30` (inventory skew) e `GAMMA_SPREAD=0.05` (half-spread)
+- **γ scalato per volume 24h** (proxy di κ): liquido (≥$10K) → γ×0.7, illiquido (≤$1K) → γ×1.5, interpolazione lineare
+- **VPIN premium**: 0-2¢ per adverse selection (proporzionale a VPIN, complementa il gate VPIN≥0.7 nel validator)
+- Il termine κ `(2/γ)·ln(1+γ/κ)` è omesso: produce spread troppo larghi per prezzi [0,1]
+### Integrazione in smart_buy()
+- **`polymarket_api.py`**: 3 parametri opzionali aggiunti a `smart_buy()`: `inventory_frac`, `volume_24h`, `vpin` (default 0.0, backward compatible)
+- Branch A-S nel path `spread ≤ 0.10` quando almeno un parametro > 0, altrimenti behavior naive invariato
+- Log `[AS-EXEC]` con bid, naive e delta per monitoraggio
+### Call sites aggiornati (5 strategie)
+- **`high_prob_bond.py`**, **`event_driven.py`**, **`data_driven.py`**, **`whale_copy.py`**, **`weather.py`**: calcolo `inventory_frac` e `vpin` prima di `smart_buy()`
+- Pattern: `market_inventory_frac(open_trades, market_id, budget)` + `vpin_monitor.get_vpin(market_id)`
+### Fix P0: weather.py target_price mancante
+- `smart_buy(token_id, size)` → `smart_buy(token_id, size, target_price=price, ...)` — parametro obbligatorio mancante dalla v10.2
+### Impatto
+- Aggiustamenti 0-2¢ che riducono l'aggressività con inventario alto o toxic flow
+- NON modifica behavior per trade senza inventario/VPIN (parametri default a 0.0 → path naive)
+- Se fill rate cala troppo (A-S troppo conservativo), abbassare `GAMMA_SPREAD` in `avellaneda_stoikov.py`
 
 ## Modifiche v10.2.0 (GARCH + CVaR + Portfolio VaR + 6 fix profittabilità)
 ### GARCH(1,1) + Exponential Weighting (MIT 18.S096 Lectures 7+9)
@@ -411,6 +438,7 @@ v10.2.1: fix race condition redeem — pre-check payoutDenominator on-chain + re
 - Finlight ha exponential backoff su 429 (30s→300s cap) — API key potrebbe avere quota limitata
 - Whale copy usa `data-api.polymarket.com` (NON gamma-api, ritorna 404 dal 2026)
 - Binance WS ha backoff esponenziale con jitter su disconnessione (v9.2.2)
+- L'execution usa Avellaneda-Stoikov per calcolare il bid ottimale in `smart_buy()` (v10.3). Parametri A-S sono opzionali e backward compatible — se tutti a 0.0, usa il path naive `best_bid + TICK`. I due γ (GAMMA_INVENTORY=0.30, GAMMA_SPREAD=0.05) sono scalati per volume 24h. NON rimuovere il clipping `[best_bid, min(mid, target)]` — previene bid fuori range
 - Lo spread_cost nel Kelly sizing è dinamico per zona di prezzo (v10.1: pmxt data-driven). NON riportare a hardcoded 0.005
 - Weather markets sono fee-free su Polymarket (v10.1): `fee = 0.0` in weather.py. NON aggiungere fee
 - Kurtosis haircut si applica SOLO se Empirical Kelly non è attivo (v10.1). NON applicare entrambi insieme
