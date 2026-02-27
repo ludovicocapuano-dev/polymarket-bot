@@ -348,9 +348,13 @@ class HighProbBondStrategy:
                 pnl = -size
             self.risk.close_trade(token_id, won=won, pnl=pnl)
         else:
+            from utils.avellaneda_stoikov import market_inventory_frac
+            inv = market_inventory_frac(self.risk.open_trades, market_id, self.risk._strategy_budgets.get(STRATEGY_NAME, 1))
+            vpin_val = self.risk.vpin_monitor.get_vpin(market_id) if self.risk.vpin_monitor else 0.0
             result = self.api.smart_buy(
                 token_id, size, target_price=price,
                 timeout_sec=15.0, fallback_market=True,
+                inventory_frac=inv, volume_24h=opp.market.volume, vpin=vpin_val,
             )
             if result:
                 if isinstance(result, dict) and result.get("_fill_price"):

@@ -595,6 +595,9 @@ class PolymarketAPI:
         timeout_sec: float = 15.0,
         fallback_market: bool = True,
         aggressive: bool = False,
+        inventory_frac: float = 0.0,
+        volume_24h: float = 0.0,
+        vpin: float = 0.0,
     ) -> dict | None:
         """
         Smart order routing: tenta MAKER limit order, fallback a TAKER market.
@@ -648,6 +651,21 @@ class PolymarketAPI:
             if aggressive:
                 limit_price = round(min(best_ask - self.TICK, target_price), 2)
                 limit_price = max(limit_price, round(best_bid + self.TICK, 2))
+            elif inventory_frac > 0 or volume_24h > 0 or vpin > 0:
+                # v10.3: Avellaneda-Stoikov optimal bid
+                from utils.avellaneda_stoikov import optimal_bid as as_bid
+                mid = (best_bid + best_ask) / 2.0
+                limit_price = as_bid(
+                    mid, best_bid, best_ask, target_price,
+                    inventory_frac=inventory_frac,
+                    volume_24h=volume_24h,
+                    vpin=vpin,
+                )
+                naive = round(min(best_bid + self.TICK, target_price), 2)
+                logger.info(
+                    f"[AS-EXEC] bid=${limit_price:.2f} vs naive=${naive:.2f} "
+                    f"delta={limit_price - naive:+.3f}"
+                )
             else:
                 limit_price = round(min(best_bid + self.TICK, target_price), 2)
         else:

@@ -577,9 +577,13 @@ class DataDrivenStrategy:
                 pnl = -size * slippage
             self.risk.close_trade(token_id, won=won, pnl=pnl)
         else:
+            from utils.avellaneda_stoikov import market_inventory_frac
+            inv = market_inventory_frac(self.risk.open_trades, prediction.market.id, self.risk._strategy_budgets.get(STRATEGY_NAME, 1))
+            vpin_val = self.risk.vpin_monitor.get_vpin(prediction.market.id) if self.risk.vpin_monitor else 0.0
             result = self.api.smart_buy(
                 token_id, size, target_price=price,
                 timeout_sec=12.0, fallback_market=True,
+                inventory_frac=inv, volume_24h=prediction.market.volume, vpin=vpin_val,
             )
             if result:
                 # v7.4: Aggiorna prezzo con fill reale dal CLOB
