@@ -32,6 +32,8 @@ from dataclasses import dataclass
 from utils.polymarket_api import Market, PolymarketAPI
 from utils.finlight_feed import FinlightFeed, NewsSentiment
 from utils.gdelt_feed import GDELTFeed
+from utils.glint_feed import GlintFeed
+from utils.twitter_feed import TwitterFeed
 from utils.risk_manager import RiskManager, Trade
 
 logger = logging.getLogger(__name__)
@@ -134,12 +136,16 @@ class EventDrivenStrategy:
         risk: RiskManager,
         finlight: FinlightFeed | None = None,
         gdelt: GDELTFeed | None = None,
+        glint: GlintFeed | None = None,
+        twitter: TwitterFeed | None = None,
         min_edge: float = 0.03,
     ):
         self.api = api
         self.risk = risk
         self.finlight = finlight
         self.gdelt = gdelt
+        self.glint = glint
+        self.twitter = twitter
         self.min_edge = min_edge
         self._trades_executed = 0
         self._recently_traded: dict[str, float] = {}
@@ -151,8 +157,7 @@ class EventDrivenStrategy:
     async def scan(self, shared_markets: list[Market] | None = None) -> list[EventOpportunity]:
         """
         Scansiona mercati per opportunita' event-driven.
-        v5.9.3: Prima controlla breaking news (segnale piu' forte),
-        poi valuta segnali strutturali.
+        v10.5: Step 0 Glint-reactive, poi news-reactive, poi strutturali.
         """
         opportunities = []
         markets = shared_markets or self.api.fetch_markets(limit=200)
@@ -161,8 +166,15 @@ class EventDrivenStrategy:
             logger.info("[EVENT] Scan: 0 mercati disponibili")
             return []
 
+        # ── 0. GLINT-REACTIVE: segnali pre-matchati da Glint.trade ──
+        glint_opps = self._check_glint_opportunities(markets)
+        opportunities.extend(glint_opps)
+        glint_market_ids = {o.market.id for o in glint_opps}
+
         # ── 1. NEWS-REACTIVE: controlla breaking news (priorita' massima) ──
         news_opps = self._check_news_reactive(markets)
+        # Deduplica: escludi mercati già coperti da Glint
+        news_opps = [o for o in news_opps if o.market.id not in glint_market_ids]
         opportunities.extend(news_opps)
 
         # ── 2. Segnali strutturali per mercati classificati ──
@@ -175,8 +187,8 @@ class EventDrivenStrategy:
 
             opp = self._evaluate_structural(m, event_type)
             if opp:
-                # Evita duplicati con news-reactive
-                if not any(o.market.id == m.id for o in news_opps):
+                # Evita duplicati con glint-reactive e news-reactive
+                if m.id not in glint_market_ids and not any(o.market.id == m.id for o in news_opps):
                     opportunities.append(opp)
 
         # Ordina per edge * confidence (expected value)
@@ -200,6 +212,126 @@ class EventDrivenStrategy:
             )
 
         return opportunities
+
+    # ── SEGNALE 0: GLINT-REACTIVE (pre-matchato) ─────────────────
+
+    def _check_glint_opportunities(self, markets: list[Market]) -> list[EventOpportunity]:
+        """
+        v10.5: Drain segnali Glint e cross-ref con shared_markets.
+        Glint fornisce market match pre-computed (condition_id/slug),
+        noi usiamo i NOSTRI prezzi per calcolare edge.
+        """
+        if not self.glint or not self.glint.available:
+            return []
+
+        glint_opps = self.glint.drain_opportunities()
+        if not glint_opps:
+            return []
+
+        signals = []
+
+        # Indici per cross-ref veloce
+        by_condition = {}
+        by_slug = {}
+        for m in markets:
+            cid = getattr(m, "condition_id", "")
+            if cid:
+                by_condition[cid] = m
+            slug = getattr(m, "slug", "")
+            if slug:
+                by_slug[slug] = m
+
+        for gopp in glint_opps:
+            match = gopp.market_match
+            # Cross-ref: trova il mercato nei nostri shared_markets
+            m = by_condition.get(match.condition_id) or by_slug.get(match.slug)
+            if not m:
+                # Fallback: match per question substring
+                q_lower = match.question.lower()
+                if q_lower:
+                    for mkt in markets:
+                        if q_lower[:30] in mkt.question.lower():
+                            m = mkt
+                            break
+            if not m:
+                continue
+
+            p_yes = m.prices.get("yes", 0.5)
+            p_no = m.prices.get("no", 0.5)
+
+            # Filtro prezzo
+            if p_yes < MIN_TOKEN_PRICE or p_yes > MAX_TOKEN_PRICE:
+                continue
+            if p_no < MIN_TOKEN_PRICE or p_no > MAX_TOKEN_PRICE:
+                continue
+
+            sent = gopp.inferred_sentiment
+            if abs(sent) < 0.10:
+                continue
+
+            # Determina side e calcola edge
+            event_type = gopp.event_type or self._classify_event(m)
+            news_str = self.glint.get_news_strength(event_type) if event_type else 0.5
+
+            if sent > 0.15 and p_yes < 0.85:
+                side = "YES"
+                price_discount = max(0, 0.85 - p_yes) / 0.85
+                edge = news_str * 0.15 * (0.5 + 0.5 * price_discount)
+            elif sent < -0.15 and p_no < 0.85:
+                side = "NO"
+                price_discount = max(0, 0.85 - p_no) / 0.85
+                edge = news_str * 0.15 * (0.5 + 0.5 * price_discount)
+            else:
+                continue
+
+            # min_edge per-categoria
+            cat_cfg = CATEGORY_CONFIG.get(
+                event_type, {"min_edge": self.min_edge, "confidence_boost": 0.0}
+            )
+            if edge < cat_cfg["min_edge"]:
+                continue
+
+            # Confidence: base 0.58 + relevance boost + impact boost
+            confidence = 0.58
+            # Relevance boost: score 7→+0.03, 8→+0.06, 9→+0.09, 10→+0.12
+            if match.relevance_score >= 7:
+                confidence += (match.relevance_score - 7) * 0.03
+            # Impact boost
+            if gopp.signal.impact_level == "high":
+                confidence += 0.08
+            elif gopp.signal.impact_level == "medium":
+                confidence += 0.04
+            # Per-category boost
+            confidence += cat_cfg.get("confidence_boost", 0.0)
+            confidence = min(confidence, 0.90)
+
+            signals.append(EventOpportunity(
+                market=m,
+                event_type=event_type,
+                edge=edge,
+                side=side,
+                confidence=confidence,
+                reasoning=(
+                    f"GLINT-REACTIVE: '{gopp.signal.title[:35]}' "
+                    f"rel={match.relevance_score:.0f} "
+                    f"impact={gopp.signal.impact_level} "
+                    f"sent={sent:+.2f} | "
+                    f"{side}@{p_yes if side == 'YES' else p_no:.3f}"
+                ),
+                signal_type="glint_reactive",
+                news_sentiment=sent,
+                news_volume="HIGH" if len(glint_opps) >= 5 else "MODERATE" if len(glint_opps) >= 2 else "LOW",
+                news_label="BULLISH" if sent > 0.3 else "BEARISH" if sent < -0.3 else "NEUTRAL",
+                news_strength=news_str,
+            ))
+
+        if signals:
+            logger.info(
+                f"[EVENT] Glint-reactive: {len(signals)} opportunita' "
+                f"da {len(glint_opps)} segnali Glint"
+            )
+
+        return signals
 
     # ── SEGNALE 1: NEWS-REACTIVE (primario) ──────────────────────
 
@@ -526,13 +658,15 @@ class EventDrivenStrategy:
 
     def _merge_breaking_news(self) -> list[tuple[str, NewsSentiment]]:
         """
-        Unifica breaking da Finlight + GDELT per categoria.
+        Unifica breaking da Finlight + GDELT + Glint per categoria.
         Per ogni categoria: prende la fonte con segnale piu' forte
-        (|sentiment| * n_articles). Se entrambe concordano (stesso segno
+        (|sentiment| * n_articles). Se 2+ concordano (stesso segno
         sentiment), applica boost 10% alla news_strength.
+        v10.5: Glint come terza fonte con bonus 1.2x e min_articles=1.
         """
         finlight_breaking: dict[str, NewsSentiment] = {}
         gdelt_breaking: dict[str, NewsSentiment] = {}
+        glint_breaking: dict[str, tuple[float, int]] = {}  # event_type → (sentiment, n_signals)
 
         if self.finlight:
             for et, ns in self.finlight.detect_breaking_news(
@@ -546,23 +680,65 @@ class EventDrivenStrategy:
             ):
                 gdelt_breaking[et] = ns
 
+        # v10.5: Glint breaking (min_articles=1, più reattivo)
+        if self.glint and self.glint.available:
+            for et, avg_sent, n_signals in self.glint.detect_breaking_news(
+                min_articles=1, min_sentiment=0.20
+            ):
+                glint_breaking[et] = (avg_sent, n_signals)
+
+        # v10.6: Twitter breaking (4a fonte, NO bonus — VADER meno preciso)
+        twitter_breaking: dict[str, NewsSentiment] = {}
+        if self.twitter and self.twitter.is_healthy:
+            for et, ns in self.twitter.detect_breaking_news(
+                min_articles=3, min_sentiment=0.25
+            ):
+                twitter_breaking[et] = ns
+
         # Merge: per ogni categoria prendi la fonte con segnale piu' forte
-        all_categories = set(finlight_breaking) | set(gdelt_breaking)
+        all_categories = (
+            set(finlight_breaking) | set(gdelt_breaking)
+            | set(glint_breaking) | set(twitter_breaking)
+        )
         merged: list[tuple[str, NewsSentiment]] = []
 
         for cat in all_categories:
             f_ns = finlight_breaking.get(cat)
             g_ns = gdelt_breaking.get(cat)
+            gl_data = glint_breaking.get(cat)
+            t_ns = twitter_breaking.get(cat)
 
-            if f_ns and g_ns:
-                f_signal = abs(f_ns.avg_sentiment) * f_ns.n_articles
-                g_signal = abs(g_ns.avg_sentiment) * g_ns.n_articles
-                best = f_ns if f_signal >= g_signal else g_ns
-                merged.append((cat, best))
-            elif f_ns:
-                merged.append((cat, f_ns))
-            elif g_ns:
-                merged.append((cat, g_ns))
+            # Raccogli tutti i candidati con il loro signal strength
+            candidates: list[tuple[float, NewsSentiment]] = []
+            if f_ns:
+                candidates.append((abs(f_ns.avg_sentiment) * f_ns.n_articles, f_ns))
+            if g_ns:
+                candidates.append((abs(g_ns.avg_sentiment) * g_ns.n_articles, g_ns))
+            # v10.6: Twitter come 4a fonte, NO bonus (1.0x — VADER meno preciso)
+            if t_ns:
+                candidates.append((abs(t_ns.avg_sentiment) * t_ns.n_articles, t_ns))
+            if gl_data:
+                gl_sent, gl_n = gl_data
+                # Glint bonus 1.2x (segnali pre-matchati, più affidabili per relevance)
+                gl_signal = abs(gl_sent) * gl_n * 1.2
+                # Crea NewsSentiment sintetico per Glint
+                gl_ns = NewsSentiment(event_type=cat, fetched_at=time.time())
+                # Popola con articoli sintetici per compatibilità
+                from utils.finlight_feed import NewsArticle
+                for _ in range(gl_n):
+                    gl_ns.articles.append(NewsArticle(
+                        title="Glint signal",
+                        sentiment="positive" if gl_sent > 0 else "negative",
+                        confidence=min(abs(gl_sent), 0.9),
+                    ))
+                candidates.append((gl_signal, gl_ns))
+
+            if not candidates:
+                continue
+
+            # Prendi la fonte con segnale più forte
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            merged.append((cat, candidates[0][1]))
 
         merged.sort(
             key=lambda x: abs(x[1].avg_sentiment) * x[1].n_articles,
@@ -574,46 +750,63 @@ class EventDrivenStrategy:
         self, question: str, event_type: str
     ) -> NewsSentiment:
         """
-        Sentiment specifico per mercato da entrambe le fonti.
+        Sentiment specifico per mercato dalle fonti disponibili.
         Prende la fonte con piu' articoli. A parita': Finlight (piu' preciso).
+        Priorità: Finlight > GDELT > Twitter.
         """
         f_ns = None
         g_ns = None
+        t_ns = None
 
         if self.finlight:
             f_ns = self.finlight.get_market_sentiment(question, event_type)
         # v9.2.2: Query per-mercato GDELT solo se feed healthy
         if self.gdelt and self.gdelt.is_healthy:
             g_ns = self.gdelt.get_market_sentiment(question, event_type)
+        # v10.6: Twitter come 3° fallback
+        if self.twitter and self.twitter.is_healthy:
+            t_ns = self.twitter.get_market_sentiment(question, event_type)
 
-        if f_ns and g_ns:
-            # A parita' di articoli, Finlight vince (piu' preciso)
-            if g_ns.n_articles > f_ns.n_articles:
-                return g_ns
-            return f_ns
-        elif f_ns:
-            return f_ns
-        elif g_ns:
-            return g_ns
+        # Raccogli fonti con dati
+        sources = []
+        if f_ns and f_ns.n_articles > 0:
+            sources.append(("finlight", f_ns))
+        if g_ns and g_ns.n_articles > 0:
+            sources.append(("gdelt", g_ns))
+        if t_ns and t_ns.n_articles > 0:
+            sources.append(("twitter", t_ns))
 
-        return NewsSentiment(event_type=event_type)
+        if not sources:
+            return NewsSentiment(event_type=event_type)
+
+        # Ordina per n_articles desc; a parita' Finlight > GDELT > Twitter
+        priority = {"finlight": 0, "gdelt": 1, "twitter": 2}
+        sources.sort(key=lambda x: (-x[1].n_articles, priority.get(x[0], 9)))
+        return sources[0][1]
 
     def _get_merged_news_strength(self, event_type: str) -> float:
         """
-        max(finlight, gdelt). Se concordano (entrambi > 0.3): +10%.
+        max(finlight, gdelt, glint, twitter). Se 2+ concordano (>0.3): +10%.
         """
         f_str = 0.0
         g_str = 0.0
+        gl_str = 0.0
+        t_str = 0.0
 
         if self.finlight:
             f_str = self.finlight.get_news_strength(event_type)
         if self.gdelt:
             g_str = self.gdelt.get_news_strength(event_type)
+        if self.glint and self.glint.available:
+            gl_str = self.glint.get_news_strength(event_type)
+        if self.twitter and self.twitter.is_healthy:
+            t_str = self.twitter.get_news_strength(event_type)
 
-        strength = max(f_str, g_str)
+        strength = max(f_str, g_str, gl_str, t_str)
 
-        # Boost 10% se entrambe le fonti concordano (segnale forte)
-        if f_str > 0.3 and g_str > 0.3:
+        # Boost 10% se 2+ fonti concordano (segnale forte)
+        sources_above = sum(1 for s in (f_str, g_str, gl_str, t_str) if s > 0.3)
+        if sources_above >= 2:
             strength = min(strength * 1.10, 1.0)
 
         return strength
@@ -639,8 +832,8 @@ class EventDrivenStrategy:
         market_id = opp.market.id
         last_traded = self._recently_traded.get(market_id, 0)
 
-        # Cooldown ridotto per news-reactive (reazione veloce)
-        cooldown = 180 if opp.signal_type == "news_reactive" else self._TRADE_COOLDOWN
+        # Cooldown ridotto per news-reactive e glint-reactive (reazione veloce)
+        cooldown = 180 if opp.signal_type in ("news_reactive", "glint_reactive") else self._TRADE_COOLDOWN
         if now - last_traded < cooldown:
             return False
 
@@ -671,8 +864,8 @@ class EventDrivenStrategy:
             )
             return False
 
-        # v5.9.3: Size boost per news-reactive (segnale forte + fee-free)
-        if opp.signal_type == "news_reactive" and opp.news_strength > 0.5:
+        # v5.9.3: Size boost per news-reactive/glint-reactive (segnale forte + fee-free)
+        if opp.signal_type in ("news_reactive", "glint_reactive") and opp.news_strength > 0.5:
             size = min(size * 1.3, self.risk.config.max_bet_size)
 
         allowed, reason = self.risk.can_trade(
@@ -720,8 +913,8 @@ class EventDrivenStrategy:
                 pnl = -size * slippage
             self.risk.close_trade(token_id, won=won, pnl=pnl)
         else:
-            # v5.9.3: Timeout ridotto per news-reactive (velocita')
-            timeout = 8.0 if opp.signal_type == "news_reactive" else 12.0
+            # v5.9.3: Timeout ridotto per news-reactive/glint-reactive (velocita')
+            timeout = 8.0 if opp.signal_type in ("news_reactive", "glint_reactive") else 12.0
             from utils.avellaneda_stoikov import market_inventory_frac
             inv = market_inventory_frac(self.risk.open_trades, opp.market.id, self.risk._strategy_budgets.get(STRATEGY_NAME, 1))
             vpin_val = self.risk.vpin_monitor.get_vpin(opp.market.id) if self.risk.vpin_monitor else 0.0

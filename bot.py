@@ -37,12 +37,15 @@ from utils.lunarcrush_feed import LunarCrushFeed
 from utils.cryptoquant_feed import CryptoQuantFeed
 from utils.finlight_feed import FinlightFeed
 from utils.gdelt_feed import GDELTFeed
+from utils.glint_feed import GlintFeed
+from utils.twitter_feed import TwitterFeed
 from utils.nansen_feed import NansenFeed
 from utils.dome_feed import DomeFeed
 from utils.polymarket_ws_feed import PolymarketWSFeed
 from utils.vpin_monitor import VPINMonitor
 from utils.risk_manager import RiskManager
 from utils.redeemer import Redeemer
+from utils.onchain_monitor import OnChainMonitor
 
 from strategies.arbitrage import ArbitrageStrategy
 from strategies.data_driven import DataDrivenStrategy
@@ -162,6 +165,8 @@ class MultiStrategyBot:
         self.cquant_feed = CryptoQuantFeed()
         self.finlight_feed = FinlightFeed()
         self.gdelt_feed = GDELTFeed()
+        self.glint_feed = GlintFeed()
+        self.twitter_feed = TwitterFeed()
         self.nansen_feed = NansenFeed()
         self.dome_feed = DomeFeed()
         self.ws_feed = PolymarketWSFeed()
@@ -217,6 +222,8 @@ class MultiStrategyBot:
             self.api, self.risk,
             finlight=self.finlight_feed,
             gdelt=self.gdelt_feed,
+            glint=self.glint_feed,
+            twitter=self.twitter_feed,
             min_edge=config.risk.min_edge,
         )
         self.gabagool = GabagoolStrategy(
@@ -241,6 +248,12 @@ class MultiStrategyBot:
         )
         self.risk.set_strategy_budget("whale_copy", config.capital_for("whale_copy"))
 
+        # v10.4: On-Chain Monitor — rilevamento whale trade via Polygon WebSocket (~2s)
+        from strategies.whale_copy import TRACKED_WALLETS as _TW
+        tracked_addrs = {v["address"] for v in _TW.values() if v.get("address")}
+        self.onchain_monitor = OnChainMonitor(tracked_wallets=tracked_addrs)
+        self.onchain_monitor.add_callback(self.whale.on_chain_trade)
+
         # v5.9.2: Resolution Sniper
         self.uma_monitor = UmaMonitor()
         self.sniper = ResolutionSniperStrategy(
@@ -256,6 +269,18 @@ class MultiStrategyBot:
         self.redeemer = Redeemer(priv_key, funder) if funder else None
         if self.redeemer and self.redeemer.available:
             logger.info("Auto-redeem attivo (web3 connesso a Polygon)")
+            # v10.4: Auto-approve USDC per i 3 contratti CLOB
+            try:
+                approve_results = self.redeemer.check_and_approve_usdc()
+                if approve_results:
+                    approved = sum(1 for v in approve_results.values() if v == "approved")
+                    ok = sum(1 for v in approve_results.values() if v == "ok")
+                    failed = sum(1 for v in approve_results.values() if v not in ("ok", "approved"))
+                    logger.info(
+                        f"[APPROVE] USDC allowance check: {ok} OK, {approved} approvati, {failed} falliti"
+                    )
+            except Exception as e:
+                logger.warning(f"[APPROVE] Errore auto-approve USDC: {e}")
         elif self.redeemer:
             logger.warning("Auto-redeem disabilitato (web3 non disponibile)")
 
@@ -353,6 +378,8 @@ class MultiStrategyBot:
             self.binance.connect(),
             self.uma_monitor.start(),  # v5.9.2: UMA resolution monitor
             self.ws_feed.connect(),    # v9.2: Polymarket WS price feed
+            self.onchain_monitor.start(),  # v10.4: On-chain whale trade monitor
+            self.glint_feed.connect(),  # v10.5: Glint.trade real-time intelligence
             self._main_loop(),
             self._dashboard_loop(),
         )
@@ -479,13 +506,17 @@ class MultiStrategyBot:
                 try:
                     weather_opps = await self.weather.scan(shared_markets=shared_markets)
                     if _can_trade:
-                        for opp in weather_opps[:3]:
+                        for opp in weather_opps[:5]:  # v10.6: da 3 — più trade weather per ciclo
                             if not self._running:
                                 break
                             signal = from_weather_opportunity(opp)
                             kelly = self.risk.kelly_size(opp.forecast_prob, signal.price, "weather")
                             report = self.signal_validator.validate(signal, trade_size=kelly)
-                            if report.result == ValidationResult.TRADE:
+                            if report.result == ValidationResult.TRADE or (
+                                report.result == ValidationResult.REVIEW and signal.edge >= 0.04
+                            ):
+                                if report.result == ValidationResult.REVIEW:
+                                    logger.info(f"[WEATHER] REVIEW accepted: edge={signal.edge:.4f} >= 0.04")
                                 self.attribution.record_entry(
                                     opp.market.tokens.get(opp.side.lower(), ""),
                                     "weather", "weather", "weather",
@@ -506,25 +537,26 @@ class MultiStrategyBot:
                 except Exception as e:
                     logger.error(f"[ARB] Errore strategia: {e}", exc_info=True)
 
-                # ── 4. Data-Driven ──
-                try:
-                    predictions = await self.data.analyze(shared_markets=shared_markets)
-                    if _can_trade:
-                        for pred in predictions[:3]:
-                            if not self._running:
-                                break
-                            signal = from_prediction(pred)
-                            kelly = self.risk.kelly_size(pred.true_prob_yes, signal.price, "data_driven")
-                            report = self.signal_validator.validate(signal, trade_size=kelly)
-                            if report.result == ValidationResult.TRADE:
-                                self.attribution.record_entry(
-                                    pred.market.tokens.get(pred.best_side.lower(), ""),
-                                    "data_driven", "data_driven", pred.market.category,
-                                    edge_predicted=pred.best_edge, validation_score=report.score,
-                                )
-                                await self.data.execute(pred, paper=paper)
-                except Exception as e:
-                    logger.error(f"[DATA] Errore strategia: {e}", exc_info=True)
+                # ── 4. Data-Driven — PAUSATO v10.6 (WR 42.9% vs break-even 67%, edge hardcoded 0.06) ──
+                # Le posizioni aperte vengono gestite dal position manager, ma non apre nuove.
+                # try:
+                #     predictions = await self.data.analyze(shared_markets=shared_markets)
+                #     if _can_trade:
+                #         for pred in predictions[:3]:
+                #             if not self._running:
+                #                 break
+                #             signal = from_prediction(pred)
+                #             kelly = self.risk.kelly_size(pred.true_prob_yes, signal.price, "data_driven")
+                #             report = self.signal_validator.validate(signal, trade_size=kelly)
+                #             if report.result == ValidationResult.TRADE:
+                #                 self.attribution.record_entry(
+                #                     pred.market.tokens.get(pred.best_side.lower(), ""),
+                #                     "data_driven", "data_driven", pred.market.category,
+                #                     edge_predicted=pred.best_edge, validation_score=report.score,
+                #                 )
+                #                 await self.data.execute(pred, paper=paper)
+                # except Exception as e:
+                #     logger.error(f"[DATA] Errore strategia: {e}", exc_info=True)
 
                 # ── 5. Event-Driven ──
                 try:
@@ -655,6 +687,13 @@ class MultiStrategyBot:
                 if self._cycle % 100 == 0:
                     self.risk.purge_stale_positions(max_age_hours=48.0)
 
+                    # v10.4: Position health check (ogni 100 cicli)
+                    if not self.config.paper_trading and self.risk.open_trades:
+                        try:
+                            await self._log_position_health()
+                        except Exception as e:
+                            logger.debug(f"[HEALTH] Errore: {e}")
+
                 # ── 12. Auto-sell posizioni vecchie (v5.6) ──
                 # Ogni 200 cicli (~10 min), vendi posizioni vecchie.
                 # v5.7: Se il saldo è basso, vendi le più vecchie (qualunque età)
@@ -695,6 +734,13 @@ class MultiStrategyBot:
                         )
                     except Exception as e:
                         logger.warning(f"[PNL-LIVE] Errore calcolo: {e}")
+
+                # ── v10.4: P&L Report periodico (ogni 50 cicli) ──
+                if self._cycle % 50 == 0 and self._cycle > 0:
+                    try:
+                        self._log_pnl_report()
+                    except Exception as e:
+                        logger.debug(f"[PNL-REPORT] Errore: {e}")
 
                 # ── v9.0: Drift + Calibration (ogni 500 cicli) ──
                 if self._cycle % 500 == 0 and self._cycle > 0:
@@ -1073,17 +1119,26 @@ class MultiStrategyBot:
             except Exception:
                 current_bid = 0
 
+            # v10.5: Book vuoto → HOLD, non vendere (nessuno compra)
+            # Previene il loop dove STOP_LOSS triggerato ma sell fallisce
+            # perché non ci sono bid, ripetuto ogni ciclo all'infinito.
+            if current_bid == 0:
+                logger.debug(
+                    f"[POSITION-MGR] Bid=0 (book vuoto): {trade.strategy} "
+                    f"entry@{trade.price:.4f} ({age_hours:.0f}h) — HOLD"
+                )
+                held += 1
+                continue
+
             # Calcola PnL percentuale
             if trade.price > 0 and current_bid > 0:
                 pnl_pct = (current_bid - trade.price) / trade.price
-            elif current_bid == 0:
-                pnl_pct = -1.0
             else:
                 pnl_pct = 0.0
 
             # v8.0: Bid sanity check — se bid < 50% dell'entry, l'order book
             # è probabilmente vuoto/stale. Non triggerare stop loss su dati fantasma.
-            if current_bid > 0 and trade.price > 0:
+            if trade.price > 0:
                 bid_ratio = current_bid / trade.price
                 if bid_ratio < 0.50:
                     logger.debug(
@@ -1263,6 +1318,113 @@ class MultiStrategyBot:
                 continue
 
         return total_pnl, n_profit, n_loss
+
+    def _log_pnl_report(self):
+        """v10.4: Report P&L periodico per strategia."""
+        s = self.risk.status
+
+        # Per-strategy breakdown
+        lines = ["[PNL-REPORT] ═══ Snapshot ═══"]
+        lines.append(f"  Capitale: ${s['capital']:.2f} | PnL oggi: ${s['daily_pnl']:+.2f} | W/L: {s['wins']}/{s['losses']} ({s['win_rate']:.0f}%)")
+        lines.append(f"  Posizioni: {s['open']} aperte | Esposto: ${s['exposed']:.2f} | USDC: ${getattr(self, '_usdc_balance', 0):.2f}")
+
+        # Unrealized
+        u = getattr(self, '_unrealized_pnl', None)
+        if u is not None:
+            lines.append(f"  Unrealized: ${u:+.2f} ({getattr(self, '_unrealized_up', 0)} ▲ / {getattr(self, '_unrealized_down', 0)} ▼)")
+
+        # Per-strategy P&L
+        if s['strategy_pnl']:
+            parts = [f"{k}=${v:+.2f}" for k, v in sorted(s['strategy_pnl'].items())]
+            lines.append(f"  Strategia: {' | '.join(parts)}")
+
+        # Position breakdown per strategy
+        by_strat = {}
+        for t in self.risk.open_trades:
+            by_strat.setdefault(t.strategy, []).append(t)
+        for strat, trades in sorted(by_strat.items()):
+            total_size = sum(t.size for t in trades)
+            avg_age = sum((time.time() - t.timestamp) / 3600 for t in trades) / len(trades)
+            lines.append(f"    {strat}: {len(trades)} pos, ${total_size:.0f} esposti, età media {avg_age:.0f}h")
+
+        # Attribution report (se disponibile)
+        if hasattr(self, 'attribution') and self.attribution:
+            report = self.attribution.report
+            if report.get('total_tracked', 0) > 0:
+                lines.append(f"  Attribution: {report['total_tracked']} trade tracciati, {report.get('active_trades', 0)} attivi")
+
+        lines.append("[PNL-REPORT] ═══════════════")
+        logger.info("\n".join(lines))
+
+    async def _log_position_health(self):
+        """v10.4: Health check posizioni aperte."""
+        trades = self.risk.open_trades
+        if not trades:
+            return
+
+        now = time.time()
+        lines = ["[HEALTH] ═══ Position Health Check ═══"]
+
+        # Aggregati
+        total_size = sum(t.size for t in trades)
+        ages = [(now - t.timestamp) / 3600 for t in trades]
+        avg_age = sum(ages) / len(ages)
+        stale_24h = sum(1 for a in ages if a > 24)
+        stale_48h = sum(1 for a in ages if a > 48)
+
+        lines.append(f"  {len(trades)} posizioni | ${total_size:.0f} esposti | età media {avg_age:.1f}h")
+        if stale_24h:
+            lines.append(f"  ⚠ {stale_24h} posizioni >24h ({stale_48h} >48h)")
+
+        # Check prezzi correnti (max 10 per non saturare API)
+        n_profit = 0
+        n_loss = 0
+        n_checked = 0
+        worst = None
+        worst_pnl_pct = 0.0
+
+        for trade in trades[:10]:
+            try:
+                book = await asyncio.to_thread(self.api.get_order_book, trade.token_id)
+                bids = book.get("bids", [])
+                if not bids:
+                    continue
+                bid = float(bids[0]["price"])
+                if trade.price > 0 and bid > 0:
+                    pnl_pct = (bid - trade.price) / trade.price
+                    if pnl_pct >= 0:
+                        n_profit += 1
+                    else:
+                        n_loss += 1
+                    if pnl_pct < worst_pnl_pct:
+                        worst_pnl_pct = pnl_pct
+                        worst = trade
+                    n_checked += 1
+            except Exception:
+                continue
+
+        if n_checked:
+            lines.append(f"  Prezzi controllati: {n_checked} — {n_profit} ▲ profitto, {n_loss} ▼ perdita")
+        if worst:
+            age_h = (now - worst.timestamp) / 3600
+            lines.append(
+                f"  Peggiore: {worst.strategy} '{worst.reason[:40]}' "
+                f"PnL={worst_pnl_pct:+.1%} età={age_h:.0f}h"
+            )
+
+        # Per-strategy concentration
+        by_strat = {}
+        for t in trades:
+            by_strat.setdefault(t.strategy, {"count": 0, "size": 0.0})
+            by_strat[t.strategy]["count"] += 1
+            by_strat[t.strategy]["size"] += t.size
+
+        for strat, info in sorted(by_strat.items(), key=lambda x: -x[1]["size"]):
+            pct = (info["size"] / total_size * 100) if total_size else 0
+            lines.append(f"    {strat}: {info['count']} pos, ${info['size']:.0f} ({pct:.0f}%)")
+
+        lines.append("[HEALTH] ══════════════════════════")
+        logger.info("\n".join(lines))
 
     async def _dashboard_loop(self):
         while self._running:
