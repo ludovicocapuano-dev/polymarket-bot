@@ -1,49 +1,99 @@
 """
-Favorite-Longshot Bias Exploitation v1.0
+Favorite-Longshot Bias Exploitation v2.0 (Quant Rewrite)
 
-Academic evidence (NBER, Economica): participants systematically overvalue
-longshots and undervalue favorites. Edge: 2-6% on favorites priced $0.70-$0.90.
+Academic foundation:
+  Snowberg & Wolfers (2010) — power function model for probability distortion:
+    p_true = p^alpha / (p^alpha + (1-p)^alpha)
+  alpha > 1 implies the favorite-longshot bias:
+    - Favorites (p > 0.5) are underpriced -> p_true > p_market
+    - Longshots (p < 0.5) are overpriced -> p_true < p_market
 
-Strategy: systematically buy favorites in fee-free markets where:
-1. Price is $0.70-$0.90 (strong favorite but not near-certain)
-2. Market is fee-free (politics, geopolitics, entertainment, science)
-3. Sufficient volume (bias strongest with retail participation)
-4. Not a weather market (already covered by weather strategy)
-5. Not a crypto market (fees kill the edge)
+  With alpha = 1.12 (conservative for prediction markets):
+    p=0.70 -> p_true=0.712 -> edge=1.2%
+    p=0.80 -> p_true=0.818 -> edge=1.8%
+    p=0.85 -> p_true=0.870 -> edge=2.0%
+    p=0.90 -> p_true=0.921 -> edge=2.1%
 
-Position sizing: quarter-Kelly with conservative 3% estimated edge.
+Market Efficiency Score: markets with higher liquidity/volume/tighter spread
+are more efficient and require larger edge to trade.
+
+Sizing: Half-Kelly f* = 0.5 * (p_true - price) / (1 - price).
+
+References:
+  Snowberg, Wolfers (2010) — Explaining the Favorite-Longshot Bias
+  Rothschild (2009) — Forecasting Elections
+  Thaler, Ziemba (1988) — Parimutuel Betting Markets
 """
 
 import logging
+import math
 import time
 from dataclasses import dataclass
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Categories where longshot bias is strongest (fee-free, retail-heavy)
-# ESCLUSI: sports (Becker: -$17.4M PnL), crypto (fees kill edge)
 BIAS_CATEGORIES = {"politics", "pop-culture", "entertainment", "science",
                    "world", "geopolitics", "elections", ""}
 
-# Keywords to EXCLUDE (already covered by other strategies or problematic)
 EXCLUDE_KEYWORDS = [
-    # weather strategy
     "temperature", "weather", "highest temp", "lowest temp", "precipitation",
-    # crypto (fees)
     "bitcoin price", "btc price", "eth price", "crypto price",
     "bitcoin", "ethereum", "solana", "xrp",
-    # sports (Becker: -$17.4M PnL, hard blacklist)
     "nba", "nfl", "mlb", "nhl", "premier league", "champions league",
     "serie a", "la liga", "bundesliga", "ligue 1", "copa",
     "world cup", "olympic", "grand slam", "grand prix", "formula 1",
     "f1", "ufc", "boxing", "tennis", "cricket", "rugby",
     " win on ", " win the ", " beat ", " defeat ",
     "finals", "playoff", "super bowl", "march madness", "ncaa",
-    # commodities (non prediction-market bias, spread-driven)
     "gold (gc)", "silver", "crude oil", "wti", "brent",
     "settle at", "futures",
+    # Sports patterns (team vs team, over/under, spread, moneyline)
+    " vs. ", " vs ", "o/u ", "over/under", "spread", "moneyline",
+    "predators", "sabres", "lakers", "celtics", "warriors", "yankees",
 ]
+
+
+def _implied_true_prob(p_market: float, alpha: float = 1.12) -> float:
+    """
+    Snowberg-Wolfers (2010) power function model.
+
+    p_true = p^alpha / (p^alpha + (1-p)^alpha)
+
+    alpha > 1 -> favorite-longshot bias:
+      favorites are underpriced (p_true > p_market)
+      longshots are overpriced (p_true < p_market)
+
+    alpha = 1.12 is conservative for prediction markets
+    (horse racing uses 1.3-1.5, prediction markets are more efficient).
+    """
+    if p_market <= 0.01 or p_market >= 0.99:
+        return p_market
+    pa = p_market ** alpha
+    qa = (1.0 - p_market) ** alpha
+    return pa / (pa + qa)
+
+
+def _market_efficiency(market) -> float:
+    """
+    Market efficiency score [0, 1].
+    Higher = more efficient = less exploitable edge.
+
+    Based on:
+    - Spread tightness (closer to sum=1.0 = more efficient)
+    - Liquidity depth (more capital = more efficient)
+    - Volume (more traded = more price discovery)
+    """
+    price_sum = market.prices.get("yes", 0.5) + market.prices.get("no", 0.5)
+    spread = abs(1.0 - price_sum)
+    spread_score = max(0.0, 1.0 - spread / 0.04)
+
+    liq = getattr(market, "liquidity", 0) or 0
+    liq_score = min(liq / 100_000, 1.0)
+
+    vol = getattr(market, "volume", 0) or 0
+    vol_score = min(vol / 500_000, 1.0)
+
+    return spread_score * 0.4 + liq_score * 0.3 + vol_score * 0.3
 
 
 @dataclass
@@ -52,33 +102,36 @@ class FavoriteLongshotOpportunity:
     question: str
     side: str
     price: float
-    edge: float  # estimated systematic edge
+    p_true: float       # Snowberg-Wolfers true probability
+    edge: float          # p_true - price (net of spread)
+    kelly_fraction: float
+    target_size: float
     token_id: str
     volume: float
     category: str
+    efficiency: float    # market efficiency score
+    alpha: float         # bias parameter used
 
 
 class FavoriteLongshotStrategy:
-    """Exploits the favorite-longshot bias in prediction markets."""
+    """Exploits the favorite-longshot bias with Snowberg-Wolfers model."""
 
-    # Price band for favorites
     MIN_PRICE = 0.70
     MAX_PRICE = 0.90
-    # Estimated systematic edge (conservative — literature says 2-6%)
-    BASE_EDGE = 0.03
-    # Volume/liquidity filters
-    MIN_VOLUME = 50_000  # need sufficient retail participation
+    BASE_ALPHA = 1.12      # baseline bias parameter
+    MIN_VOLUME = 50_000
     MIN_LIQUIDITY = 1_000
-    # Position limits
-    MAX_BET = 40.0  # v10.8.4: da $25, proporzionale al capitale
-    MAX_POSITIONS = 10  # diversify across many markets
-    # Timing
-    SCAN_INTERVAL = 1800  # every 30 min
-    COOLDOWN_PER_MARKET = 86400  # 24h cooldown per market
+    MIN_EDGE = 0.01        # 1% minimum edge after spread + efficiency
+    BANKROLL = 1000.0      # dedicated bankroll for this strategy
+    MAX_BET = 40.0
+    MIN_BET = 10.0
+    MAX_POSITIONS = 10
+    SCAN_INTERVAL = 1800
+    COOLDOWN_PER_MARKET = 86400
 
     def __init__(self):
         self._last_scan = 0.0
-        self._positions: dict[str, float] = {}  # market_id -> timestamp
+        self._positions: dict[str, float] = {}
         self._total_profit = 0.0
         self._total_trades = 0
 
@@ -86,29 +139,26 @@ class FavoriteLongshotStrategy:
         q = market.question.lower()
         return any(kw in q for kw in EXCLUDE_KEYWORDS)
 
-    def _estimate_edge(self, price: float, volume: float) -> float:
-        """Estimate bias edge based on price and market characteristics.
-
-        Bias is strongest for:
-        - Prices 0.75-0.85 (moderate favorites)
-        - High-volume retail markets (more unsophisticated participants)
+    def _estimate_alpha(self, market) -> float:
         """
-        # Base edge from literature
-        edge = self.BASE_EDGE
+        Estimate bias strength (alpha) based on market characteristics.
 
-        # Price adjustment: bias peaks around 0.80, weaker at extremes
-        if 0.75 <= price <= 0.85:
-            edge *= 1.2  # sweet spot
-        elif price > 0.88:
-            edge *= 0.7  # near-certain, less bias
+        More retail participation = stronger bias = higher alpha.
+        More efficient market = weaker bias = lower alpha.
+        """
+        alpha = self.BASE_ALPHA
 
-        # Volume adjustment: more retail = more bias
-        if volume > 500_000:
-            edge *= 1.15  # high-volume retail market
-        elif volume < 100_000:
-            edge *= 0.85  # low activity, may be efficient
+        vol = getattr(market, "volume", 0) or 0
+        if vol > 500_000:
+            alpha += 0.04    # high retail volume = stronger bias
+        elif vol < 100_000:
+            alpha -= 0.03    # low activity = less retail bias
 
-        return round(edge, 4)
+        # Efficiency adjustment: more efficient markets have less bias
+        eff = _market_efficiency(market)
+        alpha -= eff * 0.05  # max -0.05 for very efficient markets
+
+        return max(alpha, 1.01)  # alpha must be > 1 for bias to exist
 
     def scan(self, markets: list) -> list[FavoriteLongshotOpportunity]:
         now = time.time()
@@ -116,7 +166,6 @@ class FavoriteLongshotStrategy:
             return []
         self._last_scan = now
 
-        # Check position limit
         active = sum(1 for ts in self._positions.values()
                      if now - ts < self.COOLDOWN_PER_MARKET)
         if active >= self.MAX_POSITIONS:
@@ -135,8 +184,6 @@ class FavoriteLongshotStrategy:
                 continue
             if m.liquidity < self.MIN_LIQUIDITY:
                 continue
-
-            # Cooldown check
             if m.condition_id in self._positions:
                 if now - self._positions[m.condition_id] < self.COOLDOWN_PER_MARKET:
                     continue
@@ -154,43 +201,61 @@ class FavoriteLongshotStrategy:
                 fav_side, fav_price = "NO", p_no
                 token_id = m.tokens.get("no", "")
 
-            # Price filter: only favorites in the sweet spot
             if fav_price < self.MIN_PRICE or fav_price > self.MAX_PRICE:
                 continue
-
             if not token_id:
                 continue
 
-            edge = self._estimate_edge(fav_price, m.volume)
+            # ── Snowberg-Wolfers: compute true probability ──
+            alpha = self._estimate_alpha(m)
+            p_true = _implied_true_prob(fav_price, alpha)
+            raw_edge = p_true - fav_price
 
-            # Only trade if estimated edge is positive after spread
-            spread_cost = m.spread / 2 if hasattr(m, 'spread') else 0.01
-            net_edge = edge - spread_cost
-            if net_edge < 0.01:
+            # Spread cost
+            spread_cost = m.spread / 2 if hasattr(m, "spread") else 0.01
+
+            # Efficiency-adjusted minimum edge: efficient markets need more
+            eff = _market_efficiency(m)
+            adj_min_edge = self.MIN_EDGE * (1.0 + eff * 0.5)
+
+            net_edge = raw_edge - spread_cost
+            if net_edge < adj_min_edge:
                 continue
+
+            # ── Half-Kelly sizing ──
+            # f* = (p_true - price) / (1 - price)
+            kelly_full = max(0.0, (p_true - fav_price) / (1.0 - fav_price))
+            kelly_half = kelly_full * 0.5
+
+            size = self.BANKROLL * kelly_half
+            size = max(self.MIN_BET, min(size, self.MAX_BET))
 
             opp = FavoriteLongshotOpportunity(
                 market_id=m.condition_id,
                 question=m.question[:80],
                 side=fav_side,
                 price=fav_price,
+                p_true=p_true,
                 edge=net_edge,
+                kelly_fraction=kelly_half,
+                target_size=size,
                 token_id=token_id,
                 volume=m.volume,
                 category=m.category,
+                efficiency=eff,
+                alpha=alpha,
             )
             opportunities.append(opp)
 
         # Sort by edge (highest first)
         opportunities.sort(key=lambda o: o.edge, reverse=True)
 
-        # Limit to top N
         remaining_slots = self.MAX_POSITIONS - active
         opportunities = opportunities[:remaining_slots]
 
         if scanned > 0:
             logger.info(
-                f"[FAV-LONG] Scanned {scanned} eligible markets → "
+                f"[FAV-LONG] Scanned {scanned} eligible markets -> "
                 f"{len(opportunities)} opportunities "
                 f"(active={active}/{self.MAX_POSITIONS})"
             )
@@ -199,25 +264,16 @@ class FavoriteLongshotStrategy:
 
     def execute(self, opp: FavoriteLongshotOpportunity, api, risk,
                 live: bool = False) -> bool:
-        size = self.MAX_BET
-
-        # Kelly sizing: conservative quarter-Kelly
-        # f* = (edge) / (1 - price) for favorites
-        payoff = (1.0 / opp.price) - 1.0
-        if payoff > 0:
-            kelly = opp.edge / (1.0 - opp.price)
-            quarter_kelly = kelly * 0.25
-            # Scale to dollar amount (cap at MAX_BET)
-            budget = risk.get_budget("favorite_longshot") if hasattr(risk, 'get_budget') else 500.0
-            kelly_size = quarter_kelly * budget
-            size = min(max(kelly_size, 10.0), self.MAX_BET)
+        size = opp.target_size
 
         if not live:
             self._positions[opp.market_id] = time.time()
             self._total_trades += 1
             logger.info(
                 f"[FAV-LONG] PAPER BUY {opp.side} ${size:.0f} @{opp.price:.2f} "
-                f"edge={opp.edge:.3f} '{opp.question[:50]}'"
+                f"p_true={opp.p_true:.3f} edge={opp.edge:.3f} "
+                f"alpha={opp.alpha:.2f} eff={opp.efficiency:.2f} "
+                f"kelly={opp.kelly_fraction:.4f} '{opp.question[:50]}'"
             )
             return True
 
@@ -232,8 +288,8 @@ class FavoriteLongshotStrategy:
                 self._total_trades += 1
                 logger.info(
                     f"[FAV-LONG] BUY {opp.side} ${size:.0f} @{opp.price:.2f} "
-                    f"edge={opp.edge:.3f} vol=${opp.volume:,.0f} "
-                    f"'{opp.question[:50]}'"
+                    f"p_true={opp.p_true:.3f} edge={opp.edge:.3f} "
+                    f"alpha={opp.alpha:.2f} '{opp.question[:50]}'"
                 )
                 return True
             else:

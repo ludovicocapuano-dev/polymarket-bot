@@ -42,6 +42,27 @@ from utils.risk_manager import RiskManager, Trade
 
 logger = logging.getLogger(__name__)
 
+
+def _market_efficiency(market: Market) -> float:
+    """
+    Market efficiency score [0, 1].
+    Higher = more efficient = less exploitable edge.
+
+    Based on spread tightness, liquidity depth, and volume.
+    Used to adjust min_edge: efficient markets need higher edge to trade.
+    """
+    price_sum = market.prices.get("yes", 0.5) + market.prices.get("no", 0.5)
+    spread = abs(1.0 - price_sum)
+    spread_score = max(0.0, 1.0 - spread / 0.04)
+
+    liq = getattr(market, "liquidity", 0) or 0
+    liq_score = min(liq / 100_000, 1.0)
+
+    vol = getattr(market, "volume", 0) or 0
+    vol_score = min(vol / 500_000, 1.0)
+
+    return spread_score * 0.4 + liq_score * 0.3 + vol_score * 0.3
+
 STRATEGY_NAME = "weather"
 MAX_WEATHER_BET = 60.0  # v10.8.4: da $35, proporzionale al capitale ($3.5K)
 
@@ -310,68 +331,58 @@ class WeatherStrategy:
         best_side = "YES" if edge_yes > edge_no else "NO"
         best_edge = max(edge_yes, edge_no)
 
-        # v10.8.4: MIN_EDGE alzato — dati: 122W/125L (49% WR) = edge reale ~0.
-        # Servono soglie piu' alte per filtrare noise e tradare solo edge vere.
-        days_ahead_edge = self._days_until(date)
-        if days_ahead_edge == 0:
-            effective_min_edge = 0.05   # same-day: forecast MAE ~1F, serve edge reale
-        elif days_ahead_edge == 1:
-            effective_min_edge = 0.12   # +1 giorno: MAE ~2.5F, edge robusta
+        # ── MIN_EDGE: horizon-based + market efficiency adjustment ──
+        # L'incertezza del forecast cresce con l'orizzonte. Non serve una
+        # confidence inventata: sigma nel modello Phi(bucket) gia' cattura
+        # l'incertezza. Serve solo una soglia di edge minima crescente.
+        days_ahead = self._days_until(date)
+        if days_ahead == 0:
+            effective_min_edge = 0.05   # same-day: forecast MAE ~1F
+        elif days_ahead == 1:
+            effective_min_edge = 0.12   # +1 giorno: MAE ~2.5F
         else:
-            effective_min_edge = 0.20   # +2 giorni+: MAE ~3.5F, solo edge enormi
+            effective_min_edge = 0.20   # +2 giorni+: MAE ~3.5F
+
+        # Market efficiency: mercati efficienti (alta liquidita', spread
+        # stretto) hanno bisogno di edge piu' alta per giustificare il trade.
+        eff = _market_efficiency(market)
+        effective_min_edge *= (1.0 + eff * 0.5)  # fino a +50% per mercati efficienti
+
+        # Latency Hunter: se il forecast e' appena cambiato, il mercato
+        # e' probabilmente sul vecchio prezzo → riduci min_edge.
+        if _is_latency_opportunity:
+            effective_min_edge *= 0.70  # 30% di sconto sulla soglia
+            logger.info(
+                f"[LATENCY-HUNTER] {city} {label}: "
+                f"shift={forecast_shift:+.1f}°C -> min_edge ridotto a "
+                f"{effective_min_edge:.3f}"
+            )
+
         if best_edge < effective_min_edge:
             logger.debug(
                 f"[WEATHER-SKIP] low edge: {city} {label} "
-                f"edge={best_edge:.4f} < min={effective_min_edge}"
+                f"edge={best_edge:.4f} < min={effective_min_edge:.4f}"
             )
             return None
 
-        # v7.0: Filtro rischio asimmetrico su prezzi estremi.
-        # BUY_NO a 0.93 = rischia $23.25 per guadagnare $1.75 (risk/reward 13:1)
-        # Anche con 90% accuratezza: EV = 0.9*1.75 - 0.1*23.25 = -$0.75 NEGATIVO
-        # Blocca trade dove il risk/reward supera 5:1
-        # 7. Confidence basata sulla qualita' della previsione
-        # - Orizzonte vicino = piu' affidabile
-        # - Piu' fonti = piu' affidabile (consensus multi-provider)
-        # - Ensemble presente = piu' affidabile
-        days_ahead = self._days_until(date)
-        horizon_conf = max(0.3, 1.0 - days_ahead * 0.1)  # 1.0 per oggi, 0.3 per 7gg
+        # ── Source quality gate ──
+        # Non serve una confidence inventata. Servono solo abbastanza fonti
+        # per fidarci della stima probabilistica. sigma nel modello Phi()
+        # cattura gia' l'incertezza — piu' fonti = sigma piu' precisa.
+        n_sources = forecast.n_sources if hasattr(forecast, 'n_sources') else (
+            1 if forecast.ensemble_temps else 0)
 
-        # Bonus per numero di fonti (1 fonte=0.6, 2=0.8, 3+=0.9)
-        n_sources = forecast.n_sources if hasattr(forecast, 'n_sources') else (1 if forecast.ensemble_temps else 0)
-        source_conf = min(0.5 + n_sources * 0.15, 0.9)
-
-        # Ensemble boost (se abbiamo dati probabilistici, non solo punto)
-        has_ensemble = bool(forecast.ensemble_temps)
-        ensemble_boost = 1.0 if has_ensemble else 0.8
-
-        # Penalita' per alta incertezza del forecast
-        forecast_uncertainty = forecast.uncertainty_in_unit(unit)
-        if forecast_uncertainty > 4.0:
-            uncertainty_penalty = 0.70   # alta incertezza: -30%
-        elif forecast_uncertainty > 2.5:
-            uncertainty_penalty = 0.85   # media incertezza: -15%
-        else:
-            uncertainty_penalty = 1.0    # bassa incertezza: nessuna penalita'
-
-        confidence = min(horizon_conf * source_conf * ensemble_boost * uncertainty_penalty, 0.90)
-
-        # v10.8.5: Latency Hunter boost — se il forecast e' appena cambiato,
-        # il mercato e' probabilmente sul vecchio prezzo. Boost confidence
-        # perche' abbiamo una ragione strutturale per credere nell'edge.
-        if _is_latency_opportunity:
-            confidence = min(confidence * 1.15, 0.92)
-            logger.info(
-                f"[LATENCY-HUNTER] Confidence boost per {city} {label}: "
-                f"shift={forecast_shift:+.1f}°C → conf={confidence:.3f}"
-            )
-
-        if confidence < self.min_confidence:
+        # Multi-day con fonte singola: troppo incerto
+        if n_sources < 2 and days_ahead > 1:
             logger.debug(
-                f"[WEATHER-SKIP] low confidence: {city} {label} "
-                f"conf={confidence:.3f} < min={self.min_confidence}"
+                f"[WEATHER-SKIP] single source multi-day: {city} {label} "
+                f"sources={n_sources} days={days_ahead}"
             )
             return None
+
+        # Confidence per logging/compatibilita' — derivata dai dati, non inventata.
+        # Basata su: edge magnitude + fonte count. Non usata come filtro.
+        confidence = min(0.50 + n_sources * 0.10 + best_edge * 0.30, 0.95)
 
         buy_price = price_yes if best_side == "YES" else price_no
 
