@@ -90,6 +90,8 @@ class RiskManager:
         self.db = None
         # v10.0: Empirical Kelly (iniettato da bot.py)
         self.empirical_kelly = None
+        # v11.0: Drift detector (iniettato da bot.py) per dynamic σ
+        self.drift_detector = None
 
     @property
     def total_exposed(self) -> float:
@@ -378,21 +380,30 @@ class RiskManager:
                 # Blend 70% empirical + 30% statico (floor di sicurezza)
                 base_frac = base_frac * (0.70 * emp_factor + 0.30)
 
-        # v10.8.4: Uncertainty-adjusted Kelly (Chu & Swartz 2024, arXiv:2412.14144)
-        # Se la stima di probabilità ha incertezza sigma, il Kelly ottimale si riduce.
-        # f_adjusted = f_kelly * (1 - sigma^2 / (p*(1-p)))
-        # Per weather: sigma ~0.05-0.10 (dipende da orizzonte e fonti)
-        # Per sniper: sigma ~0.03 (Perplexity verification)
+        # v11.0: Dynamic uncertainty σ (Chu & Swartz 2024 + drift-adaptive)
+        # Base σ per strategy, then scaled by drift_score from CUSUM detector.
+        # drift_score ∈ [0, 1]: 0 = healthy, 1 = severe drift.
+        # σ_dynamic = σ_base * (1 + drift_score) → max 2x base σ when drifting.
         uncertainty_sigmas = {
-            "weather": 0.08,             # forecast uncertainty tipica
-            "resolution_sniper": 0.03,   # quasi-certo
-            "event_driven": 0.12,        # alta incertezza
+            "weather": 0.08,
+            "resolution_sniper": 0.03,
+            "event_driven": 0.12,
             "high_prob_bond": 0.05,
         }
         sigma = uncertainty_sigmas.get(strategy, 0.10)
         if strategy == "weather" and days_ahead is not None:
-            # Sigma cresce con l'orizzonte
-            sigma = 0.05 + days_ahead * 0.02  # 0.05 same-day, 0.07 +1d, 0.09 +2d
+            sigma = 0.05 + days_ahead * 0.02
+
+        # v11.0: Drift-adaptive σ scaling
+        if self.drift_detector is not None:
+            drift_score = self.drift_detector.get_drift_score(strategy)
+            if drift_score > 0:
+                sigma *= (1.0 + drift_score)
+                logger.debug(
+                    f"[DYNAMIC-σ] {strategy} drift={drift_score:.2f} "
+                    f"→ σ={sigma:.3f}"
+                )
+
         intrinsic_var = win_prob * (1 - win_prob)
         if intrinsic_var > 0:
             uncertainty_factor = max(0.3, 1.0 - (sigma ** 2) / intrinsic_var)

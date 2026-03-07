@@ -354,6 +354,7 @@ class MultiStrategyBot:
         # ── v9.0: Layer 3 — Correlation Monitor & Tail Risk ──
         self.correlation_monitor = CorrelationMonitor(risk_manager=self.risk)
         self.risk.correlation_monitor = self.correlation_monitor
+        self.risk.drift_detector = self.drift_detector  # v11.0: dynamic σ
         self.risk.ws_feed = self.ws_feed  # v9.2.1: flash move protection
         self.risk.vpin_monitor = self.vpin_monitor  # v9.2.1: VPIN toxic flow
         self.ws_feed.on_trade = self.vpin_monitor.record_trade  # v9.2.1: feed VPIN
@@ -796,7 +797,7 @@ class MultiStrategyBot:
                                 self.attribution.record_exit(
                                     t.token_id, pnl=pnl, won=r["won"]
                                 )
-                                self.drift_detector.record_outcome(t.strategy, r["won"])
+                                self.drift_detector.record_outcome(t.strategy, r["won"], pnl=pnl)
                                 logger.info(
                                     f"[PNL] Trade chiuso: "
                                     f"{'VINTO' if r['won'] else 'PERSO'} "
@@ -908,6 +909,21 @@ class MultiStrategyBot:
                         suggestions = self.calibration.analyze()
                         for s in suggestions:
                             logger.info(f"[CALIBRATION] {s.reason}")
+
+                        # v11.0: Log IC + health score + Brier decomposition
+                        for strat in ["weather", "resolution_sniper", "favorite_longshot"]:
+                            health = self.drift_detector.get_strategy_health(strat)
+                            if health["samples"] > 0:
+                                ic = self.attribution.get_information_coefficient(strategy=strat)
+                                brier_d = self.attribution.get_brier_decomposition(strategy=strat)
+                                logger.info(
+                                    f"[QUANT] {strat}: H={health['health_score']:.2f} "
+                                    f"({health['status']}) IC={ic:.3f} "
+                                    f"drift={health['drift_score']:.2f} "
+                                    f"Brier={brier_d['brier']:.3f} "
+                                    f"(rel={brier_d['reliability']:.3f} "
+                                    f"res={brier_d['resolution']:.3f})"
+                                )
                     except Exception as e:
                         logger.warning(f"[v9.0] Errore drift/calibration: {e}")
 

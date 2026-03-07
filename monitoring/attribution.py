@@ -1,13 +1,20 @@
 """
-Attribution Engine v9.0 — P&L per segnale con Brier score.
+Attribution Engine v11.0 — P&L attribution + IC + Brier decomposition.
 
-Traccia ogni trade dall'entry all'exit, calcolando:
-- PnL per segnale/strategia/categoria
-- Brier score per misurare la calibrazione
-- Alpha decay per detectare strategie che perdono edge
+v9.0: Basic Brier score + alpha decay
+v11.0 (Qlib-inspired):
+  - Information Coefficient (IC): rank correlation between predicted edge
+    and realized outcome. IC > 0.05 = useful signal (Qlib standard).
+  - Brier Decomposition (Murphy 1973):
+    Brier = Reliability - Resolution + Uncertainty
+    - Reliability: how well-calibrated are the probabilities
+    - Resolution: how much the probabilities vary from base rate
+    - Uncertainty: inherent unpredictability (base_rate * (1 - base_rate))
+  - IC Decay: rolling IC over time windows to detect signal staleness
 """
 
 import logging
+import math
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -164,9 +171,152 @@ class AttributionEngine:
             return 1.0
         return recent_wr / old_wr
 
+    def get_information_coefficient(self, strategy: str = "",
+                                     window: int = 50) -> float:
+        """
+        Information Coefficient (IC) — Qlib's primary signal quality metric.
+
+        IC = Spearman rank correlation between predicted edge and realized outcome.
+        IC > 0.05 = useful signal, IC > 0.10 = strong signal.
+        IC ≈ 0 = random, IC < 0 = contrarian (invert signal).
+
+        Uses rank correlation (Spearman) to be robust to outliers.
+        """
+        relevant = self._completed
+        if strategy:
+            relevant = [a for a in relevant if a.strategy == strategy]
+        relevant = relevant[-window:]
+
+        # Need predicted prob and outcome
+        pairs = [
+            (a.win_prob_predicted or a.edge_predicted, 1.0 if a.won else 0.0)
+            for a in relevant
+            if (a.win_prob_predicted or a.edge_predicted) > 0
+        ]
+
+        if len(pairs) < 10:
+            return 0.0  # insufficient data
+
+        predictions, outcomes = zip(*pairs)
+        return self._spearman_rank_corr(list(predictions), list(outcomes))
+
+    @staticmethod
+    def _spearman_rank_corr(x: list[float], y: list[float]) -> float:
+        """Spearman rank correlation without scipy."""
+        n = len(x)
+        if n < 3:
+            return 0.0
+
+        def _rank(vals):
+            indexed = sorted(enumerate(vals), key=lambda t: t[1])
+            ranks = [0.0] * n
+            i = 0
+            while i < n:
+                j = i
+                while j < n - 1 and indexed[j + 1][1] == indexed[j][1]:
+                    j += 1
+                avg_rank = (i + j) / 2.0 + 1.0
+                for k in range(i, j + 1):
+                    ranks[indexed[k][0]] = avg_rank
+                i = j + 1
+            return ranks
+
+        rx = _rank(x)
+        ry = _rank(y)
+
+        d_sq = sum((a - b) ** 2 for a, b in zip(rx, ry))
+        return 1.0 - (6.0 * d_sq) / (n * (n * n - 1))
+
+    def get_brier_decomposition(self, strategy: str = "",
+                                 window: int = 100,
+                                 n_bins: int = 10) -> dict:
+        """
+        Brier Score Decomposition (Murphy 1973).
+
+        Brier = Reliability - Resolution + Uncertainty
+
+        - Reliability (lower = better): miscalibration penalty.
+          Σ n_k/N * (f_k - o_k)² where f_k = avg predicted prob in bin k,
+          o_k = observed frequency in bin k.
+        - Resolution (higher = better): how much predictions differ from base rate.
+          Σ n_k/N * (o_k - base_rate)²
+        - Uncertainty: base_rate * (1 - base_rate) — inherent, irreducible.
+        """
+        relevant = self._completed
+        if strategy:
+            relevant = [a for a in relevant if a.strategy == strategy]
+        relevant = relevant[-window:]
+
+        pairs = [
+            (a.win_prob_predicted, 1.0 if a.won else 0.0)
+            for a in relevant
+            if a.win_prob_predicted > 0
+        ]
+
+        if len(pairs) < 10:
+            return {
+                "brier": 0.25, "reliability": 0.0,
+                "resolution": 0.0, "uncertainty": 0.25,
+                "n": len(pairs),
+            }
+
+        predictions, outcomes = zip(*pairs)
+        n = len(predictions)
+        base_rate = sum(outcomes) / n
+        uncertainty = base_rate * (1.0 - base_rate)
+
+        # Bin predictions into n_bins equal-width bins [0, 1]
+        bins: dict[int, list[tuple[float, float]]] = defaultdict(list)
+        for p, o in zip(predictions, outcomes):
+            bin_idx = min(int(p * n_bins), n_bins - 1)
+            bins[bin_idx].append((p, o))
+
+        reliability = 0.0
+        resolution = 0.0
+        for bin_idx, bin_data in bins.items():
+            n_k = len(bin_data)
+            f_k = sum(p for p, _ in bin_data) / n_k  # avg predicted prob
+            o_k = sum(o for _, o in bin_data) / n_k   # observed frequency
+            reliability += (n_k / n) * (f_k - o_k) ** 2
+            resolution += (n_k / n) * (o_k - base_rate) ** 2
+
+        brier = reliability - resolution + uncertainty
+
+        return {
+            "brier": round(brier, 4),
+            "reliability": round(reliability, 4),
+            "resolution": round(resolution, 4),
+            "uncertainty": round(uncertainty, 4),
+            "base_rate": round(base_rate, 3),
+            "n": n,
+        }
+
+    def get_ic_decay(self, strategy: str, windows: list[int] | None = None) -> dict:
+        """
+        IC decay over multiple time windows.
+        Detects signal staleness: if IC is declining, model is losing edge.
+        """
+        if windows is None:
+            windows = [20, 50, 100]
+
+        result = {}
+        for w in windows:
+            ic = self.get_information_coefficient(strategy=strategy, window=w)
+            result[f"ic_{w}"] = round(ic, 4)
+
+        # IC trend: compare shortest vs longest window
+        if len(windows) >= 2:
+            ic_recent = result.get(f"ic_{windows[0]}", 0)
+            ic_long = result.get(f"ic_{windows[-1]}", 0)
+            result["ic_trend"] = "declining" if ic_recent < ic_long - 0.03 else (
+                "improving" if ic_recent > ic_long + 0.03 else "stable"
+            )
+
+        return result
+
     @property
     def report(self) -> dict:
-        """Report completo di attribution."""
+        """Report completo di attribution con IC e Brier decomposition."""
         pnl_by_signal: dict[str, float] = defaultdict(float)
         pnl_by_category: dict[str, float] = defaultdict(float)
         pnl_by_strategy: dict[str, float] = defaultdict(float)
@@ -182,12 +332,24 @@ class AttributionEngine:
         strategies = set(a.strategy for a in self._completed)
         brier_scores = {s: self.get_brier_score(strategy=s) for s in strategies}
 
+        # IC per strategia
+        ic_scores = {s: self.get_information_coefficient(strategy=s) for s in strategies}
+
+        # Brier decomposition per strategia
+        brier_decomp = {
+            s: self.get_brier_decomposition(strategy=s) for s in strategies
+        }
+
         return {
             "pnl_by_signal": dict(pnl_by_signal),
             "pnl_by_category": dict(pnl_by_category),
             "pnl_by_strategy": dict(pnl_by_strategy),
             "count_by_signal": dict(count_by_signal),
             "brier_scores": brier_scores,
+            "information_coefficients": {
+                s: round(v, 4) for s, v in ic_scores.items()
+            },
+            "brier_decomposition": brier_decomp,
             "total_tracked": len(self._completed),
             "active_trades": len(self._active),
         }

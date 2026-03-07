@@ -145,6 +145,14 @@ class FavoriteLongshotStrategy:
 
         More retail participation = stronger bias = higher alpha.
         More efficient market = weaker bias = lower alpha.
+
+        v11.0: Time-decaying alpha — retail bias weakens as market
+        approaches resolution (price discovery converges). Inspired by
+        Qlib's alpha decay tracking and Snowberg-Wolfers empirical finding
+        that bias is strongest in early trading.
+
+        α_t = α_base * (1 - (t/T)^2) where t = time elapsed, T = total duration.
+        Quadratic decay: slow initially, accelerates near resolution.
         """
         alpha = self.BASE_ALPHA
 
@@ -157,6 +165,33 @@ class FavoriteLongshotStrategy:
         # Efficiency adjustment: more efficient markets have less bias
         eff = _market_efficiency(market)
         alpha -= eff * 0.05  # max -0.05 for very efficient markets
+
+        # v11.0: Time decay — bias fades as market nears resolution
+        end_date = getattr(market, "end_date", None)
+        if end_date:
+            try:
+                now = time.time()
+                # end_date could be ISO string or timestamp
+                if isinstance(end_date, str):
+                    from datetime import datetime, timezone
+                    end_ts = datetime.fromisoformat(
+                        end_date.replace("Z", "+00:00")
+                    ).timestamp()
+                else:
+                    end_ts = float(end_date)
+
+                remaining = max(0, end_ts - now)
+                total_duration = 30 * 86400  # assume 30-day market as reference
+                # Fraction of life remaining: 1.0 = just opened, 0.0 = about to resolve
+                life_frac = min(1.0, remaining / total_duration)
+                # Quadratic decay: alpha_excess decays as (life_frac)^2
+                alpha_excess = alpha - 1.0
+                alpha = 1.0 + alpha_excess * (0.3 + 0.7 * life_frac ** 2)
+                # At 100% life remaining: alpha = base (full bias)
+                # At 50% remaining: alpha = 1 + excess * 0.475 (~56% bias)
+                # At 0% remaining: alpha = 1 + excess * 0.3 (30% residual bias)
+            except (ValueError, TypeError, OverflowError):
+                pass  # can't parse end_date, use unadjusted alpha
 
         return max(alpha, 1.01)  # alpha must be > 1 for bias to exist
 
