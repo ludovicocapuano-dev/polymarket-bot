@@ -63,6 +63,7 @@ from strategies.resolution_sniper import ResolutionSniperStrategy
 from strategies.negrisk_arb import NegRiskArbScanner
 from strategies.holding_rewards import HoldingRewardsStrategy
 from strategies.favorite_longshot import FavoriteLongshotStrategy
+from strategies.btc_latency import BTCLatencyStrategy
 from utils.uma_monitor import UmaMonitor
 
 try:
@@ -290,6 +291,11 @@ class MultiStrategyBot:
         # ── v10.8.4: Holding Rewards (4% APY) + Favorite-Longshot Bias ──
         self.holding_rewards = HoldingRewardsStrategy()
         self.favorite_longshot = FavoriteLongshotStrategy()
+        # v10.8.5: BTC Latency Arb (PAPER ONLY — prototipo)
+        self.btc_latency = BTCLatencyStrategy(
+            api=self.api, risk=self.risk, binance=self.binance,
+            base_size=500.0, max_size=2000.0,  # conservativo per paper test
+        )
 
         # ── Auto-Redeem vincite risolte ──
         priv_key = config.creds.private_key.strip()
@@ -583,6 +589,16 @@ class MultiStrategyBot:
                                 self.favorite_longshot.execute(opp, self.api, self.risk, live=not paper)
                     except Exception as e:
                         logger.error(f"[FAV-LONG] Errore: {e}", exc_info=True)
+
+                # ── 0.9. BTC Latency Arb (PAPER ONLY — prototipo v10.8.5) ──
+                # Ispirato a Female-Bongo ($508K profit). Paper test per validare.
+                try:
+                    latency_signals = self.btc_latency.scan()
+                    if latency_signals:
+                        for sig in latency_signals[:2]:  # max 2 per ciclo
+                            await self.btc_latency.execute(sig, paper=True)  # SEMPRE paper
+                except Exception as e:
+                    logger.debug(f"[BTC-LATENCY] Errore: {e}")
 
                 # ── 1. Crypto 5-Min — DISABILITATO v7.0 (fees > edge, Kelly negativo) ──
 
