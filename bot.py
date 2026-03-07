@@ -291,10 +291,10 @@ class MultiStrategyBot:
         # ── v10.8.4: Holding Rewards (4% APY) + Favorite-Longshot Bias ──
         self.holding_rewards = HoldingRewardsStrategy()
         self.favorite_longshot = FavoriteLongshotStrategy()
-        # v10.8.5: BTC Latency Arb (PAPER ONLY — prototipo)
+        # v10.8.6: BTC Latency Arb v2.0 — Black-Scholes + Half-Kelly (PAPER ONLY)
         self.btc_latency = BTCLatencyStrategy(
             api=self.api, risk=self.risk, binance=self.binance,
-            base_size=500.0, max_size=2000.0,  # conservativo per paper test
+            bankroll=5000.0, base_size=100.0, max_size=2000.0,
         )
 
         # ── Auto-Redeem vincite risolte ──
@@ -598,7 +598,7 @@ class MultiStrategyBot:
                         for sig in latency_signals[:2]:  # max 2 per ciclo
                             await self.btc_latency.execute(sig, paper=True)  # SEMPRE paper
                 except Exception as e:
-                    logger.debug(f"[BTC-LATENCY] Errore: {e}")
+                    logger.warning(f"[BTC-LATENCY] Errore: {e}", exc_info=True)
 
                 # ── 1. Crypto 5-Min — DISABILITATO v7.0 (fees > edge, Kelly negativo) ──
 

@@ -1,32 +1,49 @@
 """
-Strategia: BTC Latency Arbitrage — v1.0 (Prototipo)
-====================================================
-Ispirata a Female-Bongo ($508K profit, 11K trade, 59% WR).
+Strategia: BTC Latency Arbitrage — v2.0 (Quant Rewrite)
+========================================================
 
-Meccanismo:
-1. Monitora BTC price su Binance WS in real-time (sub-100ms)
-2. Rileva movimento direzionale forte (momentum + OBI + trade flow)
-3. Compra il favorito (Up o Down) su mercati Polymarket 5-min
-4. Il mercato Polymarket reagisce con 3-10s di ritardo
-5. In quel gap c'e' alpha
+Modello di segnale — Black-Scholes per binary outcome:
 
-Differenze dal vecchio crypto_5min:
-- Nessun filtro sentiment/LunarCrush/CryptoQuant (troppo lento)
-- Signal puramente da price action Binance (sub-second)
-- Sizing aggressivo ($500-$5000 per slot, non $25)
-- Sweep orderbook (taker), non limit maker
-- Solo BTC (piu' liquido, meno noise)
+  P(Up) = Phi(d),  dove  d = ln(S_t / S_0) / (sigma * sqrt(tau))
 
-Fee: crypto mercati hanno fee ~0.8% round-trip a p=0.50.
-Con entry a p=0.70, fee one-way ~0.4%. Serve edge > 0.5%.
+  - S_t   = prezzo BTC corrente (Binance real-time)
+  - S_0   = prezzo BTC all'apertura del 5-min slot
+  - sigma = realized volatility per-second (Andersen-Bollerslev 1998)
+  - tau   = secondi rimanenti nel slot
+  - Phi   = CDF della normale standard
 
-Capitale richiesto: minimo $5K dedicati.
+  Edge = P_fair - P_market  (gap tra valore reale e prezzo stale Polymarket)
+
+Filtri di conferma (il segnale BS da solo non basta — serve conferma
+che il movimento e' reale e informato, non noise):
+
+  1. Volume Z-score   — surge detection: move reale vs rumore
+  2. Price acceleration — derivata seconda: move in corso vs esaurito
+  3. Trade flow imbalance — aggressor side allineato alla direzione
+  4. OBI (Order Book Imbalance) — book conferma pressione direzionale
+
+Sizing — Half-Kelly per binary market (Kelly 1956):
+
+  f* = 0.5 * (p - c) / (1 - c)
+
+  dove p = fair probability, c = costo (prezzo Polymarket).
+  Half-Kelly riduce varianza del 75% sacrificando solo 25% del rendimento atteso.
+
+Timing — entry solo tra 30s e 240s nel slot:
+  - Primi 30s: open price incerto, modello impreciso
+  - 30-240s: finestra ottimale, prezzo Polymarket stale vs informazione Binance
+  - Ultimi 60s: mercato efficiente, no edge residuo
+
+Riferimenti:
+  Black, Scholes (1973) — probability of finishing ITM
+  Andersen, Bollerslev (1998) — realized volatility from tick data
+  Kyle (1985) — price impact and informed trading
+  Kelly (1956) — optimal fraction sizing
 """
 
 import logging
 import math
 import random
-import re
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -41,55 +58,40 @@ logger = logging.getLogger(__name__)
 
 STRATEGY_NAME = "btc_latency"
 
-# Pattern per mercati Bitcoin 5-min "Up or Down"
-BTC_5MIN_PATTERNS = [
-    re.compile(r"bitcoin\s+up\s+or\s+down", re.I),
-    re.compile(r"btc\s+up\s+or\s+down", re.I),
-]
 
-# Timeframe pattern: "2:20PM-2:25PM" = 5 min
-TIME_SLOT_PATTERN = re.compile(
-    r"(\d{1,2}):(\d{2})(AM|PM)\s*-\s*(\d{1,2}):(\d{2})(AM|PM)\s*(ET|EST|EDT)",
-    re.I,
-)
+def _norm_cdf(x: float) -> float:
+    """Phi(x) = 0.5 * (1 + erf(x / sqrt(2)))  —  no scipy needed."""
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
 
 @dataclass
 class LatencySignal:
-    """Segnale di latency arbitrage."""
+    """Segnale con fair value da modello Black-Scholes."""
     market: Market
     direction: str          # "UP" o "DOWN"
-    side: str               # "YES" per Up-market, "NO" per Down-market
-    confidence: float       # 0-1
-    edge: float             # stimato
-    btc_price: float        # prezzo BTC al momento del segnale
-    btc_momentum_5s: float  # momentum 5s
-    btc_momentum_15s: float # momentum 15s
-    obi: float              # order book imbalance
-    buy_pressure: float     # net buy pressure (0-1)
+    side: str               # "YES" o "NO"
+    fair_prob: float        # P(Up) dal modello
+    market_price: float     # prezzo Polymarket del side scelto
+    edge: float             # edge netto (dopo fee)
+    confidence: float       # 0-1, da filtri di conferma
+    kelly_fraction: float   # f* half-Kelly
     target_size: float      # $ da investire
+    btc_price: float
+    btc_open: float         # prezzo apertura slot
+    realized_vol: float     # sigma per-second
+    d_score: float          # d nel modello BS
+    vol_zscore: float       # volume anomaly Z-score
+    filters_passed: int     # quanti filtri confermano (0-4)
+    time_remaining: float   # secondi rimanenti nel slot
     reasoning: str
 
 
 @dataclass
 class BTCLatencyStrategy:
     """
-    Latency arbitrage su mercati Bitcoin Up/Down 5-min.
-
-    Signal generation:
-    - Momentum 5s/15s/30s da Binance trade stream
-    - OBI (Order Book Imbalance) da depth stream
-    - Net buy/sell pressure da trade flow
-    - Tutti devono concordare sulla direzione
-
-    Entry:
-    - Compra il favorito (Up o Down) quando segnale forte
-    - Sweep orderbook (market buy fino a target size)
-    - Max prezzo entry: $0.82 (sopra = rischio troppo alto)
-
-    Exit:
-    - Hold fino a settlement (5 min slot)
-    - No exit anticipato per ora (v1.0)
+    Latency arbitrage quantitativo su mercati Bitcoin Up/Down 5-min.
+    Usa Black-Scholes per calcolare il fair value, confronta con prezzo
+    Polymarket, e trada quando il gap supera la soglia minima.
     """
 
     api: PolymarketAPI
@@ -97,26 +99,33 @@ class BTCLatencyStrategy:
     binance: BinanceFeed
 
     # ── Parametri ──
-    base_size: float = 500.0          # $ per trade (scaling graduale)
-    max_size: float = 5000.0          # $ max per slot
-    max_entry_price: float = 0.82     # non comprare sopra (payoff troppo basso)
-    min_entry_price: float = 0.55     # non comprare sotto (segnale debole)
-    min_momentum_strength: float = 0.0003  # min |momentum_5s| per triggerare
-    min_obi_strength: float = 0.15    # min |OBI| per conferma
-    min_confidence: float = 0.55      # soglia confidence
-    cooldown_sec: float = 60.0        # cooldown per mercato (un 5-min slot)
-    trade_hours: tuple = (13, 0, 23, 0)  # 8AM-6PM ET = 13:00-23:00 UTC
+    bankroll: float = 5000.0         # capitale dedicato a questa strategia
+    base_size: float = 100.0         # $ minimo per trade
+    max_size: float = 2000.0         # $ massimo per trade
+    min_edge: float = 0.03           # 3% edge minimo netto fee
+    min_vol_zscore: float = 1.0      # Z-score volume minimo (surge detection)
+    min_filters: int = 2             # minimo filtri confermanti su 4
+    max_entry_price: float = 0.80    # non comprare sopra
+    min_entry_price: float = 0.52    # non comprare sotto (troppo vicino a 50/50)
+    entry_window: tuple = (30, 240)  # secondi nel slot: entry tra 30s e 240s
+    cooldown_sec: float = 60.0       # un solo trade per slot
+    trade_hours: tuple = (0, 0, 23, 59)  # 24/7
 
     # ── State ──
     _trades_executed: int = 0
     _recently_traded: dict = field(default_factory=dict)
-    _pnl_tracker: dict = field(default_factory=dict)  # tracking per analisi
+    _pnl_tracker: dict = field(default_factory=dict)
     _signal_history: deque = field(default_factory=lambda: deque(maxlen=500))
-    _market_cache: dict = field(default_factory=dict)  # slug -> (Market, expire_ts)
+    _market_cache: dict = field(default_factory=dict)   # slug -> (Market, expire_ts)
+    _slot_opens: dict = field(default_factory=dict)      # epoch -> btc_price
 
-    # ── Market Discovery ──
+    # ── Constants ──
     GAMMA_API = "https://gamma-api.polymarket.com/markets"
     SLOT_DURATION = 300  # 5 minuti
+
+    # ══════════════════════════════════════════════════════════════
+    #  Market Discovery (unchanged from v1.0 — slug pattern works)
+    # ══════════════════════════════════════════════════════════════
 
     def discover_btc_markets(self) -> list[Market]:
         """
@@ -124,17 +133,14 @@ class BTCLatencyStrategy:
         Slug: btc-updown-5m-{epoch} dove epoch e' allineato a 300s.
         Fetcha il slot corrente e i prossimi 2 (15 min di copertura).
         """
-        import datetime
         now = int(time.time())
         current_slot = now - (now % self.SLOT_DURATION)
         markets = []
 
-        # Slot corrente + prossimi 2
         for offset in range(3):
             epoch = current_slot + offset * self.SLOT_DURATION
             slug = f"btc-updown-5m-{epoch}"
 
-            # Cache check (evita fetch ripetuti)
             cached = self._market_cache.get(slug)
             if cached:
                 mkt, expire_ts = cached
@@ -156,12 +162,10 @@ class BTCLatencyStrategy:
                 if not data:
                     continue
 
-                # Gamma API ritorna lista
                 item = data[0] if isinstance(data, list) else data
-
-                # Costruisci Market object
                 condition_id = item.get("conditionId", item.get("condition_id", ""))
                 question = item.get("question", "")
+
                 outcomes = item.get("outcomes", ["Up", "Down"])
                 if isinstance(outcomes, str):
                     import json as _json
@@ -170,7 +174,6 @@ class BTCLatencyStrategy:
                     except Exception:
                         outcomes = ["Up", "Down"]
 
-                # Token IDs
                 clob_token_ids = item.get("clobTokenIds", item.get("clob_token_ids", []))
                 if isinstance(clob_token_ids, str):
                     import json as _json
@@ -179,7 +182,6 @@ class BTCLatencyStrategy:
                     except Exception:
                         clob_token_ids = []
 
-                # Prices
                 outcome_prices = item.get("outcomePrices", item.get("outcome_prices", ""))
                 if isinstance(outcome_prices, str):
                     import json as _json
@@ -201,16 +203,18 @@ class BTCLatencyStrategy:
                         prices = {"yes": 0.5, "no": 0.5}
 
                 mkt = Market(
-                    id=condition_id,
+                    id=item.get("id", condition_id),
+                    condition_id=condition_id,
                     question=question,
-                    outcomes=outcomes,
+                    slug=slug,
                     tokens=tokens,
                     prices=prices,
                     volume=float(item.get("volume", 0)),
-                    slug=slug,
+                    liquidity=float(item.get("liquidity", 0)),
+                    end_date=item.get("endDate", item.get("end_date", "")),
+                    active=item.get("active", True),
+                    outcomes=outcomes,
                 )
-
-                # Cache per 60s (i prezzi cambiano)
                 self._market_cache[slug] = (mkt, time.time() + 60)
                 markets.append(mkt)
 
@@ -218,7 +222,6 @@ class BTCLatencyStrategy:
                     f"[BTC-DISCOVERY] Found: {question} | "
                     f"prices={prices} slug={slug}"
                 )
-
             except Exception as e:
                 logger.debug(f"[BTC-DISCOVERY] Error fetching {slug}: {e}")
                 continue
@@ -228,203 +231,366 @@ class BTCLatencyStrategy:
 
         return markets
 
+    # ══════════════════════════════════════════════════════════════
+    #  Core: Scan con modello quantitativo
+    # ══════════════════════════════════════════════════════════════
+
     def scan(self, shared_markets: list[Market] | None = None) -> list[LatencySignal]:
-        """Scansiona per opportunita' di latency arbitrage."""
-        # Check: Binance feed BTC pronto
+        """
+        Scan quantitativo:
+        1. Calcola realized vol da tick data (Andersen-Bollerslev)
+        2. Per ogni slot attivo, calcola fair P(Up) via Black-Scholes
+        3. Confronta con prezzo Polymarket → edge
+        4. Filtra con volume surge, acceleration, TFI, OBI
+        5. Size via Half-Kelly
+        """
         if self.binance.symbol_price("btc") == 0:
             return []
 
-        # Check: siamo in orario di trading?
-        import datetime
-        now_utc = datetime.datetime.now(datetime.timezone.utc)
-        hour_utc = now_utc.hour + now_utc.minute / 60.0
-        start_h = self.trade_hours[0] + self.trade_hours[1] / 60.0
-        end_h = self.trade_hours[2] + self.trade_hours[3] / 60.0
-        if not (start_h <= hour_utc <= end_h):
-            return []
-
-        # Scopri mercati BTC 5-min direttamente (non dipende da shared_markets)
         btc_markets = self.discover_btc_markets()
         if not btc_markets:
             return []
 
-        # Genera segnale da Binance price action
-        signal_dir, signal_conf, signal_data = self._generate_signal()
-        if signal_dir is None or signal_conf < self.min_confidence:
-            return []
-
+        btc = self.binance.get_symbol("btc")
         now = time.time()
+
+        # ── 1. Realized volatility (per-second) ──
+        sigma = self._realized_vol(btc, window=60)
+        if sigma < 1e-8:
+            if int(now) % 30 < 8:
+                logger.info(
+                    f"[BTC-LATENCY] sigma too low: {sigma:.10f} "
+                    f"(history={len(btc.history)} ticks)"
+                )
+            return []  # non abbastanza dati tick
+
+        # ── 2. Microstructure features (calcolati una volta per ciclo) ──
+        vol_z = self._volume_zscore(btc, short_window=5, long_window=30)
+        accel = self._price_acceleration(btc)
+        buy_pressure = self._calc_buy_pressure(btc, window=10)
+        obi = self._calc_obi(btc)
+
+        # Cleanup slot opens vecchi (>10 min)
+        stale = [e for e in self._slot_opens if now - e > 600]
+        for e in stale:
+            del self._slot_opens[e]
+
         signals = []
 
         for m in btc_markets:
-            # Cooldown
+            # Cooldown per mercato
             if now - self._recently_traded.get(m.id, 0) < self.cooldown_sec:
                 continue
 
-            # Determina side: se mercato e' "Up", e il segnale e' UP → compra YES
-            side = self._determine_side(m, signal_dir)
-            if side is None:
+            # Parse slot epoch dal slug
+            slug = getattr(m, "slug", "")
+            try:
+                slot_epoch = int(slug.split("-")[-1])
+            except (ValueError, IndexError):
                 continue
 
-            # Prezzo
-            buy_price = m.prices.get(side.lower(), 0.5)
+            # ── Timing gate ──
+            t_elapsed = now - slot_epoch
+            t_remaining = (slot_epoch + self.SLOT_DURATION) - now
+
+            if t_elapsed < self.entry_window[0] or t_elapsed > self.entry_window[1]:
+                continue
+            if t_remaining <= 0:
+                continue
+
+            # ── Open price del slot ──
+            s_open = self._get_slot_open(slot_epoch, btc)
+            if s_open is None or s_open <= 0:
+                continue
+
+            s_now = btc.price
+
+            # ═══════════════════════════════════════════════
+            #  BLACK-SCHOLES: P(Up) = Phi(d)
+            #  d = ln(S_t / S_0) / (sigma * sqrt(tau))
+            # ═══════════════════════════════════════════════
+            log_return = math.log(s_now / s_open)
+            vol_term = sigma * math.sqrt(t_remaining)
+
+            if vol_term < 1e-10:
+                fair_up = 1.0 if log_return > 0 else 0.0
+                d = 999.0 if log_return > 0 else -999.0
+            else:
+                d = log_return / vol_term
+                fair_up = _norm_cdf(d)
+
+            # ── Edge: quale side ha valore? ──
+            price_yes = m.prices.get("yes", 0.5)   # prezzo "Up"
+            price_no = m.prices.get("no", 0.5)      # prezzo "Down"
+
+            edge_up = fair_up - price_yes            # edge se compriamo Up
+            edge_down = (1.0 - fair_up) - price_no   # edge se compriamo Down
+
+            if edge_up >= edge_down:
+                direction = "UP"
+                side = "YES"
+                edge_raw = edge_up
+                buy_price = price_yes
+                fair_p = fair_up
+            else:
+                direction = "DOWN"
+                side = "NO"
+                edge_raw = edge_down
+                buy_price = price_no
+                fair_p = 1.0 - fair_up
+
+            # Price bounds
             if buy_price > self.max_entry_price or buy_price < self.min_entry_price:
                 continue
 
-            # Edge stimato: momentum-based
-            # Female-Bongo fa 59% WR comprando a 0.70 avg
-            # Edge = WR_true - price = 0.59 - price
-            # Con segnale forte (conf > 0.7): WR stima ~62%
-            # Con segnale medio (conf 0.55-0.7): WR stima ~56%
-            estimated_wr = 0.50 + signal_conf * 0.15  # max ~0.635
-            edge = estimated_wr - buy_price
+            # Fee crypto: p * feeRate * (p*(1-p))^exponent
+            fee = buy_price * 0.25 * (buy_price * (1 - buy_price)) ** 2
+            edge_net = edge_raw - fee
 
-            # Fee crypto: C * p * feeRate * (p*(1-p))^exponent
-            # feeRate=0.25, exponent=2
-            fee_one_way = buy_price * 0.25 * (buy_price * (1 - buy_price)) ** 2
-            edge_net = edge - fee_one_way
-
-            if edge_net < 0.01:  # almeno 1% edge netto
+            if edge_net < self.min_edge:
                 continue
 
-            # Sizing: scala con confidence
-            size = self.base_size * (signal_conf / 0.55)  # boost per alta conf
-            size = min(size, self.max_size)
+            # ── Filtri di conferma ──
+            filters_passed = 0
 
-            # Payoff check: non comprare se payoff ratio < 0.20
-            payoff = (1.0 / buy_price) - 1.0 if buy_price > 0 else 0
-            if payoff < 0.20:
+            # 1. Volume surge (il move e' accompagnato da volume anomalo?)
+            if vol_z >= self.min_vol_zscore:
+                filters_passed += 1
+
+            # 2. Price acceleration (il move sta continuando, non esaurendosi?)
+            if (direction == "UP" and accel > 0) or \
+               (direction == "DOWN" and accel < 0):
+                filters_passed += 1
+
+            # 3. Trade flow (gli aggressor trades confermano la direzione?)
+            if (direction == "UP" and buy_pressure > 0.58) or \
+               (direction == "DOWN" and buy_pressure < 0.42):
+                filters_passed += 1
+
+            # 4. OBI (l'order book conferma la pressione direzionale?)
+            if (direction == "UP" and obi > 0.10) or \
+               (direction == "DOWN" and obi < -0.10):
+                filters_passed += 1
+
+            if filters_passed < self.min_filters:
                 continue
+
+            # Confidence: base da edge magnitude + filter bonus
+            confidence = min(0.5 + filters_passed * 0.1, 0.95)
+
+            # ═══════════════════════════════════════════════
+            #  HALF-KELLY SIZING
+            #  f* = (p - c) / (1 - c)  per binary market
+            #  Half-Kelly = f* / 2
+            # ═══════════════════════════════════════════════
+            kelly_full = max(0.0, (fair_p - buy_price) / (1.0 - buy_price))
+            kelly_half = kelly_full * 0.5
+
+            size = self.bankroll * kelly_half
+            size = max(self.base_size, min(size, self.max_size))
 
             sig = LatencySignal(
                 market=m,
-                direction=signal_dir,
+                direction=direction,
                 side=side,
-                confidence=signal_conf,
+                fair_prob=fair_p,
+                market_price=buy_price,
                 edge=edge_net,
-                btc_price=signal_data["btc_price"],
-                btc_momentum_5s=signal_data["mom_5s"],
-                btc_momentum_15s=signal_data["mom_15s"],
-                obi=signal_data["obi"],
-                buy_pressure=signal_data["buy_pressure"],
+                confidence=confidence,
+                kelly_fraction=kelly_half,
                 target_size=size,
+                btc_price=s_now,
+                btc_open=s_open,
+                realized_vol=sigma,
+                d_score=d,
+                vol_zscore=vol_z,
+                filters_passed=filters_passed,
+                time_remaining=t_remaining,
                 reasoning=(
-                    f"BTC ${signal_data['btc_price']:,.0f} | "
-                    f"DIR={signal_dir} conf={signal_conf:.3f} | "
-                    f"mom5s={signal_data['mom_5s']:+.5f} "
-                    f"mom15s={signal_data['mom_15s']:+.5f} | "
-                    f"OBI={signal_data['obi']:+.3f} "
-                    f"buyP={signal_data['buy_pressure']:.3f} | "
-                    f"edge={edge_net:.4f} price={buy_price:.3f} "
-                    f"fee={fee_one_way:.4f} payoff={payoff:.2f}x"
+                    f"BTC ${s_now:,.0f} (open=${s_open:,.0f} "
+                    f"ret={log_return:+.5f}) | "
+                    f"BS: d={d:+.2f} P_fair={fair_p:.3f} vs "
+                    f"mkt={buy_price:.3f} -> edge={edge_net:.4f} | "
+                    f"sigma={sigma:.6f}/s tau={t_remaining:.0f}s | "
+                    f"vol_z={vol_z:.1f} accel={accel:+.6f} "
+                    f"TFI={buy_pressure:.2f} OBI={obi:+.2f} | "
+                    f"filters={filters_passed}/4 "
+                    f"kelly={kelly_half:.4f} size=${size:.0f}"
                 ),
             )
             signals.append(sig)
             self._signal_history.append({
                 "time": now,
-                "dir": signal_dir,
-                "conf": signal_conf,
-                "btc": signal_data["btc_price"],
+                "dir": direction,
+                "d": d,
+                "fair": fair_p,
+                "mkt": buy_price,
                 "edge": edge_net,
+                "vol_z": vol_z,
+                "filters": filters_passed,
+                "sigma": sigma,
             })
+
+        # Sort by edge (best opportunity first)
+        signals.sort(key=lambda s: s.edge, reverse=True)
 
         if signals:
             best = signals[0]
+            logger.info(f"[BTC-LATENCY] {best.direction} | {best.reasoning}")
+        elif btc_markets and int(now) % 30 < 8:
+            # Log diagnostico ogni ~60s quando non c'e' edge
+            s_now = btc.price
+            slot_epoch = None
+            try:
+                slug = getattr(btc_markets[0], "slug", "")
+                slot_epoch = int(slug.split("-")[-1])
+            except Exception:
+                pass
+            s_open = self._slot_opens.get(slot_epoch, s_now) if slot_epoch else s_now
+            lr = math.log(s_now / s_open) if s_open > 0 else 0
             logger.info(
-                f"[BTC-LATENCY] {len(btc_markets)} mercati, "
-                f"{len(signals)} segnali | "
-                f"best: {best.direction} @{best.market.prices.get(best.side.lower(), 0):.3f} "
-                f"edge={best.edge:.4f} conf={best.confidence:.3f} "
-                f"size=${best.target_size:.0f} | {best.reasoning}"
+                f"[BTC-LATENCY] no edge | BTC=${s_now:,.0f} "
+                f"open=${s_open:,.0f} ret={lr:+.6f} "
+                f"sigma={sigma:.7f} vol_z={vol_z:.1f} "
+                f"mkts={len(btc_markets)}"
             )
 
         return signals
 
-    def _generate_signal(self) -> tuple[str | None, float, dict]:
+    # ══════════════════════════════════════════════════════════════
+    #  Quantitative Helpers
+    # ══════════════════════════════════════════════════════════════
+
+    def _realized_vol(self, btc, window: int = 60) -> float:
         """
-        Genera segnale direzionale da Binance price action.
+        Realized volatility per-second (Andersen-Bollerslev 1998).
 
-        Combina:
-        1. Momentum 5s/15s/30s (weighted)
-        2. OBI (Order Book Imbalance)
-        3. Net buy/sell pressure dagli ultimi 30s di trade flow
+        RV = sum(log_return_i^2)  over window
+        sigma_per_sec = sqrt(RV / total_seconds)
 
-        Tutti devono concordare per un segnale forte.
+        Usa tick data dal Binance trade stream.
         """
-        btc = self.binance.get_symbol("btc")
-        if btc.price == 0:
-            return None, 0, {}
+        if len(btc.history) < 10:
+            return 0.0
 
-        # 1. Momentum multi-timeframe
-        mom_5s = self.binance.momentum(5, "btc")
-        mom_15s = self.binance.momentum(15, "btc")
-        mom_30s = self.binance.momentum(30, "btc")
+        now = time.time()
+        cutoff = now - window
+        prices = [(ts, p) for ts, p in btc.history if ts >= cutoff]
 
-        # Weighted momentum score
-        weighted_mom = mom_5s * 0.50 + mom_15s * 0.30 + mom_30s * 0.20
+        if len(prices) < 10:
+            return 0.0
 
-        # Minimo momentum per triggerare
-        if abs(weighted_mom) < self.min_momentum_strength:
-            return None, 0, {}
+        # Realized variance: sum of squared log returns
+        rv = 0.0
+        for i in range(1, len(prices)):
+            if prices[i - 1][1] > 0:
+                lr = math.log(prices[i][1] / prices[i - 1][1])
+                rv += lr * lr
 
-        # 2. OBI (Order Book Imbalance)
-        obi = self._calc_obi(btc)
+        total_time = prices[-1][0] - prices[0][0]
+        if total_time <= 0:
+            return 0.0
 
-        # 3. Net buy pressure (ultimi 30s)
-        buy_pressure = self._calc_buy_pressure(btc, window=30)
+        return math.sqrt(rv / total_time)
 
-        # Direction e confidence
-        direction = "UP" if weighted_mom > 0 else "DOWN"
+    def _get_slot_open(self, slot_epoch: int, btc) -> float | None:
+        """
+        Prezzo BTC all'apertura del slot. Registra alla prima osservazione.
+        Cerca nel history di Binance il prezzo piu' vicino al timestamp di
+        apertura. Fallback: prezzo corrente se siamo nei primi 30s.
+        """
+        if slot_epoch in self._slot_opens:
+            return self._slot_opens[slot_epoch]
 
-        # Confidence: tutti devono concordare
-        signals_agree = 0
-        if direction == "UP":
-            if obi > self.min_obi_strength:
-                signals_agree += 1
-            if buy_pressure > 0.55:
-                signals_agree += 1
-            if mom_5s > 0 and mom_15s > 0:
-                signals_agree += 1
-        else:
-            if obi < -self.min_obi_strength:
-                signals_agree += 1
-            if buy_pressure < 0.45:
-                signals_agree += 1
-            if mom_5s < 0 and mom_15s < 0:
-                signals_agree += 1
+        # Cerca in history il prezzo piu' vicino a slot_epoch
+        best_price = None
+        best_dt = float("inf")
+        for ts, price in btc.history:
+            dt = abs(ts - slot_epoch)
+            if dt < best_dt:
+                best_dt = dt
+                best_price = price
 
-        # Base confidence da momentum strength
-        vol = self.binance.volatility(60, "btc")
-        vol_floor = max(vol, 0.00005)
-        snr = min(abs(weighted_mom) / vol_floor, 5.0)
-        base_conf = 0.40 + snr * 0.06  # 0.40-0.70
+        if best_price and best_dt < 60:
+            self._slot_opens[slot_epoch] = best_price
+            return best_price
 
-        # Agreement boost
-        if signals_agree == 3:
-            confidence = min(base_conf * 1.25, 0.90)  # tutti concordano
-        elif signals_agree == 2:
-            confidence = min(base_conf * 1.10, 0.80)  # 2/3 concordano
-        elif signals_agree == 1:
-            confidence = base_conf * 0.90  # solo 1/3
-        else:
-            confidence = base_conf * 0.70  # nessuno conferma
+        # Fallback: se siamo nei primi 30s del slot, usa prezzo corrente
+        now = time.time()
+        if now - slot_epoch < 30:
+            self._slot_opens[slot_epoch] = btc.price
+            return btc.price
 
-        data = {
-            "btc_price": btc.price,
-            "mom_5s": mom_5s,
-            "mom_15s": mom_15s,
-            "mom_30s": mom_30s,
-            "weighted_mom": weighted_mom,
-            "obi": obi,
-            "buy_pressure": buy_pressure,
-            "snr": snr,
-            "signals_agree": signals_agree,
-        }
+        return None
 
-        return direction, confidence, data
+    def _volume_zscore(self, btc, short_window: int = 5, long_window: int = 30) -> float:
+        """
+        Volume anomaly detection via Z-score.
+
+        Z = (vol_rate_short - mean_rate_long) / std_rate_long
+
+        vol_rate = $ volume per second.
+        Z > 2.0 indica volume surge (probabile informed trading).
+        """
+        if not btc.trade_flow:
+            return 0.0
+
+        now = time.time()
+
+        # Volume rate nel short window (ultimi 5s)
+        short_vol = sum(
+            qty * price
+            for ts, price, qty, _ in btc.trade_flow
+            if now - ts <= short_window
+        )
+        short_rate = short_vol / max(short_window, 1)
+
+        # Volume per-second buckets nel long window
+        buckets: dict[int, float] = {}
+        for ts, price, qty, _ in btc.trade_flow:
+            if now - ts > long_window:
+                continue
+            bucket = int(ts)
+            buckets[bucket] = buckets.get(bucket, 0) + qty * price
+
+        if len(buckets) < 10:
+            return 0.0
+
+        vals = list(buckets.values())
+        mean_long = sum(vals) / len(vals)
+        if mean_long < 1:
+            return 0.0
+
+        var_long = sum((v - mean_long) ** 2 for v in vals) / len(vals)
+        std_long = math.sqrt(var_long) if var_long > 0 else mean_long * 0.5
+
+        return (short_rate - mean_long) / std_long if std_long > 0 else 0.0
+
+    def _price_acceleration(self, btc) -> float:
+        """
+        Accelerazione del prezzo: derivata seconda.
+
+        accel = momentum(2s) - momentum(5s)
+
+        Positivo = prezzo sta accelerando verso l'alto (inizio di un move).
+        Negativo = prezzo sta accelerando verso il basso.
+        Vicino a zero = move costante o in esaurimento.
+
+        L'accelerazione cattura l'INIZIO di un move, a differenza del
+        momentum che cattura il move gia' avvenuto.
+        """
+        mom_2 = self.binance.momentum(2, "btc")
+        mom_5 = self.binance.momentum(5, "btc")
+        return mom_2 - mom_5
 
     def _calc_obi(self, btc) -> float:
-        """Calcola Order Book Imbalance da depth snapshot."""
+        """
+        Order Book Imbalance dai top-5 livelli del depth stream.
+
+        OBI = (bid_vol - ask_vol) / (bid_vol + ask_vol)
+
+        Range [-1, +1]. Positivo = pressione bid (bullish).
+        """
         if not btc.depth.bids or not btc.depth.asks:
             return 0.0
         bid_vol = sum(qty for _, qty in btc.depth.bids)
@@ -434,12 +600,22 @@ class BTCLatencyStrategy:
             return 0.0
         return (bid_vol - ask_vol) / total
 
-    def _calc_buy_pressure(self, btc, window: int = 30) -> float:
-        """Calcola net buy pressure dagli ultimi N secondi di trade flow."""
+    def _calc_buy_pressure(self, btc, window: int = 10) -> float:
+        """
+        Net buy pressure dagli ultimi N secondi di trade flow.
+
+        buy_pressure = buy_aggressor_volume / total_volume
+
+        > 0.58 = forte pressione acquisto (conferma UP)
+        < 0.42 = forte pressione vendita (conferma DOWN)
+        ~ 0.50 = neutro
+
+        Usa window corto (10s) perche' per latency arb servono
+        le informazioni piu' recenti, non la media storica.
+        """
         now = time.time()
         cutoff = now - window
-        buy_vol = 0.0
-        sell_vol = 0.0
+        buy_vol = sell_vol = 0.0
         for ts, price, qty, is_buyer_maker in btc.trade_flow:
             if ts < cutoff:
                 continue
@@ -448,28 +624,11 @@ class BTCLatencyStrategy:
             else:
                 buy_vol += qty * price   # buyer aggressor
         total = buy_vol + sell_vol
-        if total == 0:
-            return 0.5
-        return buy_vol / total
+        return buy_vol / total if total > 0 else 0.5
 
-    def _determine_side(self, market: Market, direction: str) -> str | None:
-        """Determina YES/NO in base alla direzione e al tipo di mercato."""
-        q = market.question.lower()
-        # "Bitcoin Up or Down" → outcomes sono "Up" e "Down"
-        outcomes = [o.lower() for o in market.outcomes] if market.outcomes else []
-
-        if direction == "UP":
-            # Compra il token "Up"
-            if "up" in outcomes:
-                return "YES"  # YES = Up wins
-            return "YES"  # default: YES = up
-        else:
-            # Compra il token "Down"
-            if "down" in outcomes:
-                # In Polymarket, per mercato Up/Down binario:
-                # YES = Up, NO = Down
-                return "NO"
-            return "NO"
+    # ══════════════════════════════════════════════════════════════
+    #  Execution
+    # ══════════════════════════════════════════════════════════════
 
     async def execute(self, signal: LatencySignal, paper: bool = True) -> bool:
         """Esegui un trade di latency arbitrage."""
@@ -483,16 +642,15 @@ class BTCLatencyStrategy:
             logger.warning(f"[BTC-LATENCY] Token ID non trovato per {token_key}")
             return False
 
-        buy_price = signal.market.prices.get(token_key, 0.5)
+        buy_price = signal.market_price
         size = signal.target_size
 
-        # Risk check
         allowed, reason = self.risk.can_trade(
             STRATEGY_NAME, size, price=buy_price,
             side=f"BUY_{signal.side}", market_id=signal.market.id,
         )
         if not allowed:
-            logger.info(f"[BTC-LATENCY] Bloccato: {reason}")
+            logger.info(f"[BTC-LATENCY] Risk block: {reason}")
             return False
 
         trade = Trade(
@@ -508,15 +666,16 @@ class BTCLatencyStrategy:
         )
 
         if paper:
-            # Paper trading con simulazione realistica
-            # Female-Bongo: 59% WR complessivo
-            # Con conf > 0.7: ~65% WR
-            # Con conf 0.55-0.7: ~55% WR
-            sim_wr = 0.50 + signal.confidence * 0.15
-            won = random.random() < sim_wr
+            # ── Paper simulation ──
+            # Il fair_prob del modello BS e' la nostra stima della probabilita'
+            # reale. Per simulare realisticamente, applichiamo un model decay
+            # (il modello non e' perfetto: 70% informativo, 30% noise).
+            model_decay = 0.70
+            sim_prob = signal.fair_prob * model_decay + 0.5 * (1 - model_decay)
+            won = random.random() < sim_prob
 
-            # Slippage: sweep orderbook = ~1-3% slippage
-            slippage = 0.98  # 2% slippage medio
+            # Slippage: taker sweep = ~1.5% slippage medio
+            slippage = 0.985
             if won:
                 pnl = size * ((1.0 / buy_price) - 1.0) * slippage
             else:
@@ -528,33 +687,40 @@ class BTCLatencyStrategy:
 
             logger.info(
                 f"[PAPER] BTC-LATENCY: {signal.direction} "
-                f"BUY {signal.side} ${size:.0f} @{buy_price:.3f} "
-                f"edge={signal.edge:.4f} conf={signal.confidence:.3f} "
-                f"→ {'WIN' if won else 'LOSS'} pnl=${pnl:+.2f} (fee=${fee:.2f}) | "
-                f"BTC=${signal.btc_price:,.0f}"
+                f"BUY {signal.side} ${size:.0f} @{buy_price:.3f} | "
+                f"P_fair={signal.fair_prob:.3f} d={signal.d_score:+.2f} "
+                f"edge={signal.edge:.4f} kelly={signal.kelly_fraction:.4f} | "
+                f"{'WIN' if won else 'LOSS'} pnl=${pnl:+.2f} (fee=${fee:.2f}) | "
+                f"BTC=${signal.btc_price:,.0f} sigma={signal.realized_vol:.6f}"
             )
 
             self.risk.open_trade(trade)
             self.risk.close_trade(token_id, won=won, pnl=pnl)
 
-            # Track per analisi
             self._pnl_tracker[signal.market.id] = {
                 "time": now,
                 "direction": signal.direction,
                 "side": signal.side,
                 "price": buy_price,
                 "size": size,
+                "fair_prob": signal.fair_prob,
+                "d_score": signal.d_score,
                 "edge": signal.edge,
+                "kelly": signal.kelly_fraction,
                 "confidence": signal.confidence,
+                "vol_zscore": signal.vol_zscore,
+                "filters": signal.filters_passed,
+                "sigma": signal.realized_vol,
                 "won": won,
                 "pnl": pnl,
                 "btc_price": signal.btc_price,
+                "btc_open": signal.btc_open,
             }
         else:
-            # Live trading — sweep orderbook
-            # Usa smart_buy con target price = max_entry_price (accetta slippage)
+            # Live: sweep orderbook con smart_buy
             result = self.api.smart_buy(
-                token_id, size, target_price=min(buy_price + 0.03, self.max_entry_price),
+                token_id, size,
+                target_price=min(buy_price + 0.03, self.max_entry_price),
             )
             if result:
                 if isinstance(result, dict) and result.get("_fill_price"):
@@ -562,26 +728,34 @@ class BTCLatencyStrategy:
                 self.risk.open_trade(trade)
                 logger.info(
                     f"[LIVE] BTC-LATENCY: {signal.direction} "
-                    f"BUY {signal.side} ${size:.0f} @{buy_price:.3f} "
-                    f"edge={signal.edge:.4f} | BTC=${signal.btc_price:,.0f}"
+                    f"BUY {signal.side} ${size:.0f} @{buy_price:.3f} | "
+                    f"P_fair={signal.fair_prob:.3f} edge={signal.edge:.4f} | "
+                    f"BTC=${signal.btc_price:,.0f}"
                 )
             else:
-                logger.warning(f"[BTC-LATENCY] Ordine fallito per {signal.market.id}")
+                logger.warning(f"[BTC-LATENCY] Ordine fallito: {signal.market.id}")
                 return False
 
         self._recently_traded[signal.market.id] = now
         self._trades_executed += 1
         return True
 
+    # ══════════════════════════════════════════════════════════════
+    #  Stats & Analytics
+    # ══════════════════════════════════════════════════════════════
+
     @property
     def stats(self) -> dict:
-        """Statistiche per dashboard."""
+        """Statistiche per dashboard e analisi."""
         if not self._pnl_tracker:
             return {"trades": self._trades_executed, "pnl": 0, "wr": 0}
 
         trades = list(self._pnl_tracker.values())
         wins = sum(1 for t in trades if t.get("won"))
         total_pnl = sum(t.get("pnl", 0) for t in trades)
+        avg_edge = sum(t.get("edge", 0) for t in trades) / len(trades)
+        avg_d = sum(abs(t.get("d_score", 0)) for t in trades) / len(trades)
+
         return {
             "trades": len(trades),
             "wins": wins,
@@ -589,5 +763,8 @@ class BTCLatencyStrategy:
             "wr": wins / len(trades) * 100 if trades else 0,
             "pnl": total_pnl,
             "avg_pnl": total_pnl / len(trades) if trades else 0,
+            "avg_edge": avg_edge,
+            "avg_abs_d": avg_d,
             "avg_size": sum(t.get("size", 0) for t in trades) / len(trades) if trades else 0,
+            "avg_sigma": sum(t.get("sigma", 0) for t in trades) / len(trades) if trades else 0,
         }
