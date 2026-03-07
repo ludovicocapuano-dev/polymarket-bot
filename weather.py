@@ -224,25 +224,25 @@ class WeatherStrategy:
         # 1. Rileva citta'
         city = self.weather.detect_city(q)
         if not city:
-            logger.info(f"[WEATHER-SKIP] no city: {q[:80]}")
+            logger.debug(f"[WEATHER-SKIP] no city: {q[:80]}")
             return None
 
         # 2. Rileva data
         date = self._parse_date(q)
         if not date:
-            logger.info(f"[WEATHER-SKIP] no date: {q[:80]}")
+            logger.debug(f"[WEATHER-SKIP] no date: {q[:80]}")
             return None
 
         # 3. Ottieni previsione
         forecast = self.weather.get_forecast_for_date(city, date)
         if not forecast:
-            logger.info(f"[WEATHER-SKIP] no forecast: {city} {date}")
+            logger.debug(f"[WEATHER-SKIP] no forecast: {city} {date}")
             return None
 
         # 4. Rileva bucket di temperatura
         bucket = self._parse_bucket(market)
         if not bucket:
-            logger.info(f"[WEATHER-SKIP] no bucket: {q[:100]} outcomes={market.outcomes[:4]}")
+            logger.debug(f"[WEATHER-SKIP] no bucket: {q[:100]} outcomes={market.outcomes[:4]}")
             return None
 
         low, high, label = bucket
@@ -291,6 +291,12 @@ class WeatherStrategy:
                         )
                 except (ValueError, TypeError, KeyError):
                     pass
+
+        # v10.8.5: Latency Hunter — rileva forecast shift per stimare edge extra.
+        # Se il forecast e' appena cambiato, il mercato Polymarket e' ancora sul
+        # vecchio prezzo → l'edge calcolata e' probabilmente conservativa.
+        forecast_shift = self.weather.get_forecast_shift(city, date)
+        _is_latency_opportunity = forecast_shift is not None and abs(forecast_shift) >= 1.0
 
         # 6. Confronta con prezzo di mercato
         price_yes = market.prices.get("yes", 0.5)
@@ -349,6 +355,16 @@ class WeatherStrategy:
             uncertainty_penalty = 1.0    # bassa incertezza: nessuna penalita'
 
         confidence = min(horizon_conf * source_conf * ensemble_boost * uncertainty_penalty, 0.90)
+
+        # v10.8.5: Latency Hunter boost — se il forecast e' appena cambiato,
+        # il mercato e' probabilmente sul vecchio prezzo. Boost confidence
+        # perche' abbiamo una ragione strutturale per credere nell'edge.
+        if _is_latency_opportunity:
+            confidence = min(confidence * 1.15, 0.92)
+            logger.info(
+                f"[LATENCY-HUNTER] Confidence boost per {city} {label}: "
+                f"shift={forecast_shift:+.1f}°C → conf={confidence:.3f}"
+            )
 
         if confidence < self.min_confidence:
             logger.debug(
@@ -483,6 +499,7 @@ class WeatherStrategy:
                 f"EV={expected_value:+.3f}/$ payoff={payoff_ratio:.1f}x | "
                 f"Sources: {forecast.source if hasattr(forecast, 'source') else 'single'} "
                 f"({len(forecast.ensemble_temps)}ens)"
+                + (f" | LATENCY shift={forecast_shift:+.1f}°C" if _is_latency_opportunity else "")
             ),
         )
 

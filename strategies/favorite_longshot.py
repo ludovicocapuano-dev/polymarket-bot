@@ -22,13 +22,27 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # Categories where longshot bias is strongest (fee-free, retail-heavy)
+# ESCLUSI: sports (Becker: -$17.4M PnL), crypto (fees kill edge)
 BIAS_CATEGORIES = {"politics", "pop-culture", "entertainment", "science",
-                   "sports", "world", "geopolitics", "elections", ""}
+                   "world", "geopolitics", "elections", ""}
 
 # Keywords to EXCLUDE (already covered by other strategies or problematic)
 EXCLUDE_KEYWORDS = [
-    "temperature", "weather", "highest temp", "lowest temp",  # weather strategy
-    "bitcoin price", "btc price", "eth price", "crypto price",  # crypto (fees)
+    # weather strategy
+    "temperature", "weather", "highest temp", "lowest temp", "precipitation",
+    # crypto (fees)
+    "bitcoin price", "btc price", "eth price", "crypto price",
+    "bitcoin", "ethereum", "solana", "xrp",
+    # sports (Becker: -$17.4M PnL, hard blacklist)
+    "nba", "nfl", "mlb", "nhl", "premier league", "champions league",
+    "serie a", "la liga", "bundesliga", "ligue 1", "copa",
+    "world cup", "olympic", "grand slam", "grand prix", "formula 1",
+    "f1", "ufc", "boxing", "tennis", "cricket", "rugby",
+    " win on ", " win the ", " beat ", " defeat ",
+    "finals", "playoff", "super bowl", "march madness", "ncaa",
+    # commodities (non prediction-market bias, spread-driven)
+    "gold (gc)", "silver", "crude oil", "wti", "brent",
+    "settle at", "futures",
 ]
 
 

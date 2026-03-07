@@ -2,6 +2,47 @@
 - Rispondi sempre in italiano
 - Nessuna convenzione particolare di codice
 
+# Regole di Engagement
+
+## Prima di ogni sessione
+1. `ps aux | grep bot.py` — verifica bot running e nessun duplicato
+2. Leggi log recente: `ls -t logs/bot_*.log | head -1`
+3. Controlla errori: `grep ERROR $LOG | tail -5`
+4. Consulta memoria: `/root/.claude/projects/-root/memory/` (MEMORY.md, trade_insights.md, mistakes.md)
+
+## Prima di ogni modifica al codice
+1. Leggere il file PRIMA di modificarlo
+2. Verificare che il diff sia corretto
+3. Se modifica parametri trading: giustificare con dati (log, Becker, backtest)
+4. Se modifica filtri weather: simulare con `python3 backtest_replay.py --compare`
+5. Consultare mistakes.md per non ripetere errori noti
+
+## Prima di riavviare il bot
+1. `ps aux | grep bot.py` — kill istanze esistenti
+2. Nessun .env esposto o credenziali in chiaro
+3. `echo 'CONFERMO' | python3 bot.py --live`
+4. Controllare primi 30s di log per errori di import/init
+
+## Agenti specializzati disponibili
+- **pnl-analyst**: analisi PnL con contesto storico, breakdown per strategia, raccomandazioni
+- **strategy-optimizer**: ottimizzazione parametri con simulazione what-if su dati storici
+- **market-scanner**: scoperta nuove opportunita', gap nella copertura, nuove citta'
+
+## Comandi disponibili
+- `/health-check` — stato rapido del bot (processo, errori, scanning)
+- `/post-mortem` — analisi fine giornata con aggiornamento memoria
+- `/pnl-report` — report PnL dettagliato per strategia
+- `/risk-check` — stato risk manager, correlazioni, circuit breaker
+- `/portfolio` — panoramica posizioni aperte
+- `/scan` — scan mercati attivi
+- `/backtest` — backtest strategia
+- `/strategy-status` — stato strategie attive
+
+## Backtest replay
+- `python3 backtest_replay.py --compare` — confronta filtri vecchi vs nuovi
+- `python3 backtest_replay.py --min-edge 0.10 --min-confidence 0.60` — testa parametri custom
+- MAI proporre modifiche parametri senza aver prima simulato l'impatto
+
 # Progetto: Polymarket Multi-Strategy Trading Bot (v10.5)
 Repo: https://github.com/ludovicocapuano-dev/polymarket-bot (privato)
 Bot automatico di trading su Polymarket con 5 strategie attive (4 eliminate per performance negativa o sicurezza).
@@ -136,6 +177,7 @@ v10.5: Glint.trade real-time intelligence feed per event_driven.
 - L'execution usa Avellaneda-Stoikov per calcolare il bid ottimale in `smart_buy()` (v10.3). Parametri A-S sono opzionali e backward compatible — se tutti a 0.0, usa il path naive `best_bid + TICK`. I due γ (GAMMA_INVENTORY=0.30, GAMMA_SPREAD=0.05) sono scalati per volume 24h. NON rimuovere il clipping `[best_bid, min(mid, target)]` — previene bid fuori range
 - Lo spread_cost nel Kelly sizing è dinamico per zona di prezzo (v10.1: pmxt data-driven). NON riportare a hardcoded 0.005
 - Weather markets sono fee-free su Polymarket (v10.1): `fee = 0.0` in weather.py. NON aggiungere fee
+- Latency Hunter (v10.8.5): `_model_update_loop` in bot.py monitora rilascio GFS/ECMWF e forza re-scan. `weather_feed.invalidate_cache()` svuota cache e salva forecast precedente per shift detection. Shift >= 1°C → priority scan. Finestre: GFS ~03:30/09:30/15:30/21:30 UTC, ECMWF ~06:00/18:00 UTC
 - Weather v10.8.4: BUY_NO solo su bin con P(YES)<15% (tail selling). BUY_YES solo su bin cheap con forecast forte (forecast divergence). Uncertainty penalty nella confidence (σ>4→-30%, σ>2.5→-15%). NON rilassare questi filtri senza dati
 - NegRisk arb (`strategies/negrisk_arb.py`): scanner sum deviation su mercati multi-outcome. Se SUM(YES)≠$1.00 oltre 2%, esegue buy_all o sell_all. MAX_ARB_SIZE=$100, cooldown 30min. Opera indipendentemente dal budget allocato
 - Kelly sizing v10.8.4: uncertainty-adjusted (`risk_manager.py` riga 381-401). sigma per strategia (weather=0.08, sniper=0.03). Per weather sigma cresce con orizzonte: 0.05+days*0.02. NON rimuovere uncertainty_factor

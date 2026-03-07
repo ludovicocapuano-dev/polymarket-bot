@@ -229,6 +229,15 @@ WEATHER_CITIES: dict[str, dict] = {
         "nws_grid": None,
         "unit": "C",
     },
+    "munich": {
+        "lat": 48.354,
+        "lon": 11.786,
+        "keywords": ["munich", "münchen"],
+        "station": "Munich Airport",
+        "wethr_code": "EDDM",
+        "nws_grid": None,
+        "unit": "C",
+    },
 }
 
 # ── URL API ───────────────────────────────────────────────────
@@ -400,7 +409,8 @@ class OpenMeteoProvider:
                     "daily": "temperature_2m_max",
                     "models": "gfs_seamless",
                     "forecast_days": 7,
-                    "timezone": "auto",
+                    "past_days": 1,
+                    "timezone": "UTC",
                 },
                 timeout=15,
             )
@@ -459,7 +469,8 @@ class OpenMeteoProvider:
                     "longitude": info["lon"],
                     "daily": "temperature_2m_max",
                     "forecast_days": 7,
-                    "timezone": "auto",
+                    "past_days": 1,
+                    "timezone": "UTC",
                 },
                 timeout=15,
             )
@@ -1098,6 +1109,7 @@ class WeatherFeed:
 
     _cache: dict[str, list[CityForecast]] = field(default_factory=dict)
     _cache_time: dict[str, float] = field(default_factory=dict)
+    _prev_cache: dict[str, list[CityForecast]] = field(default_factory=dict)  # v10.8.5: previous forecast for shift detection
     _session: requests.Session = field(default_factory=requests.Session)
 
     # Provider (inizializzati in __post_init__)
@@ -1190,9 +1202,32 @@ class WeatherFeed:
         return forecasts
 
     def get_forecast_for_date(self, city: str, date: str) -> CityForecast | None:
-        """Ottieni previsione per una citta' e data specifica."""
+        """Ottieni previsione per una citta' e data specifica.
+
+        Se non trova match esatto, prova ±1 giorno per gestire
+        mismatch timezone (es. Seoul UTC+9 → date locali sfasate).
+        """
         forecasts = self.get_forecast(city)
-        return next((f for f in forecasts if f.date == date), None)
+        # Exact match first
+        exact = next((f for f in forecasts if f.date == date), None)
+        if exact:
+            return exact
+        # Fallback: ±1 day (timezone mismatch)
+        from datetime import datetime, timedelta
+        try:
+            target = datetime.strptime(date, "%Y-%m-%d")
+            for delta in [1, -1]:
+                adj = (target + timedelta(days=delta)).strftime("%Y-%m-%d")
+                match = next((f for f in forecasts if f.date == adj), None)
+                if match:
+                    logger.debug(
+                        f"[WEATHER] Timezone fallback {city}: "
+                        f"requested {date}, using {adj}"
+                    )
+                    return match
+        except (ValueError, TypeError):
+            pass
+        return None
 
     def detect_city(self, text: str) -> str | None:
         """Rileva la citta' da un testo (es. domanda Polymarket)."""
@@ -1221,6 +1256,37 @@ class WeatherFeed:
                     f"[{today.source}]"
                 )
         return " | ".join(parts)
+
+    def invalidate_cache(self, reason: str = "manual"):
+        """v10.8.5: Invalida la cache forecast per forzare un refresh.
+        Salva il forecast corrente in _prev_cache per confronto shift."""
+        if self._cache:
+            self._prev_cache = {city: list(fcs) for city, fcs in self._cache.items()}
+        self._cache.clear()
+        self._cache_time.clear()
+        logger.info(f"[WEATHER] Cache invalidata ({reason}) — {len(self._prev_cache)} citta' salvate per shift detection")
+
+    def get_forecast_shift(self, city: str, date: str) -> float | None:
+        """v10.8.5: Confronta forecast corrente vs precedente per una citta+data.
+        Ritorna la differenza in °C (positivo = riscaldamento, negativo = raffreddamento).
+        None se non c'e' un forecast precedente."""
+        prev_forecasts = self._prev_cache.get(city)
+        if not prev_forecasts:
+            return None
+        prev = next((f for f in prev_forecasts if f.date == date), None)
+        curr_forecasts = self._cache.get(city)
+        if not curr_forecasts:
+            return None
+        curr = next((f for f in curr_forecasts if f.date == date), None)
+        if not prev or not curr:
+            return None
+        shift = curr.forecast_temp - prev.forecast_temp
+        if abs(shift) > 0.3:  # ignora noise sotto 0.3°C
+            logger.info(
+                f"[WEATHER-SHIFT] {city} {date}: {prev.forecast_temp:.1f}°C → "
+                f"{curr.forecast_temp:.1f}°C (shift={shift:+.1f}°C)"
+            )
+        return shift
 
     def get_observations(self, city: str) -> dict | None:
         """

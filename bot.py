@@ -321,6 +321,7 @@ class MultiStrategyBot:
         self._shared_markets_cache: list = []
         self._weather_extra_cache: list = []  # v10.8: cache async weather markets
         self._weather_extra_last: float = 0.0
+        self._weather_priority_scan: bool = False  # v10.8.5: latency hunter flag
 
         # ── v9.0: Layer 2 — Signal Validator + Devil's Advocate ──
         self.devils_advocate = DevilsAdvocate(risk_manager=self.risk)
@@ -431,6 +432,7 @@ class MultiStrategyBot:
             self.onchain_monitor.start(),  # v10.4: On-chain whale trade monitor
             self.glint_feed.connect(),  # v10.5: Glint.trade real-time intelligence
             self._weather_fetch_loop(),  # v10.8: async weather market fetch
+            self._model_update_loop(),  # v10.8.5: latency hunter — scan on model update
             self._main_loop(),
             self._dashboard_loop(),
         )
@@ -595,6 +597,10 @@ class MultiStrategyBot:
                             logger.info(f"[WEATHER] +{len(new)} mercati da cache async")
                 except Exception:
                     pass
+                # v10.8.5: Latency Hunter — priority scan dopo model update
+                if self._weather_priority_scan:
+                    self._weather_priority_scan = False
+                    logger.info("[LATENCY-HUNTER] Priority weather scan — model update detected")
                 try:
                     weather_opps = await self.weather.scan(shared_markets=shared_markets)
                     if _can_trade:
@@ -1671,6 +1677,108 @@ class MultiStrategyBot:
             except Exception as e:
                 logger.debug(f"[WEATHER-ASYNC] Errore fetch: {e}")
             await asyncio.sleep(60)
+
+    async def _model_update_loop(self):
+        """v10.8.5: Latency Hunter — monitora orari di rilascio modelli meteo.
+
+        GFS rilascia nuovi dati ~3.5h dopo il model run:
+          run 00Z → disponibile ~03:30 UTC
+          run 06Z → disponibile ~09:30 UTC
+          run 12Z → disponibile ~15:30 UTC
+          run 18Z → disponibile ~21:30 UTC
+
+        ECMWF rilascia ~6h dopo:
+          run 00Z → disponibile ~06:00 UTC
+          run 12Z → disponibile ~18:00 UTC
+
+        Quando un nuovo model run e' disponibile:
+        1. Invalida cache forecast
+        2. Forza re-fetch di tutte le citta'
+        3. Confronta nuovo vs vecchio forecast
+        4. Se shift > 1°C → priority scan (il mercato e' ancora sul vecchio prezzo)
+        """
+        from datetime import timezone
+        await asyncio.sleep(10)  # attendi init
+
+        # Orari di disponibilita' dati (UTC hours)
+        # GFS: ogni 6h con ~3.5h delay, ECMWF: ogni 12h con ~6h delay
+        MODEL_UPDATE_HOURS = [3.5, 6.0, 9.5, 15.5, 18.0, 21.5]
+        CHECK_INTERVAL = 120  # controlla ogni 2 min
+        last_triggered_hour = -1.0
+
+        logger.info(
+            "[LATENCY-HUNTER] Attivo — monitora model updates "
+            f"({len(MODEL_UPDATE_HOURS)} finestre/giorno: "
+            f"{', '.join(f'{h:.1f}Z' for h in MODEL_UPDATE_HOURS)})"
+        )
+
+        while self._running:
+            try:
+                now_utc = datetime.now(timezone.utc)
+                current_hour = now_utc.hour + now_utc.minute / 60.0
+
+                # Trova la finestra di update piu' vicina passata da poco
+                for update_hour in MODEL_UPDATE_HOURS:
+                    # Finestra: da update_hour a +30 min dopo
+                    time_since = current_hour - update_hour
+                    if time_since < 0:
+                        time_since += 24  # wrap around
+
+                    # Trigger se siamo entro 30 min dal drop E non gia' triggerato
+                    if 0 <= time_since <= 0.5 and abs(last_triggered_hour - update_hour) > 0.5:
+                        last_triggered_hour = update_hour
+                        model_name = "ECMWF" if update_hour in [6.0, 18.0] else "GFS"
+                        logger.info(
+                            f"[LATENCY-HUNTER] {model_name} model update detected "
+                            f"(drop window {update_hour:.1f}Z, now={current_hour:.1f}Z)"
+                        )
+
+                        # 1. Invalida cache
+                        self.weather_feed.invalidate_cache(reason=f"{model_name} update {update_hour:.0f}Z")
+
+                        # 2. Re-fetch tutte le citta' (in background thread)
+                        cities = list(WEATHER_CITIES.keys()) if 'WEATHER_CITIES' in dir() else []
+                        if not cities:
+                            from utils.weather_feed import WEATHER_CITIES as WC
+                            cities = list(WC.keys())
+
+                        shift_detected = False
+                        for city in cities:
+                            try:
+                                await asyncio.to_thread(self.weather_feed.get_forecast, city)
+                                # Controlla shift per oggi e domani
+                                today = now_utc.strftime("%Y-%m-%d")
+                                from datetime import timedelta
+                                tomorrow = (now_utc + timedelta(days=1)).strftime("%Y-%m-%d")
+                                for date in [today, tomorrow]:
+                                    shift = self.weather_feed.get_forecast_shift(city, date)
+                                    if shift is not None and abs(shift) >= 1.0:
+                                        shift_detected = True
+                                        logger.info(
+                                            f"[LATENCY-HUNTER] SHIFT RILEVATO {city} {date}: "
+                                            f"{shift:+.1f}°C — mercato probabilmente non aggiornato"
+                                        )
+                            except Exception as e:
+                                logger.debug(f"[LATENCY-HUNTER] Errore fetch {city}: {e}")
+
+                        # 3. Se shift significativo, forza priority scan
+                        if shift_detected:
+                            self._weather_priority_scan = True
+                            logger.info(
+                                "[LATENCY-HUNTER] Priority scan attivato — "
+                                "forecast shift >= 1°C rilevato"
+                            )
+                        else:
+                            logger.info(
+                                "[LATENCY-HUNTER] Nessun shift significativo — "
+                                "mercato gia' allineato"
+                            )
+                        break  # solo una finestra per iterazione
+
+            except Exception as e:
+                logger.debug(f"[LATENCY-HUNTER] Errore loop: {e}")
+
+            await asyncio.sleep(CHECK_INTERVAL)
 
     async def _dashboard_loop(self):
         while self._running:
