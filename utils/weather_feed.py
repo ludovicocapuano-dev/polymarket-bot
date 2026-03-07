@@ -1257,6 +1257,92 @@ class WeatherFeed:
                 )
         return " | ".join(parts)
 
+    # ── v11.0: Forecast Error Tracker (Qlib-inspired online calibration) ──
+
+    def record_settlement(self, city: str, date: str, actual_temp_c: float):
+        """
+        Record actual settlement temperature for a city+date.
+        Computes forecast error per source and updates rolling bias/MAE.
+
+        This enables online calibration: if a provider consistently
+        over/underpredicts for a city, future forecasts are adjusted.
+        """
+        if not hasattr(self, '_forecast_errors'):
+            self._forecast_errors: dict[str, list[dict]] = {}  # city -> [errors]
+
+        # Look up what we forecasted for this city+date
+        forecasts = self._cache.get(city, []) or self._prev_cache.get(city, [])
+        fc = next((f for f in forecasts if f.date == date), None)
+        if not fc:
+            return
+
+        error = fc.forecast_temp - actual_temp_c
+        error_record = {
+            "date": date,
+            "forecast": fc.forecast_temp,
+            "actual": actual_temp_c,
+            "error": error,
+            "source": fc.source,
+            "n_sources": fc.n_sources,
+            "uncertainty": fc.uncertainty,
+        }
+
+        self._forecast_errors.setdefault(city, [])
+        self._forecast_errors[city].append(error_record)
+        # Keep last 100 per city
+        if len(self._forecast_errors[city]) > 100:
+            self._forecast_errors[city] = self._forecast_errors[city][-100:]
+
+        logger.info(
+            f"[FORECAST-ERROR] {city} {date}: forecast={fc.forecast_temp:.1f}°C "
+            f"actual={actual_temp_c:.1f}°C error={error:+.1f}°C "
+            f"(source={fc.source})"
+        )
+
+    def get_city_bias(self, city: str, window: int = 20) -> dict:
+        """
+        Get rolling forecast bias and MAE for a city.
+
+        Returns:
+          bias: mean signed error (positive = model runs hot)
+          mae: mean absolute error
+          n: number of observations
+          reliability: 1.0 - mae/5.0 (capped at [0, 1])
+        """
+        if not hasattr(self, '_forecast_errors'):
+            return {"bias": 0.0, "mae": 0.0, "n": 0, "reliability": 0.5}
+
+        errors = self._forecast_errors.get(city, [])[-window:]
+        if not errors:
+            return {"bias": 0.0, "mae": 0.0, "n": 0, "reliability": 0.5}
+
+        error_vals = [e["error"] for e in errors]
+        bias = sum(error_vals) / len(error_vals)
+        mae = sum(abs(e) for e in error_vals) / len(error_vals)
+        reliability = max(0.0, min(1.0, 1.0 - mae / 5.0))
+
+        return {
+            "bias": round(bias, 2),
+            "mae": round(mae, 2),
+            "n": len(errors),
+            "reliability": round(reliability, 3),
+        }
+
+    def get_bias_adjusted_temp(self, city: str, forecast_temp: float) -> float:
+        """
+        Adjust forecast temperature by removing estimated bias.
+        Only adjusts if we have enough data (n >= 5) and bias is significant.
+        """
+        stats = self.get_city_bias(city)
+        if stats["n"] >= 5 and abs(stats["bias"]) > 0.5:
+            adjusted = forecast_temp - stats["bias"]
+            logger.debug(
+                f"[BIAS-ADJ] {city}: {forecast_temp:.1f}°C → {adjusted:.1f}°C "
+                f"(bias={stats['bias']:+.1f}°C from {stats['n']} obs)"
+            )
+            return adjusted
+        return forecast_temp
+
     def invalidate_cache(self, reason: str = "manual"):
         """v10.8.5: Invalida la cache forecast per forzare un refresh.
         Salva il forecast corrente in _prev_cache per confronto shift."""

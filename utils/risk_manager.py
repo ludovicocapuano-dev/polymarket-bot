@@ -438,16 +438,28 @@ class RiskManager:
             f"→ cushion={cushion:.2f}"
         )
 
-        # v7.2: CPPI drawdown scaling (Isichenko + Chan)
-        # Riduce size proporzionalmente al drawdown giornaliero
+        # v11.0: Graduated Drawdown Response (Qlib-inspired graceful degradation)
+        # 3-tier response replaces linear CPPI:
+        # Tier 1 (loss < 50% daily limit): scale = 1 - loss_pct (normal CPPI)
+        # Tier 2 (50-80%): scale = 0.30, tighten edge requirements
+        # Tier 3 (> 80%): scale = 0.10, near-stop (only very high edge trades)
         if self._daily_pnl < 0:
             daily_loss_pct = abs(self._daily_pnl) / self.config.max_daily_loss
-            # a 0% loss → scale 1.0, a 50% loss → scale 0.50, a 80% → scale 0.20
-            cppi_scale = max(0.20, 1.0 - daily_loss_pct)
+            if daily_loss_pct >= 0.80:
+                cppi_scale = 0.10
+                logger.warning(
+                    f"[DEGRADATION-T3] daily_pnl=${self._daily_pnl:+.2f} "
+                    f"({daily_loss_pct:.0%} of limit) → near-stop, scale=0.10"
+                )
+            elif daily_loss_pct >= 0.50:
+                cppi_scale = 0.30
+                logger.info(
+                    f"[DEGRADATION-T2] daily_pnl=${self._daily_pnl:+.2f} "
+                    f"({daily_loss_pct:.0%} of limit) → defensive, scale=0.30"
+                )
+            else:
+                cppi_scale = max(0.40, 1.0 - daily_loss_pct)
             size *= cppi_scale
-            logger.debug(
-                f"[CPPI] daily_pnl=${self._daily_pnl:+.2f} → scale={cppi_scale:.2f}"
-            )
 
         # v7.2: Scaling per strategia in drawdown
         # Se una strategia ha perso >30% del suo budget, ridurre Kelly del 50%
