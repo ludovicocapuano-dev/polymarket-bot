@@ -26,7 +26,7 @@ class TripleBarrier:
 STRATEGY_BARRIERS: dict[str, TripleBarrier] = {
     "arb_gabagool":   TripleBarrier(0.03, 0.02, 24),    # TP/SL stretto, exit veloce
     "high_prob_bond": TripleBarrier(0.06, 0.03, 336),    # TP basso, SL stretto, 14gg
-    "weather":        TripleBarrier(0.12, 0.08, 48),     # Margini ampi, 2gg
+    "weather":        TripleBarrier(0.25, 0.08, 48),     # v10.6: TP da 12%→25% — hold to resolution su binary markets
     "arbitrage":      TripleBarrier(0.03, 0.02, 24),     # Come gabagool
     "data_driven":    TripleBarrier(0.10, 0.08, 72),     # Moderato, 3gg
     "event_driven":   TripleBarrier(0.12, 0.10, 36),     # Margini ampi, 1.5gg
@@ -162,7 +162,10 @@ class RiskManager:
             return False, "Size < $1"
 
         # v5.9.8: Longshot filter (Becker 2026: YES < 20¢ returns -43¢/$1)
-        if side and "YES" in side.upper() and 0 < price < 0.20:
+        # v10.7: Esenzione weather — forecast ensemble dà edge informativo reale,
+        # e l'algoritmo EV filtra già i trade a basso valore atteso.
+        # Miami 78-79°F: YES@$0.14 EV=+0.42 payoff=5.9x → NON bloccare.
+        if side and "YES" in side.upper() and 0 < price < 0.20 and strategy != "weather":
             return False, f"Longshot filter: YES @${price:.2f} < $0.20"
 
         # v5.9.8: NO-bias filter (Becker 2026: NO beats YES at 69/99 price levels)
@@ -280,13 +283,14 @@ class RiskManager:
     #   - Data-driven: 1/5 Kelly
     KELLY_FRACTIONS: dict[str, float] = {
         "arb_gabagool":       0.50,   # 1/2 Kelly — profitto quasi-garantito
-        "high_prob_bond":     0.40,   # 2/5 Kelly — Sharpe 2.5-4.0, quasi risk-free
+        "high_prob_bond":     0.15,   # v10.5: da 0.40 — rischio asimmetrico ($20 per $1)
         "arbitrage":          0.40,   # 2/5 Kelly — arb strutturale
-        "weather":            0.30,   # 1/3 Kelly — previsioni 85%+ accurate
-        "data_driven":        0.20,   # 1/5 Kelly — 74% win rate, modello statistico
-        "event_driven":       0.18,   # ~1/5 Kelly — incerto, news-dependent
+        "weather":            0.35,   # v10.5: da 0.30 — unica profittevole, fee-free
+        "data_driven":        0.12,   # v10.5: da 0.20 — edge inflato, WR 44%
+        "event_driven":       0.20,   # v10.5: da 0.18 — Glint.trade + NLP
         "whale_copy":         0.12,   # ~1/8 Kelly — edge indiretto, dipende dal whale
         "crypto_5min":        0.16,   # 1/6 — volatile, cautela (DISABILITATO v7.0)
+        "resolution_sniper":  0.40,   # v10.8: quasi risk-free (UMA proposta + scadenza)
     }
 
     # Fee rate Polymarket (taker). Maker = 0.
@@ -374,6 +378,28 @@ class RiskManager:
                 # Blend 70% empirical + 30% statico (floor di sicurezza)
                 base_frac = base_frac * (0.70 * emp_factor + 0.30)
 
+        # v10.8.4: Uncertainty-adjusted Kelly (Chu & Swartz 2024, arXiv:2412.14144)
+        # Se la stima di probabilità ha incertezza sigma, il Kelly ottimale si riduce.
+        # f_adjusted = f_kelly * (1 - sigma^2 / (p*(1-p)))
+        # Per weather: sigma ~0.05-0.10 (dipende da orizzonte e fonti)
+        # Per sniper: sigma ~0.03 (Perplexity verification)
+        uncertainty_sigmas = {
+            "weather": 0.08,             # forecast uncertainty tipica
+            "resolution_sniper": 0.03,   # quasi-certo
+            "event_driven": 0.12,        # alta incertezza
+            "high_prob_bond": 0.05,
+        }
+        sigma = uncertainty_sigmas.get(strategy, 0.10)
+        if strategy == "weather" and days_ahead is not None:
+            # Sigma cresce con l'orizzonte
+            sigma = 0.05 + days_ahead * 0.02  # 0.05 same-day, 0.07 +1d, 0.09 +2d
+        intrinsic_var = win_prob * (1 - win_prob)
+        if intrinsic_var > 0:
+            uncertainty_factor = max(0.3, 1.0 - (sigma ** 2) / intrinsic_var)
+        else:
+            uncertainty_factor = 0.3
+        kelly *= uncertainty_factor
+
         # v7.3: Fat Tail Kelly Correction (Bouchaud + Taleb + Vince)
         # Applicato SOLO se Empirical Kelly non è attivo (altrimenti doppia correzione fat-tail)
         if emp_factor is None:
@@ -441,10 +467,15 @@ class RiskManager:
         # Ora: floor = max(5, budget * 2%) — scala col capitale disponibile.
         HARD_MIN = 5.0  # Absolute floor (execution minimum Polymarket)
 
-        # Floor dinamico: 2% del budget strategia (es. $250 budget → $5 min)
+        # v10.6: Floor dinamico CONDIZIONALE — non forzare trade con Kelly troppo debole.
+        # Se Kelly produce un size < 50% del floor, il trade è troppo marginale
+        # e forzare una size minima crea EV negativa (vedi weather PnL analysis).
         dynamic_min = max(HARD_MIN, budget * 0.02)
         if size < dynamic_min:
-            size = dynamic_min
+            if size >= dynamic_min * 0.50:
+                size = dynamic_min  # Kelly ragionevole, arrotonda al minimo
+            else:
+                size = 0.0  # Kelly troppo debole, non forzare
 
         max_pct = self.capital * (self.config.max_bet_percent / 100)
         size = min(size, self.config.max_bet_size, max_pct)
@@ -687,6 +718,23 @@ class RiskManager:
                     skipped_stale += 1
                     continue
 
+                raw_price = d["price"]
+                reason = d.get("reason", "")
+
+                # v10.6: Zombie sanitizer — fix entry prices corrupted by fill_price bug.
+                # If reason contains "YES@X.XXXX", cross-reference with recorded price.
+                # A price < 30% of the stated entry is a zombie (other trader's fill).
+                import re as _re
+                _m = _re.search(r"YES@(\d+\.\d+)", reason)
+                if _m:
+                    stated_price = float(_m.group(1))
+                    if raw_price < stated_price * 0.30:
+                        logger.warning(
+                            f"[SANITIZER] Zombie detectata: market={d['market_id']} "
+                            f"price={raw_price:.4f} vs stated={stated_price:.4f} — corretto"
+                        )
+                        raw_price = stated_price
+
                 trade = Trade(
                     timestamp=ts,
                     strategy=d["strategy"],
@@ -694,10 +742,10 @@ class RiskManager:
                     token_id=d["token_id"],
                     side=d["side"],
                     size=d["size"],
-                    price=d["price"],
+                    price=raw_price,
                     edge=d["edge"],
                     result="OPEN",
-                    reason=d.get("reason", ""),
+                    reason=reason,
                 )
                 # Evita duplicati (se gia' presente in open_trades)
                 already = any(

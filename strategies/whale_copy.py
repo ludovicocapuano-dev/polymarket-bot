@@ -39,6 +39,12 @@ MAX_COPY_DELAY = 120        # v7.0: max 2 minuti (era 5 — troppo ritardo erode
 MIN_TOKEN_PRICE = 0.05
 MAX_TOKEN_PRICE = 0.95
 
+# ── Retry parametri (v10.4: retry con price increment) ──
+MAX_COPY_RETRIES = 3
+RETRY_PRICE_INCREMENT = 0.01  # 1 cent per retry
+RETRY_DELAY_BASE = 1.0        # secondi
+RETRY_DELAY_MAX = 5.0          # secondi
+
 # ── Whale list (indirizzi verificati da PolyTrack, CryptoSlate, DL News, GitHub) ──
 TRACKED_WALLETS: dict[str, dict] = {
     # === FRENCH WHALE (Theo) — $85M+ profitto, confermato da WSJ/Bloomberg ===
@@ -98,6 +104,24 @@ TRACKED_WALLETS: dict[str, dict] = {
 
 
 @dataclass
+class CopyOrderHistory:
+    """Storico di un tentativo di copy trade."""
+    timestamp: float
+    whale_name: str
+    market_id: str
+    side: str
+    action: str  # BUY o SELL
+    target_price: float
+    target_size: float
+    attempts: int = 0
+    executed_price: float = 0.0
+    executed_size: float = 0.0
+    status: str = "PENDING"  # PENDING, SUCCESS, PARTIAL, FAILED, CLOUDFLARE
+    error_message: str = ""
+    order_id: str = ""
+
+
+@dataclass
 class WhaleTrade:
     """Un trade rilevato da un wallet whale."""
     whale_name: str
@@ -108,6 +132,7 @@ class WhaleTrade:
     timestamp: float    # quando il whale ha tradato
     win_rate: float     # win rate storico del whale
     total_trades: int   # numero di trade storici
+    action: str = "BUY"  # "BUY" o "SELL" — azione del whale
 
 
 @dataclass
@@ -156,6 +181,10 @@ class WhaleCopyStrategy:
         # v8.2: Whale Profiler whitelist (additive filter)
         self._whitelist: dict[str, dict] = {}
         self._whitelist_loaded_at: float = 0.0
+        # v10.4: Order history tracking (ultimi 100 tentativi)
+        self._order_history: list[CopyOrderHistory] = []
+        # v10.4: Coda per trade rilevati dall'on-chain monitor
+        self._pending_onchain_trades: list[dict] = []
         self._load_whitelist()
 
     def _load_whitelist(self) -> None:
@@ -254,14 +283,74 @@ class WhaleCopyStrategy:
         Rileva nuovi trade dai wallet monitorati.
 
         Usa Gamma API per controllare posizioni aperte dei wallet.
-        In produzione, questo andrebbe integrato con un listener on-chain
-        per rilevamento in tempo reale.
+        v10.4: Processa anche trade pendenti dall'on-chain monitor (latenza ~2s vs 120s HTTP).
         """
         trades: list[WhaleTrade] = []
         now = time.time()
 
         # Costruisci indice mercati per ID per lookup veloce
         market_by_id: dict[str, Market] = {m.id: m for m in markets}
+
+        # v10.4: Process pending on-chain trades (latenza ~2s vs 120s HTTP polling)
+        if self._pending_onchain_trades:
+            pending = self._pending_onchain_trades[:]
+            self._pending_onchain_trades.clear()
+            for evt in pending:
+                try:
+                    evt_market_id = evt.get("conditionId", evt.get("market_id", ""))
+                    evt_wallet = evt.get("wallet", evt.get("address", "")).lower()
+                    evt_side_raw = evt.get("side", "").upper()
+                    evt_action = evt.get("action", evt.get("type", "BUY")).upper()
+                    evt_size = float(evt.get("usdcSize", evt.get("size", 0)))
+                    evt_ts = float(evt.get("timestamp", now))
+
+                    if not evt_market_id or evt_market_id not in market_by_id:
+                        continue
+                    if evt_size <= 0:
+                        continue
+
+                    # Trova whale name dal wallet address
+                    whale_name = None
+                    for wn, wi in TRACKED_WALLETS.items():
+                        if wi.get("address", "").lower() == evt_wallet:
+                            whale_name = wn
+                            break
+                    if not whale_name:
+                        continue
+
+                    # Determina side (YES/NO) da outcomeIndex
+                    if evt_side_raw in ("YES", "NO"):
+                        evt_side = evt_side_raw
+                    else:
+                        idx = evt.get("outcomeIndex", evt.get("outcome_index", -1))
+                        if idx == 0:
+                            evt_side = "YES"
+                        elif idx == 1:
+                            evt_side = "NO"
+                        else:
+                            continue
+
+                    if evt_action not in ("BUY", "SELL"):
+                        evt_action = "BUY"
+
+                    stats = self._get_whale_stats(evt_wallet)
+                    trades.append(WhaleTrade(
+                        whale_name=whale_name,
+                        wallet_address=evt_wallet,
+                        market=market_by_id[evt_market_id],
+                        side=evt_side,
+                        whale_size=evt_size,
+                        timestamp=evt_ts,
+                        win_rate=stats.get("win_rate", 0.0),
+                        total_trades=stats.get("total_trades", 0),
+                        action=evt_action,
+                    ))
+                    logger.info(
+                        f"[WHALE] On-chain trade: {whale_name} {evt_action} {evt_side} "
+                        f"${evt_size:,.0f} (latenza on-chain)"
+                    )
+                except Exception as e:
+                    logger.warning(f"[WHALE] Errore processing on-chain trade: {e}")
 
         for whale_name, whale_info in TRACKED_WALLETS.items():
             address = whale_info.get("address", "")
@@ -285,6 +374,7 @@ class WhaleCopyStrategy:
                 side = pos.get("side", "")
                 size = pos.get("size", 0.0)
                 trade_time = pos.get("timestamp", 0.0)
+                action = pos.get("action", "BUY")
 
                 # Filtri base
                 if size < min_size:
@@ -303,6 +393,7 @@ class WhaleCopyStrategy:
                     timestamp=trade_time,
                     win_rate=win_rate,
                     total_trades=total_trades,
+                    action=action,
                 ))
 
         self._last_whale_trades = trades
@@ -338,9 +429,9 @@ class WhaleCopyStrategy:
 
             now = time.time()
             for item in items:
-                # v9.2.1: Filtra solo BUY (non REDEEM, SELL, etc.)
+                # v10.4: Accetta BUY, SELL, TRADE (non REDEEM)
                 trade_type = item.get("type", "").upper()
-                if trade_type not in ("BUY", "TRADE", ""):
+                if trade_type not in ("BUY", "SELL", "TRADE", ""):
                     continue
 
                 # Parse conditionId (data-api usa conditionId)
@@ -353,22 +444,35 @@ class WhaleCopyStrategy:
                 if not market_id:
                     continue
 
-                # Side: data-api usa outcomeIndex (0=YES, 1=NO) e side ("BUY"/"SELL")
-                side = item.get("side", item.get("outcome", "")).upper()
-                if side in ("BUY", "LONG", ""):
+                # v10.4: Determina action (BUY/SELL)
+                action = "BUY"
+                side_raw = item.get("side", item.get("outcome", "")).upper()
+
+                if trade_type == "SELL" or side_raw == "SELL":
+                    action = "SELL"
+                    # Per SELL, il side (YES/NO) e' l'outcome che il whale sta vendendo
+                    # outcomeIndex indica quale outcome
+                    idx = item.get("outcomeIndex", item.get("outcome_index", -1))
+                    if idx == 0:
+                        side = "YES"
+                    elif idx == 1:
+                        side = "NO"
+                    else:
+                        continue
+                elif side_raw in ("BUY", "LONG", ""):
                     # Determina YES/NO da outcomeIndex
                     idx = item.get("outcomeIndex", item.get("outcome_index", -1))
                     if idx == 0:
                         side = "YES"
                     elif idx == 1:
                         side = "NO"
-                    elif side in ("YES", "NO"):
-                        pass  # già corretto
+                    elif side_raw in ("YES", "NO"):
+                        side = side_raw
                     else:
                         continue
-                elif side == "SELL":
-                    continue  # non copiamo le vendite
-                elif side not in ("YES", "NO"):
+                elif side_raw in ("YES", "NO"):
+                    side = side_raw
+                else:
                     continue
 
                 # Size in $ (data-api usa usdcSize)
@@ -399,6 +503,7 @@ class WhaleCopyStrategy:
                 positions.append({
                     "market_id": market_id,
                     "side": side,
+                    "action": action,
                     "size": size,
                     "timestamp": ts,
                 })
@@ -559,6 +664,7 @@ class WhaleCopyStrategy:
             edge=edge,
             reasoning=(
                 f"WHALE_COPY: {wt.whale_name} "
+                f"{wt.action} "
                 f"WR={wt.win_rate:.0%} ({wt.total_trades}t) "
                 f"{wt.side}@{price:.3f} "
                 f"whale_size=${wt.whale_size:,.0f} "
@@ -649,12 +755,23 @@ class WhaleCopyStrategy:
 
         return boosted
 
+    def _is_cloudflare_block(self, response) -> bool:
+        """Detecta risposte bloccate da Cloudflare."""
+        if not response:
+            return False
+        if isinstance(response, dict):
+            err = str(response.get("error", "")).lower()
+            return any(kw in err for kw in ("cloudflare", "attention required", "you have been blocked", "<!doctype html>"))
+        if isinstance(response, str):
+            return "cloudflare" in response.lower()
+        return False
+
     async def execute(self, opp: WhaleCopyOpportunity, paper: bool = True) -> bool:
         """
-        Esegui un copy trade.
+        Esegui un copy trade (BUY o SELL).
 
-        Size = min(whale_size * COPY_SIZE_FRACTION, max_bet_size)
-        Paper simulation: usa il win_rate storico del whale come sim_win_prob.
+        v10.4: Supporta SELL trades, retry con price increment,
+        partial fill handling, Cloudflare detection, order history.
         """
         now = time.time()
         market_id = opp.market.id
@@ -668,6 +785,10 @@ class WhaleCopyStrategy:
             if open_t.market_id == market_id:
                 return False
 
+        # v10.4: Determina action dal whale trade
+        whale_action = getattr(opp.whale_trade, "action", "BUY")
+        is_sell = whale_action == "SELL"
+
         token_key = "yes" if opp.side == "YES" else "no"
         token_id = opp.market.tokens[token_key]
         price = opp.market.prices[token_key]
@@ -675,25 +796,30 @@ class WhaleCopyStrategy:
         if price < MIN_TOKEN_PRICE or price > MAX_TOKEN_PRICE:
             return False
 
-        # Sizing: usa copy_size calcolato, ma verifica con Kelly
-        win_prob = min(price + opp.edge, 0.95)
-        kelly_size = self.risk.kelly_size(
-            win_prob=win_prob,
-            price=price,
-            strategy=STRATEGY_NAME,
-            is_maker=True,
-        )
+        # v10.4: Sizing — per SELL usa copy fraction fissa (no Kelly)
+        if is_sell:
+            size = min(opp.copy_size, self.risk.config.max_bet_size)
+        else:
+            # BUY: sizing con Kelly come prima
+            win_prob = min(price + opp.edge, 0.95)
+            kelly_size = self.risk.kelly_size(
+                win_prob=win_prob,
+                price=price,
+                strategy=STRATEGY_NAME,
+                is_maker=True,
+            )
+            size = min(opp.copy_size, kelly_size) if kelly_size > 0 else 0
 
-        # Usa il minore tra copy_size e Kelly size
-        size = min(opp.copy_size, kelly_size) if kelly_size > 0 else 0
         if size == 0:
             logger.info(
-                f"[WHALE] kelly_size=0 '{opp.market.question[:35]}' "
-                f"p={price:.3f} wp={win_prob:.3f} e={opp.edge:.3f}"
+                f"[WHALE] size=0 '{opp.market.question[:35]}' "
+                f"p={price:.3f} action={whale_action} e={opp.edge:.3f}"
             )
             return False
 
-        allowed, reason = self.risk.can_trade(STRATEGY_NAME, size, price=price, side=f"BUY_{opp.side}", market_id=opp.market.id)
+        side_str = f"SELL_{opp.side}" if is_sell else f"BUY_{opp.side}"
+
+        allowed, reason = self.risk.can_trade(STRATEGY_NAME, size, price=price, side=side_str, market_id=opp.market.id)
         if not allowed:
             logger.info(f"[WHALE] Trade bloccato: {reason}")
             return False
@@ -703,16 +829,28 @@ class WhaleCopyStrategy:
             strategy=STRATEGY_NAME,
             market_id=opp.market.id,
             token_id=token_id,
-            side=f"BUY_{opp.side}",
+            side=side_str,
             size=size,
             price=price,
             edge=opp.edge,
             reason=f"[WHALE_COPY] {opp.reasoning}",
         )
 
+        # v10.4: Crea entry per order history
+        history_entry = CopyOrderHistory(
+            timestamp=now,
+            whale_name=opp.whale_trade.whale_name,
+            market_id=market_id,
+            side=opp.side,
+            action=whale_action,
+            target_price=price,
+            target_size=size,
+        )
+
         if paper:
+            action_label = "SELL" if is_sell else "BUY"
             logger.info(
-                f"[PAPER] WHALE_COPY: BUY {opp.side} "
+                f"[PAPER] WHALE_COPY: {action_label} {opp.side} "
                 f"'{opp.market.question[:35]}' "
                 f"${size:.2f} @{price:.4f} edge={opp.edge:.4f} "
                 f"whale={opp.whale_trade.whale_name}"
@@ -722,33 +860,165 @@ class WhaleCopyStrategy:
             # Paper simulation: usa win_rate del whale come proxy
             wt = opp.whale_trade
             sim_win_prob = min(max(wt.win_rate * 0.9, 0.45), 0.78)
-            won = random.random() < sim_win_prob
-            slippage = 0.93 + random.random() * 0.05
-            if won:
-                raw_mult = (1.0 / price) - 1.0
-                capped_mult = min(raw_mult, 20.0)
-                pnl = size * capped_mult * slippage
+
+            if is_sell:
+                # v10.4: Per SELL, il whale vince se il prezzo scende
+                won = random.random() < (1.0 - sim_win_prob)
+                slippage = 0.93 + random.random() * 0.05
+                if won:
+                    # SELL vince: il prezzo e' sceso, profitto dalla vendita
+                    pnl = size * price * slippage
+                else:
+                    # SELL perde: il prezzo e' salito
+                    pnl = -size * (1.0 - price) * slippage
             else:
-                pnl = -size * slippage
+                won = random.random() < sim_win_prob
+                slippage = 0.93 + random.random() * 0.05
+                if won:
+                    raw_mult = (1.0 / price) - 1.0
+                    capped_mult = min(raw_mult, 20.0)
+                    pnl = size * capped_mult * slippage
+                else:
+                    pnl = -size * slippage
+
             self.risk.close_trade(token_id, won=won, pnl=pnl)
+
+            # Registra nell'history
+            history_entry.status = "SUCCESS"
+            history_entry.executed_price = price
+            history_entry.executed_size = size
+            history_entry.attempts = 1
+            self._record_order_history(history_entry)
         else:
             from utils.avellaneda_stoikov import market_inventory_frac
             inv = market_inventory_frac(self.risk.open_trades, opp.market.id, self.risk._strategy_budgets.get(STRATEGY_NAME, 1))
             vpin_val = self.risk.vpin_monitor.get_vpin(opp.market.id) if self.risk.vpin_monitor else 0.0
-            result = self.api.smart_buy(
-                token_id, size, target_price=price,
-                timeout_sec=10.0, fallback_market=True,
-                inventory_frac=inv, volume_24h=opp.market.volume, vpin=vpin_val,
-            )
-            if result:
-                # v7.4: Aggiorna prezzo con fill reale dal CLOB
-                if isinstance(result, dict) and result.get("_fill_price"):
-                    trade.price = result["_fill_price"]
-                self.risk.open_trade(trade)
+
+            # v10.4: Retry loop con price increment
+            result = None
+            final_price = price
+            cloudflare_blocked = False
+
+            for attempt in range(MAX_COPY_RETRIES + 1):
+                history_entry.attempts = attempt + 1
+
+                if is_sell:
+                    # SELL: usa smart_sell
+                    # Per SELL, shares = size / price (convertiamo da $ a shares)
+                    shares = size / final_price if final_price > 0 else 0
+                    if shares <= 0:
+                        break
+                    result = self.api.smart_sell(
+                        token_id, shares, current_price=final_price,
+                        timeout_sec=10.0, fallback_market=True,
+                    )
+                else:
+                    # BUY: usa smart_buy con A-S
+                    result = self.api.smart_buy(
+                        token_id, size, target_price=final_price,
+                        timeout_sec=10.0, fallback_market=True,
+                        inventory_frac=inv, volume_24h=opp.market.volume, vpin=vpin_val,
+                    )
+
+                # v10.4: Controlla Cloudflare block
+                if self._is_cloudflare_block(result):
+                    logger.warning(
+                        f"[WHALE] Cloudflare block rilevato per "
+                        f"{opp.whale_trade.whale_name} {whale_action} {opp.side} — skip retry"
+                    )
+                    cloudflare_blocked = True
+                    history_entry.status = "CLOUDFLARE"
+                    history_entry.error_message = "Cloudflare block rilevato"
+                    self._record_order_history(history_entry)
+                    return False
+
+                if result:
+                    # Ordine piazzato — controlla partial fill
+                    order_id = ""
+                    if isinstance(result, dict):
+                        order_id = result.get("orderID", result.get("id", ""))
+                    history_entry.order_id = order_id
+
+                    # v10.4: Partial fill handling
+                    filled_size = size  # default: assume full fill
+                    if isinstance(result, dict):
+                        # Aggiorna prezzo con fill reale dal CLOB
+                        if result.get("_fill_price"):
+                            trade.price = result["_fill_price"]
+                            final_price = result["_fill_price"]
+
+                        # Controlla size matchata
+                        size_matched = float(result.get("size_matched", result.get("sizeMatched", size)))
+                        if size_matched < size * 0.99:  # tolleranza 1%
+                            filled_size = size_matched
+                            residual = size - size_matched
+                            logger.info(
+                                f"[WHALE] Partial fill: ${size_matched:.2f}/${size:.2f} "
+                                f"(residuo ${residual:.2f}) — cancello ordine residuo"
+                            )
+                            # Cancella ordine residuo
+                            if order_id:
+                                try:
+                                    self.api.cancel_order(order_id)
+                                except Exception as cancel_err:
+                                    logger.warning(f"[WHALE] Errore cancellazione residuo: {cancel_err}")
+                            history_entry.status = "PARTIAL"
+                        else:
+                            history_entry.status = "SUCCESS"
+
+                    trade.size = filled_size
+                    history_entry.executed_price = final_price
+                    history_entry.executed_size = filled_size
+                    self.risk.open_trade(trade)
+                    self._record_order_history(history_entry)
+                    break  # Ordine eseguito (full o partial)
+
+                # Ordine fallito — retry con price increment
+                if attempt < MAX_COPY_RETRIES:
+                    if is_sell:
+                        final_price -= RETRY_PRICE_INCREMENT  # Decrementa per SELL
+                    else:
+                        final_price += RETRY_PRICE_INCREMENT  # Incrementa per BUY
+                    final_price = round(final_price, 2)
+
+                    delay_sec = min(RETRY_DELAY_BASE * (attempt + 1), RETRY_DELAY_MAX)
+                    logger.info(
+                        f"[WHALE] Retry {attempt + 1}/{MAX_COPY_RETRIES} "
+                        f"{whale_action} {opp.side} @{final_price:.2f} "
+                        f"(delay {delay_sec:.1f}s)"
+                    )
+                    time.sleep(delay_sec)
+                else:
+                    # Tutti i retry esauriti
+                    logger.warning(
+                        f"[WHALE] Ordine fallito dopo {MAX_COPY_RETRIES + 1} tentativi: "
+                        f"{opp.whale_trade.whale_name} {whale_action} {opp.side}"
+                    )
+                    history_entry.status = "FAILED"
+                    history_entry.error_message = f"Fallito dopo {MAX_COPY_RETRIES + 1} tentativi"
+                    self._record_order_history(history_entry)
+                    return False
 
         self._recently_traded[market_id] = time.time()
         self._trades_executed += 1
         return True
+
+    def _record_order_history(self, entry: CopyOrderHistory) -> None:
+        """Registra un tentativo di copy trade nello storico (max 100 entries)."""
+        self._order_history.append(entry)
+        if len(self._order_history) > 100:
+            self._order_history = self._order_history[-100:]
+
+    def get_order_history(self) -> list[CopyOrderHistory]:
+        """Ritorna lo storico degli ordini copy trade."""
+        return self._order_history
+
+    def on_chain_trade(self, trade_event: dict) -> None:
+        """
+        Callback per trade rilevati dall'on-chain monitor.
+        Aggiunge il trade alla coda di processing per il prossimo scan.
+        """
+        self._pending_onchain_trades.append(trade_event)
 
     @property
     def stats(self) -> dict:
@@ -756,4 +1026,6 @@ class WhaleCopyStrategy:
             "trades_executed": self._trades_executed,
             "tracked_wallets": len(TRACKED_WALLETS),
             "whale_trades_last_scan": len(self._last_whale_trades),
+            "order_history_count": len(self._order_history),
+            "pending_onchain_trades": len(self._pending_onchain_trades),
         }

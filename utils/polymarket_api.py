@@ -133,6 +133,7 @@ class PolymarketAPI:
         limit: int = 100,
         tag: str = "",
         order: str = "volume",
+        offset: int = 0,
     ) -> list[Market]:
         """Fetch mercati dalla Gamma API con filtri."""
         try:
@@ -143,6 +144,8 @@ class PolymarketAPI:
                 "order": order,
                 "ascending": "false",
             }
+            if offset > 0:
+                params["offset"] = offset
             if tag:
                 params["tag_slug"] = tag
 
@@ -350,6 +353,10 @@ class PolymarketAPI:
                 self.clob.signer, self.clob.creds, request_args
             )
 
+            # v10.5: Filtra per il NOSTRO wallet per evitare di prendere
+            # fill price di altri trader sullo stesso token (bug zombie positions)
+            our_addr = self.creds.funder_address.lower() if hasattr(self.creds, 'funder_address') else ""
+
             # 1) Cerca come TAKER: trade con asset_id = token_id
             url = (
                 f"{self.creds.host}/trades"
@@ -359,6 +366,19 @@ class PolymarketAPI:
             data = resp.json()
             trades = data.get("data", [])
             for t in trades:
+                # v10.5: Solo i nostri fill (match su taker address o maker address)
+                t_taker = t.get("taker_order_id", "")
+                t_maker_addr = ""
+                for mo in t.get("maker_orders", []):
+                    if mo.get("maker_address", "").lower() == our_addr:
+                        t_maker_addr = our_addr
+                        break
+                # Se conosciamo il nostro address, filtra
+                if our_addr and t_maker_addr != our_addr:
+                    # Potrebbe essere un nostro taker trade — verifica owner
+                    owner = t.get("owner", t.get("trader", "")).lower()
+                    if owner and owner != our_addr:
+                        continue
                 if side and t.get("side", "").upper() != side.upper():
                     continue
                 fp = float(t.get("price", 0))
@@ -427,12 +447,22 @@ class PolymarketAPI:
                 if fill:
                     break
             if fill and isinstance(result, dict):
-                result["_fill_price"] = fill["fill_price"]
-                result["_fill_size"] = fill["fill_size"]
-                logger.info(
-                    f"[FILL] Real fill: {fill['fill_size']:.2f} shares "
-                    f"@${fill['fill_price']:.4f} (attempt {_attempt})"
-                )
+                # v10.5: Sanity check — fill price deve essere plausibile
+                # rispetto all'amount e size. Se fill a $0.004 su un buy da $20
+                # è chiaramente il fill di un altro trader.
+                expected_price = amount / max(fill["fill_size"], 0.01)
+                if fill["fill_price"] < expected_price * 0.3:
+                    logger.warning(
+                        f"[FILL] Fill price sospetto: ${fill['fill_price']:.4f} "
+                        f"vs expected ~${expected_price:.4f} — IGNORATO (altro trader?)"
+                    )
+                else:
+                    result["_fill_price"] = fill["fill_price"]
+                    result["_fill_size"] = fill["fill_size"]
+                    logger.info(
+                        f"[FILL] Real fill: {fill['fill_size']:.2f} shares "
+                        f"@${fill['fill_price']:.4f} (attempt {_attempt})"
+                    )
             else:
                 logger.warning(f"[FILL] Fill non trovato per {token_id[:16]}... dopo 3 tentativi")
             return result
@@ -759,12 +789,19 @@ class PolymarketAPI:
             if fill:
                 break
         if fill and isinstance(result, dict):
-            result["_fill_price"] = fill["fill_price"]
-            result["_fill_size"] = fill["fill_size"]
-            logger.info(
-                f"[FILL] Real fill: {fill['fill_size']:.2f} shares "
-                f"@${fill['fill_price']:.4f} (attempt {_attempt})"
-            )
+            # v10.5: Sanity check — fill price deve essere plausibile
+            if fill["fill_price"] < target_price * 0.3:
+                logger.warning(
+                    f"[FILL] Fill price sospetto: ${fill['fill_price']:.4f} "
+                    f"vs target ~${target_price:.4f} — IGNORATO (altro trader?)"
+                )
+            else:
+                result["_fill_price"] = fill["fill_price"]
+                result["_fill_size"] = fill["fill_size"]
+                logger.info(
+                    f"[FILL] Real fill: {fill['fill_size']:.2f} shares "
+                    f"@${fill['fill_price']:.4f} (attempt {_attempt})"
+                )
         else:
             logger.warning(f"[FILL] Fill non trovato per limit {token_id[:16]}... dopo 3 tentativi")
         return result

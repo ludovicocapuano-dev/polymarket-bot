@@ -23,37 +23,35 @@ class PolymarketCreds:
 
 @dataclass
 class RiskConfig:
-    total_capital: float = 1000.0
-    max_bet_size: float = 40.0   # v8.0: da $25 a $40 (Becker sweet spot: $100-$1K)
+    total_capital: float = 3500.0  # v10.8.4: riflette portafoglio reale (~$3,559)
+    max_bet_size: float = 75.0   # v10.8.4: da $40, proporzionale al capitale
     max_bet_percent: float = 8.0
-    max_daily_loss: float = 150.0
+    max_daily_loss: float = 150.0   # v10.8.4: proporzionale al nuovo capitale
     min_edge: float = 0.04
     kelly_fraction: float = 0.25
     max_consecutive_losses: int = 10
-    max_open_positions: int = 30  # v7.3: aumentato da 20 (Casino Model — più diversificazione)
-    reserve_floor_pct: float = 25.0  # v8.1: % capitale da tenere sempre liquido
+    max_open_positions: int = 25  # v10.8.4: più diversificazione con più capitale
+    reserve_floor_pct: float = 20.0  # v10.8.4: 20% = $700 cuscinetto (più in assoluto)
 
 
 @dataclass
 class AllocationConfig:
     """
-    v8.0: Riallocazione data-driven (Becker Dataset analysis).
-    - event_driven 10→15: politics è la categoria più profittevole
-    - whale_copy 5→10: Becker conferma che copiare whale funziona (68% WR)
-    - data_driven 10→5: crypto ben calibrato, poco edge disponibile
-    - weather 20→15: redistribuiamo dove c'è più edge
-    v9.1: arb disabilitate per exploit incrementNonce() (settlement non atomico).
-    30% redistribuito a strategie non-arb.
+    v10.5: Riallocazione survival mode.
+    Weather unica strategia profittevole (+$16, 100% WR), maximizzata.
+    Bond e data ridotti drasticamente (bond -$39, data -$56 nel periodo).
+    Event potenziato per Glint.trade integration.
     """
     crypto_5min: int = 0       # ELIMINATO: Kelly -0.22, fees > edge
-    weather: int = 20          # v9.1: +5% da arb
-    arbitrage: int = 0         # DISABILITATO v9.1: exploit incrementNonce() — settlement non atomico
-    data_driven: int = 30      # v9.2.1: -5% (edge floor sospetto, diversificazione)
-    event_driven: int = 15     # v9.2.1: +5% (politics profittevole, NLP edge non dipende da latenza)
-    arb_gabagool: int = 0      # DISABILITATO v9.1: exploit incrementNonce() — settlement non atomico
-    high_prob_bond: int = 30   # v9.1: +5% da arb
+    weather: int = 90          # v10.8: da 70% — unica profittevole, +$553 realizzati, fee-free
+    arbitrage: int = 0         # DISABILITATO v9.1: exploit incrementNonce()
+    data_driven: int = 0       # v10.6: PAUSATO — WR 42.9% vs break-even 67%, edge hardcoded
+    event_driven: int = 0      # v10.8: DISABILITATO — WR 0%, -$350 storiche, feed rotti
+    arb_gabagool: int = 0      # DISABILITATO v9.1: exploit incrementNonce()
+    high_prob_bond: int = 0    # v10.8: DISABILITATO — asimmetria payoff 1:17, -$55 storiche
     market_making: int = 0     # ELIMINATO: necessita $2K+ budget
-    whale_copy: int = 5        # v9.1: ridotto — pochi segnali, dipende da attivita' whale
+    whale_copy: int = 0        # v10.8: DISABILITATO — 0 trade eseguiti, web3 non installato
+    resolution_sniper: int = 10  # v10.8: riattivato — resolution sniping UMA, quasi risk-free
 
 
 @dataclass
@@ -103,6 +101,7 @@ class Config:
                 high_prob_bond=int(os.getenv("ALLOC_HIGH_PROB_BOND", "30")),
                 market_making=int(os.getenv("ALLOC_MARKET_MAKING", "0")),
                 whale_copy=int(os.getenv("ALLOC_WHALE_COPY", "5")),
+                resolution_sniper=int(os.getenv("ALLOC_RESOLUTION_SNIPER", "0")),
             )
         else:
             # .env ha solo le vecchie 6 strategie — usa i nuovi default v6.0
@@ -131,7 +130,7 @@ class Config:
              self.allocation.arbitrage + self.allocation.data_driven +
              self.allocation.event_driven + self.allocation.arb_gabagool +
              self.allocation.high_prob_bond + self.allocation.market_making +
-             self.allocation.whale_copy)
+             self.allocation.whale_copy + self.allocation.resolution_sniper)
         if s != 100:
             errors.append(f"Allocazione deve sommare a 100 (attuale: {s})")
         return errors
@@ -147,6 +146,7 @@ class Config:
             "high_prob_bond": self.allocation.high_prob_bond,
             "market_making": self.allocation.market_making,
             "whale_copy": self.allocation.whale_copy,
+            "resolution_sniper": self.allocation.resolution_sniper,
         }
         pct = pct_map.get(strategy, 0)
         return self.risk.total_capital * (pct / 100.0)

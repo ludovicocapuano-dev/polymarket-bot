@@ -102,6 +102,46 @@ SAFE_EXEC_ABI = json.loads("""[{
 
 HASH_ZERO = b"\x00" * 32
 
+# ── Contratti CLOB Polymarket (per USDC approval) ─────────────
+CTF_EXCHANGE = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
+NEG_RISK_CTF_EXCHANGE = "0xC5d563A36AE78145C45a50134d48A1215220f80a"
+# Nota: NEG_RISK_ADAPTER in alto (0xd91E80c...) è l'Operator, non il Neg Risk Exchange
+CLOB_SPENDERS = [CTF_EXCHANGE, NEG_RISK_CTF_EXCHANGE, NEG_RISK_ADAPTER]
+
+# ABI minimale per ERC-20 allowance + approve
+ERC20_ABI = json.loads("""[{
+    "constant": true,
+    "inputs": [
+        {"name": "_owner", "type": "address"},
+        {"name": "_spender", "type": "address"}
+    ],
+    "name": "allowance",
+    "outputs": [{"name": "", "type": "uint256"}],
+    "stateMutability": "view",
+    "type": "function"
+}, {
+    "constant": false,
+    "inputs": [
+        {"name": "_spender", "type": "address"},
+        {"name": "_value", "type": "uint256"}
+    ],
+    "name": "approve",
+    "outputs": [{"name": "", "type": "bool"}],
+    "stateMutability": "nonpayable",
+    "type": "function"
+}, {
+    "constant": true,
+    "inputs": [{"name": "_owner", "type": "address"}],
+    "name": "balanceOf",
+    "outputs": [{"name": "", "type": "uint256"}],
+    "stateMutability": "view",
+    "type": "function"
+}]""")
+
+# Soglia minima USDC allowance per triggerare auto-approve (1000 USDC)
+MIN_ALLOWANCE_USDC = 1000
+MAX_UINT256 = 2**256 - 1
+
 
 @dataclass
 class ResolvedPosition:
@@ -153,6 +193,10 @@ class Redeemer:
             self._safe = self._w3.eth.contract(
                 address=Web3.to_checksum_address(self._proxy_address),
                 abi=SAFE_EXEC_ABI,
+            )
+            self._usdc = self._w3.eth.contract(
+                address=Web3.to_checksum_address(USDC_ADDRESS),
+                abi=ERC20_ABI,
             )
             self._available = True
             logger.info(
@@ -580,6 +624,150 @@ class Redeemer:
 
         return False
 
+    def redeem_all_redeemable(self) -> dict:
+        """
+        v10.3: Redeem forzato di TUTTE le posizioni redeemable dalla Data API,
+        senza richiedere matching con open_trades.
+        Per posizioni orfane (trade passati non più in memoria).
+        Ritorna {attempted, redeemed, skipped, failed, already_redeemed}.
+        """
+        if not self._available:
+            logger.error("[REDEEM-ALL] Redeemer non disponibile (web3 non inizializzato)")
+            return {"attempted": 0, "redeemed": 0, "skipped": 0, "failed": 0, "already_redeemed": 0}
+
+        positions = self.fetch_redeemable_positions()
+        stats = {"attempted": 0, "redeemed": 0, "skipped": 0, "failed": 0, "already_redeemed": 0}
+
+        if not positions:
+            logger.info("[REDEEM-ALL] Nessuna posizione redeemable trovata")
+            return stats
+
+        logger.info(f"[REDEEM-ALL] Trovate {len(positions)} posizioni redeemable, inizio redeem forzato...")
+
+        for i, pos in enumerate(positions):
+            cid = pos.get("conditionId", "") or pos.get("condition_id", "")
+            if not cid:
+                stats["skipped"] += 1
+                continue
+
+            if cid in self._redeemed:
+                stats["already_redeemed"] += 1
+                continue
+
+            title = pos.get("title", "") or pos.get("question", "") or "?"
+            neg_risk = pos.get("negRisk", pos.get("neg_risk", False))
+
+            rpos = ResolvedPosition(
+                market_id=pos.get("market_slug", pos.get("slug", cid[:16])),
+                condition_id=cid,
+                question=title,
+                outcome="redeemable",
+                won=True,  # redeemable = possiamo riscuotere
+                neg_risk=neg_risk,
+            )
+
+            stats["attempted"] += 1
+            logger.info(
+                f"[REDEEM-ALL] [{i+1}/{len(positions)}] Redeem '{title[:50]}' "
+                f"cond={cid[:16]}... negRisk={neg_risk}"
+            )
+
+            result = self._redeem_position(rpos)
+            if result is True:
+                self._redeemed.add(cid)
+                stats["redeemed"] += 1
+                logger.info(f"[REDEEM-ALL] [{i+1}] Successo!")
+            elif result is None:
+                stats["skipped"] += 1
+                logger.info(f"[REDEEM-ALL] [{i+1}] Non ancora risolta on-chain, skip")
+            else:
+                stats["failed"] += 1
+                logger.warning(f"[REDEEM-ALL] [{i+1}] Fallito")
+
+            # Rate limit: pausa tra TX per non saturare il nonce/RPC
+            if stats["attempted"] % 5 == 0:
+                time.sleep(2)
+
+        logger.info(
+            f"[REDEEM-ALL] Completato: {stats['redeemed']}/{stats['attempted']} riscossi, "
+            f"{stats['failed']} falliti, {stats['skipped']} skip, "
+            f"{stats['already_redeemed']} già riscossi"
+        )
+        return stats
+
+    def check_and_approve_usdc(self) -> dict:
+        """
+        v10.4: Controlla allowance USDC del Safe proxy verso i 3 contratti CLOB.
+        Se allowance < MIN_ALLOWANCE_USDC, invia approve(max_uint256) via Safe proxy.
+
+        Ritorna dict con risultati per ogni spender.
+        """
+        if not self._available:
+            logger.warning("[APPROVE] Redeemer non disponibile — skip auto-approve")
+            return {}
+
+        from web3 import Web3
+
+        results: dict[str, str] = {}
+        proxy_cs = Web3.to_checksum_address(self._proxy_address)
+        min_allowance_raw = MIN_ALLOWANCE_USDC * 10**6  # USDC ha 6 decimali
+
+        for spender in CLOB_SPENDERS:
+            spender_cs = Web3.to_checksum_address(spender)
+            label = spender[:10]
+
+            try:
+                # Check allowance corrente
+                allowance = self._usdc.functions.allowance(
+                    proxy_cs, spender_cs
+                ).call()
+                allowance_usdc = allowance / 10**6
+
+                if allowance >= min_allowance_raw:
+                    logger.info(
+                        f"[APPROVE] {label}... allowance OK: "
+                        f"${allowance_usdc:,.0f} USDC"
+                    )
+                    results[spender] = "ok"
+                    continue
+
+                # Allowance insufficiente — approve max_uint256
+                logger.info(
+                    f"[APPROVE] {label}... allowance bassa: "
+                    f"${allowance_usdc:,.2f} — invio approve(max)..."
+                )
+
+                # Encode USDC.approve(spender, max_uint256)
+                approve_data = self._usdc.functions.approve(
+                    spender_cs, MAX_UINT256
+                ).build_transaction({"from": proxy_cs})["data"]
+
+                # Esegui via Safe proxy
+                success = self._exec_safe_transaction(
+                    to=USDC_ADDRESS,
+                    data=approve_data,
+                )
+
+                if success:
+                    # Verifica post-approve
+                    new_allowance = self._usdc.functions.allowance(
+                        proxy_cs, spender_cs
+                    ).call()
+                    logger.info(
+                        f"[APPROVE] {label}... approvato! "
+                        f"Nuova allowance: ${new_allowance / 10**6:,.0f}"
+                    )
+                    results[spender] = "approved"
+                else:
+                    logger.error(f"[APPROVE] {label}... TX fallita")
+                    results[spender] = "failed"
+
+            except Exception as e:
+                logger.error(f"[APPROVE] {label}... errore: {e}")
+                results[spender] = f"error: {e}"
+
+        return results
+
     def _switch_rpc(self):
         """Switcha a un RPC alternativo dopo rate limit."""
         try:
@@ -598,6 +786,10 @@ class Redeemer:
                         self._safe = new_w3.eth.contract(
                             address=Web3.to_checksum_address(self._proxy_address),
                             abi=SAFE_EXEC_ABI,
+                        )
+                        self._usdc = new_w3.eth.contract(
+                            address=Web3.to_checksum_address(USDC_ADDRESS),
+                            abi=ERC20_ABI,
                         )
                         logger.info(f"[REDEEM] Switchato a RPC: {rpc}")
                         return

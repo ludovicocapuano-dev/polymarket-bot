@@ -75,22 +75,26 @@ v10.5: Glint.trade real-time intelligence feed per event_driven.
   - `.claude/commands/` — slash commands (/backtest, /strategy-status, /pnl-report)
 - `/root/becker-dataset/data/` — Becker Dataset (115M trade Polymarket per analisi)
 
-## Strategie e allocazione (v10.6 optimize mode)
-| Strategia      | Allocazione | Descrizione                                    |
-|----------------|-------------|------------------------------------------------|
-| weather        | 55%         | Mercati meteo (unica profittevole, fee-free, MAX_BET=$35, TP=25%) |
-| event_driven   | 25%         | News-reactive + NLP + Glint.trade              |
-| whale_copy     | 10%         | Copy trading size-aware (raddoppiato)          |
-| high_prob_bond | 10%         | Bond (solo politics, MIN_EDGE=0.03, MIN_CERTAINTY=0.75) |
-| data_driven    | 0%          | PAUSATO v10.6: WR 42.9% vs break-even 67%, edge hardcoded |
-| arb_gabagool   | 0%          | DISABILITATO v9.1: exploit incrementNonce()    |
-| arbitrage      | 0%          | DISABILITATO v9.1: exploit incrementNonce()    |
-| crypto_5min    | 0%          | ELIMINATO v7.0: Kelly negativo, fees 3.15%     |
-| market_making  | 0%          | ELIMINATO v7.0: necessita $2K+ budget          |
+## Strategie e allocazione (v10.8.4)
+| Strategia          | Allocazione | Descrizione                                    |
+|--------------------|-------------|------------------------------------------------|
+| weather            | 90%         | v10.8.4: tail selling + forecast divergence, min_edge 5/12/20%, EV>=0.10, uncertainty penalty |
+| resolution_sniper  | 10%         | v10.8: Resolution sniping UMA, quasi risk-free |
+| negrisk_arb        | indip.      | v10.8.4: NegRisk sum arb scanner, MAX_SIZE=$100, opera indipendentemente dal budget |
+| holding_rewards    | indip.      | v10.8.4: 4% APY su mercati long-term eligible, $20/mercato, scan ogni 10 cicli |
+| favorite_longshot  | indip.      | v10.8.4: bias favorite-longshot, $25/trade, fee-free markets, edge 2-6% |
+| event_driven       | 0%          | v10.8: DISABILITATO — WR 0%, -$350, feed rotti |
+| high_prob_bond     | 0%          | v10.8: DISABILITATO — asimmetria payoff 1:17, -$55 |
+| whale_copy         | 0%          | v10.8: DISABILITATO — 0 trade mai eseguiti     |
+| data_driven        | 0%          | PAUSATO v10.6: WR 42.9% vs break-even 67%     |
+| arb_gabagool       | 0%          | DISABILITATO v9.1: exploit incrementNonce()    |
+| arbitrage          | 0%          | DISABILITATO v9.1: exploit incrementNonce()    |
+| crypto_5min        | 0%          | ELIMINATO v7.0: Kelly negativo, fees 3.15%     |
+| market_making      | 0%          | ELIMINATO v7.0: necessita $2K+ budget          |
 
 ## Stack tecnico
 - Python, requests, asyncio, numpy
-- API: Polymarket CLOB, Gamma API, Data API, Finlight v2, GDELT v2, Glint.trade WS, Binance, LunarCrush, CryptoQuant, Nansen
+- API: Polymarket CLOB, Gamma API, Data API, Finlight v2, GDELT v2, Glint.trade WS, Weather Underground, Binance, LunarCrush, CryptoQuant, Nansen
 - NLP: FinBERT (ProsusAI/finbert) con fallback VADER
 - Storage: PostgreSQL + Redis (opzionali, graceful degradation a JSON + in-memory)
 - Chain: Polygon (chain_id 137)
@@ -100,7 +104,8 @@ v10.5: Glint.trade real-time intelligence feed per event_driven.
 - Il file `.env` contiene chiavi private e API keys — mai leggerlo o mostrarlo
 - Il bot ha un risk manager integrato con Kelly criterion (proporzionale per strategia, v10.0: haircut empirico MC, v10.2: volatilità GARCH(1,1))
 - La strategia event_driven usa Finlight + GDELT + Glint.trade + Twitter/X per news sentiment in tempo reale (merge multi-fonte 4 sorgenti)
-- Twitter/X feed via twscrape (async, account-based auth). VADER sentiment, confidence cap 0.80, strength discount 15%. Env var: TWITTER_ACCOUNTS (JSON array [{username,password,email}]). Senza credenziali = noop. File: `utils/twitter_feed.py`
+- Twitter/X feed via API v2 Bearer Token ($200/mese Basic plan). VADER sentiment, confidence cap 0.80, strength discount 15%. Env var: TWITTER_BEARER_TOKEN. Senza token = noop. File: `utils/twitter_feed.py`
+- Weather Underground è la fonte di settlement per i weather markets Polymarket (v10.8). Peso 2.0 (massimo) nel consensus multi-provider. API: api.weather.com v3/v1. Env var: WUNDERGROUND_API_KEY (free con PWS). Senza key = provider disabilitato (noop). File: `utils/weather_feed.py`
 - Glint.trade fornisce segnali pre-matchati su contratti Polymarket con relevance_score AI (1-10). WS auth a 2 livelli: session JWT (GLINT_SESSION_TOKEN, ~7gg dal browser) → WS JWT (~5min, auto-refresh). Senza token = feed disabilitato (noop). 401 = token scaduto, disabilitato per sessione
 - Il risk manager ha stop-loss cooldown (4h) per evitare loop distruttivi
 - Il Signal Validator filtra trade a bassa qualita' PRIMA dell'esecuzione (8 gate checks, incluso VPIN v9.2.1). Gate 6 (EV) usa edge direttamente (net-of-fees, v10.1). MIN_CONFIDENCE=0.50 (v10.1). Segnali REVIEW con edge>=0.04 vengono accettati (v10.1)
@@ -131,6 +136,11 @@ v10.5: Glint.trade real-time intelligence feed per event_driven.
 - L'execution usa Avellaneda-Stoikov per calcolare il bid ottimale in `smart_buy()` (v10.3). Parametri A-S sono opzionali e backward compatible — se tutti a 0.0, usa il path naive `best_bid + TICK`. I due γ (GAMMA_INVENTORY=0.30, GAMMA_SPREAD=0.05) sono scalati per volume 24h. NON rimuovere il clipping `[best_bid, min(mid, target)]` — previene bid fuori range
 - Lo spread_cost nel Kelly sizing è dinamico per zona di prezzo (v10.1: pmxt data-driven). NON riportare a hardcoded 0.005
 - Weather markets sono fee-free su Polymarket (v10.1): `fee = 0.0` in weather.py. NON aggiungere fee
+- Weather v10.8.4: BUY_NO solo su bin con P(YES)<15% (tail selling). BUY_YES solo su bin cheap con forecast forte (forecast divergence). Uncertainty penalty nella confidence (σ>4→-30%, σ>2.5→-15%). NON rilassare questi filtri senza dati
+- NegRisk arb (`strategies/negrisk_arb.py`): scanner sum deviation su mercati multi-outcome. Se SUM(YES)≠$1.00 oltre 2%, esegue buy_all o sell_all. MAX_ARB_SIZE=$100, cooldown 30min. Opera indipendentemente dal budget allocato
+- Kelly sizing v10.8.4: uncertainty-adjusted (`risk_manager.py` riga 381-401). sigma per strategia (weather=0.08, sniper=0.03). Per weather sigma cresce con orizzonte: 0.05+days*0.02. NON rimuovere uncertainty_factor
+- Holding Rewards (`strategies/holding_rewards.py`): compra posizioni in 13 mercati eligible per 4% APY. Keywords: 2028 presidential, midterm, Putin, Xi, Erdogan, Netanyahu, Zelensky. $20/mercato, scan orario
+- Favorite-Longshot Bias (`strategies/favorite_longshot.py`): compra favoriti $0.70-$0.90 in mercati fee-free ad alto volume (>$50K). Edge stimato 2-6% (NBER). $25/trade, max 10 posizioni, quarter-Kelly. Esclude weather/crypto
 - Kurtosis haircut si applica SOLO se Empirical Kelly non è attivo (v10.1). NON applicare entrambi insieme
 - Becker Dataset in `/root/becker-dataset/data/` — fonte delle ottimizzazioni v8.0
 - pmxt orderbook archive in `archive.pmxt.dev/Polymarket` — fonte calibrazione spread v10.1 (download: `/dumps/polymarket_orderbook_YYYY-MM-DDTHH.parquet`)

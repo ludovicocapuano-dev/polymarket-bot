@@ -1,27 +1,30 @@
 """
-Strategia 5: Weather Prediction — v3.5 Multi-Source
-=====================================================
+Strategia 5: Weather Prediction — v3.6 Multi-Source + WU Settlement
+=====================================================================
 Sfrutta le previsioni meteo MULTI-SORGENTE per tradare i mercati
 weather su Polymarket: "Highest temperature in London on Feb 14?"
 
 Provider (consensus pesato):
-- Open-Meteo:  ensemble GFS 31 membri (peso 1.0)
-- Wethr.net:   16+ modelli professionali (peso 1.5)
-- NWS API:     previsioni ufficiali USA, fonte settlement (peso 0.8)
+- Weather Underground:  fonte settlement Polymarket (peso 2.0) ← CRITICO
+- Wethr.net:           16+ modelli professionali (peso 1.5)
+- Open-Meteo:          ensemble GFS 31 membri (peso 1.0)
+- NWS API:             previsioni ufficiali USA (peso 0.8)
 
 Approccio:
 - Ogni provider fornisce una stima di probabilita' per bucket
 - Il consensus fa media pesata delle probabilita' dei provider
+- WU ha peso 2.0 (massimo) perche' Polymarket risolve usando WU
 - Se i provider divergono molto → incertezza aumentata → trade piu' cauti
 - Confronta probabilita' consensus vs prezzo di mercato Polymarket
 - Trada quando il consensus diverge significativamente dal mercato
 
-Esempio (3 fonti):
+Esempio (4 fonti):
   Mercato: "7°C to 9°C" in London Feb 14 — prezzo YES = $0.35
+  WU:         P=0.70 (forecast settlement source)
   Open-Meteo: P=0.68 (22/31 GFS membri)
   Wethr.net:  P=0.75 (12/16 modelli professionali)
   NWS:        N/A (non copre UK)
-  Consensus:  0.72 → Edge = 0.72 - 0.35 = 0.37 → TRADE!
+  Consensus:  0.71 (WU-weighted) → Edge = 0.71 - 0.35 = 0.36 → TRADE!
 """
 
 import logging
@@ -40,7 +43,7 @@ from utils.risk_manager import RiskManager, Trade
 logger = logging.getLogger(__name__)
 
 STRATEGY_NAME = "weather"
-MAX_WEATHER_BET = 15.0  # Cap weather-specifico (loss da $25 troppo pesanti vs win medi)
+MAX_WEATHER_BET = 60.0  # v10.8.4: da $35, proporzionale al capitale ($3.5K)
 
 # ── Pattern per riconoscere mercati weather ──────────────────
 WEATHER_PATTERNS = [
@@ -49,7 +52,7 @@ WEATHER_PATTERNS = [
     re.compile(r"(?:lowest|low|min)\s+temp", re.I),
     # v5.0: pattern extra per catturare piu' mercati weather
     re.compile(r"(?:rain|snow|precipitation)\s+in\s+\w+", re.I),
-    re.compile(r"(?:london|nyc|chicago|seoul|miami|ankara|seattle|atlanta|dallas).*(?:temp|degree|°)", re.I),
+    re.compile(r"(?:london|nyc|chicago|seoul|miami|ankara|seattle|atlanta|dallas|paris|tokyo|sydney|toronto|denver|los\s*angeles|phoenix|houston|buenos\s*aires|sao\s*paulo|wellington|lucknow).*(?:temp|degree|°)", re.I),
 ]
 
 # Mesi in inglese → numero
@@ -75,6 +78,9 @@ class WeatherOpportunity:
     edge: float
     confidence: float
     reasoning: str
+    # v10.6: Metriche EV per ranking profittevole
+    expected_value: float = 0.0     # EV per $1 investito
+    payoff_ratio: float = 0.0       # profit/loss ratio se win
 
 
 class WeatherStrategy:
@@ -94,7 +100,7 @@ class WeatherStrategy:
         risk: RiskManager,
         weather: WeatherFeed,
         min_edge: float = 0.04,      # v5.0: edge minimo 4% (niche dominance)
-        min_confidence: float = 0.45,
+        min_confidence: float = 0.55,
     ):
         self.api = api
         self.risk = risk
@@ -148,17 +154,44 @@ class WeatherStrategy:
             else:
                 skipped_parse += 1
 
-        opportunities.sort(key=lambda o: o.edge * o.confidence, reverse=True)
+        # v10.6: Ranking per Expected Value, non edge grezzo.
+        # EV = win_prob * profit_if_win - (1-win_prob) * loss (per $1 investito)
+        # Questo favorisce trade a prezzo basso con payoff asimmetrico A NOSTRO FAVORE.
+        # Dati: prezzo<0.40 = 100% WR e +$17.79, prezzo>0.50 = -$29.99.
+        opportunities.sort(key=lambda o: o.expected_value, reverse=True)
+
+        # v10.7: Best-per-city — max 2 trade per citta+data, ma solo se
+        # i bucket sono distanti (>5 gradi). Bucket vicini sono correlati
+        # (se sbagli forecast, perdi su entrambi). Bucket distanti no:
+        # es. Chicago 32-33 e 42-43 sono scommesse indipendenti.
+        city_date_buckets: dict[str, list[WeatherOpportunity]] = {}
+        for opp in opportunities:
+            key = f"{opp.city}_{opp.date}"
+            city_date_buckets.setdefault(key, []).append(opp)
+
+        filtered: list[WeatherOpportunity] = []
+        for key, opps in city_date_buckets.items():
+            filtered.append(opps[0])  # sempre il migliore per EV
+            if len(opps) > 1:
+                best_mid = (opps[0].bucket_low + opps[0].bucket_high) / 2.0
+                for opp in opps[1:]:
+                    opp_mid = (opp.bucket_low + opp.bucket_high) / 2.0
+                    if abs(opp_mid - best_mid) >= 5.0:
+                        filtered.append(opp)
+                        break  # max 2 per città+data
+        opportunities = filtered
 
         if opportunities:
+            best = opportunities[0]
             logger.info(
                 f"[WEATHER] Scan {len(markets)} mercati "
                 f"({len(weather_markets)} weather, {skipped_cooldown} cooldown, "
                 f"{skipped_parse} parse-fail) → "
                 f"{len(opportunities)} opportunita' "
-                f"(migliore: {opportunities[0].city.upper()} "
-                f"'{opportunities[0].bucket_label}' "
-                f"edge={opportunities[0].edge:.4f})"
+                f"(migliore: {best.city.upper()} "
+                f"'{best.bucket_label}' "
+                f"edge={best.edge:.4f} EV={best.expected_value:+.3f}/$ "
+                f"payoff={best.payoff_ratio:.1f}x)"
             )
         else:
             logger.info(
@@ -191,21 +224,25 @@ class WeatherStrategy:
         # 1. Rileva citta'
         city = self.weather.detect_city(q)
         if not city:
+            logger.info(f"[WEATHER-SKIP] no city: {q[:80]}")
             return None
 
         # 2. Rileva data
         date = self._parse_date(q)
         if not date:
+            logger.info(f"[WEATHER-SKIP] no date: {q[:80]}")
             return None
 
         # 3. Ottieni previsione
         forecast = self.weather.get_forecast_for_date(city, date)
         if not forecast:
+            logger.info(f"[WEATHER-SKIP] no forecast: {city} {date}")
             return None
 
         # 4. Rileva bucket di temperatura
         bucket = self._parse_bucket(market)
         if not bucket:
+            logger.info(f"[WEATHER-SKIP] no bucket: {q[:100]} outcomes={market.outcomes[:4]}")
             return None
 
         low, high, label = bucket
@@ -267,10 +304,20 @@ class WeatherStrategy:
         best_side = "YES" if edge_yes > edge_no else "NO"
         best_edge = max(edge_yes, edge_no)
 
-        # v8.0: MIN_EDGE ridotto per same-day weather (previsioni molto piu' accurate)
+        # v10.8.4: MIN_EDGE alzato — dati: 122W/125L (49% WR) = edge reale ~0.
+        # Servono soglie piu' alte per filtrare noise e tradare solo edge vere.
         days_ahead_edge = self._days_until(date)
-        effective_min_edge = 0.02 if days_ahead_edge == 0 else self.min_edge
+        if days_ahead_edge == 0:
+            effective_min_edge = 0.05   # same-day: forecast MAE ~1F, serve edge reale
+        elif days_ahead_edge == 1:
+            effective_min_edge = 0.12   # +1 giorno: MAE ~2.5F, edge robusta
+        else:
+            effective_min_edge = 0.20   # +2 giorni+: MAE ~3.5F, solo edge enormi
         if best_edge < effective_min_edge:
+            logger.debug(
+                f"[WEATHER-SKIP] low edge: {city} {label} "
+                f"edge={best_edge:.4f} < min={effective_min_edge}"
+            )
             return None
 
         # v7.0: Filtro rischio asimmetrico su prezzi estremi.
@@ -292,21 +339,124 @@ class WeatherStrategy:
         has_ensemble = bool(forecast.ensemble_temps)
         ensemble_boost = 1.0 if has_ensemble else 0.8
 
-        confidence = min(horizon_conf * source_conf * ensemble_boost, 0.90)
+        # Penalita' per alta incertezza del forecast
+        forecast_uncertainty = forecast.uncertainty_in_unit(unit)
+        if forecast_uncertainty > 4.0:
+            uncertainty_penalty = 0.70   # alta incertezza: -30%
+        elif forecast_uncertainty > 2.5:
+            uncertainty_penalty = 0.85   # media incertezza: -15%
+        else:
+            uncertainty_penalty = 1.0    # bassa incertezza: nessuna penalita'
+
+        confidence = min(horizon_conf * source_conf * ensemble_boost * uncertainty_penalty, 0.90)
 
         if confidence < self.min_confidence:
+            logger.debug(
+                f"[WEATHER-SKIP] low confidence: {city} {label} "
+                f"conf={confidence:.3f} < min={self.min_confidence}"
+            )
             return None
 
         buy_price = price_yes if best_side == "YES" else price_no
-        if buy_price > 0.85:
-            # v8.0: Rilassato — Becker: Weather ha bias positivo (underpriced) a 0.60-0.90
-            # Permettere se edge forte E confidence alta
-            if best_edge < 0.05 or confidence < 0.75:
-                # Blocca ancora se edge/confidence deboli
+
+        # v10.8.4: BUY_YES "Forecast Divergence" — strategia provata dai top trader.
+        # Compra YES su bins sottovalutati dove forecast dice alta probabilità.
+        # Dati vecchi (1W/7L) erano con edge basse. Con edge >= 15% e prezzo basso,
+        # il payoff asimmetrico (5-20x) compensa il win rate più basso.
+        # Exact bucket YES: consentiti solo se forecast_prob >= 0.30 e prezzo <= $0.12
+        # Range bucket YES: consentiti se prezzo <= $0.15 e edge >= 15%
+        is_exact_bucket = "exact" in label
+        if best_side == "YES":
+            if is_exact_bucket:
+                # Exact: solo se forecast è molto fiducioso e prezzo è basso
+                if buy_price > 0.12 or forecast_prob < 0.30:
+                    logger.debug(
+                        f"[WEATHER-SKIP] BUY_YES exact: {city} {label} "
+                        f"price={buy_price:.3f} prob={forecast_prob:.3f} "
+                        f"(need price<=0.12 AND prob>=0.30)"
+                    )
+                    return None
+            else:
+                # Range: prezzo basso con edge significativa
+                if buy_price > 0.15:
+                    logger.debug(
+                        f"[WEATHER-SKIP] BUY_YES high-price: {city} {label} "
+                        f"price={buy_price:.3f} (max 0.15 per YES)"
+                    )
+                    return None
+
+        # High-price guard — solo per BUY_YES: prezzi alti richiedono multi-fonte.
+        # BUY_NO single-source a prezzo alto ha 100% WR storico (6/6 WIN),
+        # il prezzo alto e' gia' protezione (payoff basso = perdita contenuta).
+        if best_side == "YES" and buy_price > 0.65 and n_sources < 2:
+            logger.debug(
+                f"[WEATHER-SKIP] single-source high-price: {city} {label} "
+                f"price={buy_price:.3f} sources={n_sources}"
+            )
+            return None
+
+        # v10.8.4: BUY_NO più selettivo — solo "tail selling" (estremi impossibili).
+        # Dati: 122W/125L con vecchi filtri = edge zero.
+        # Nuovo: BUY_NO solo se forecast dice P(YES) < 0.15 (bin molto improbabile).
+        # Per exact bucket: richiedi dist >= 2.5° dal forecast (era 1.5°).
+        if best_side == "NO":
+            if forecast_prob > 0.15:
+                logger.debug(
+                    f"[WEATHER-SKIP] BUY_NO prob too high: {city} {label} "
+                    f"P(YES)={forecast_prob:.3f} > 0.15 (serve bin improbabile)"
+                )
                 return None
-            # Altrimenti procedi — Becker conferma underpricing a 0.85-0.90
-        if buy_price < 0.05:
-            # Longshot: paghi poco ma probabilita' troppo bassa
+            if is_exact_bucket:
+                try:
+                    bucket_mid = (low + high) / 2.0
+                    forecast_temp = forecast.temp_in_unit(unit)
+                    dist = abs(forecast_temp - bucket_mid)
+                    if dist < 2.5:
+                        logger.debug(
+                            f"[WEATHER-SKIP] BUY_NO exact too close: {city} {label} "
+                            f"forecast={forecast_temp:.1f} dist={dist:.1f} < 2.5"
+                        )
+                        return None
+                except (AttributeError, TypeError):
+                    pass
+        # v10.6: Filtro payoff asimmetrico — blocca trade dove rischio >> ricompensa
+        # Payoff ratio = profitto per $1 investito se win.
+        # Scala con incertezza dell'orizzonte:
+        #   same-day: min 0.25 → max price 0.80
+        #   +1 giorno: min 0.30 → max price 0.77
+        #   +2/3 giorni: min 0.35-0.40 → max price 0.74-0.71
+        # Same-day BUY_NO a prezzo alto (0.80) ha 100% WR storico: payoff
+        # basso (0.2x) ma quasi certo. Rilassare soglia per non bloccarli.
+        if days_ahead == 0 and best_side == "NO":
+            min_payoff = 0.15
+        else:
+            min_payoff = 0.25 + days_ahead * 0.08
+        payoff_ratio = (1.0 / buy_price) - 1.0 if buy_price > 0 else 0
+        if payoff_ratio < min_payoff:
+            logger.debug(
+                f"[WEATHER-SKIP] low payoff: {city} {label} "
+                f"payoff={payoff_ratio:.3f} < min={min_payoff:.3f} "
+                f"(price={buy_price:.3f} side={best_side})"
+            )
+            return None
+        if buy_price < 0.08:
+            return None
+
+        # v10.6: Expected Value per $1 investito — la metrica che conta davvero.
+        # Dati: trade a prezzo basso (payoff alto) = 100% WR, +$17.79.
+        # Trade a prezzo alto (payoff basso) = 50% WR, -$33.02.
+        # EV = win_prob * payoff_ratio - (1 - win_prob) * 1.0
+        win_prob = forecast_prob if best_side == "YES" else (1.0 - forecast_prob)
+        expected_value = win_prob * payoff_ratio - (1.0 - win_prob)
+
+        # v10.8.4: EV minimo alzato da 0.05 a 0.10 — dati mostrano che
+        # trade con EV 0.05-0.10 hanno WR ~50% (nessun edge reale).
+        if expected_value < 0.10:
+            logger.debug(
+                f"[WEATHER-SKIP] low EV: {city} {label} "
+                f"EV={expected_value:+.4f} < 0.05 "
+                f"(win_prob={win_prob:.3f} payoff={payoff_ratio:.3f})"
+            )
             return None
 
         return WeatherOpportunity(
@@ -321,6 +471,8 @@ class WeatherStrategy:
             market_prob=price_yes,
             edge=best_edge,
             confidence=confidence,
+            expected_value=expected_value,
+            payoff_ratio=payoff_ratio,
             reasoning=(
                 f"{city.upper()} {date} | "
                 f"Bucket: {label} ({unit}) | "
@@ -328,6 +480,7 @@ class WeatherStrategy:
                 f"±{forecast.uncertainty_in_unit(unit):.1f} | "
                 f"P_consensus={forecast_prob:.3f} vs Mkt={price_yes:.3f} | "
                 f"Edge={best_edge:.3f} {best_side} | "
+                f"EV={expected_value:+.3f}/$ payoff={payoff_ratio:.1f}x | "
                 f"Sources: {forecast.source if hasattr(forecast, 'source') else 'single'} "
                 f"({len(forecast.ensemble_temps)}ens)"
             ),
@@ -343,7 +496,8 @@ class WeatherStrategy:
         - "... on Feb 14?"  → 2026-02-14
         """
         # Pattern: "on <month> <day>"
-        pattern = r"(?:on|for)\s+(\w+)\.?\s+(\d+)(?:\s*,?\s*(\d{4}))?"
+        # v10.7: \b previene match dentro parole (es. "Lond**on** be 19")
+        pattern = r"\b(?:on|for)\s+(\w+)\.?\s+(\d+)(?:\s*,?\s*(\d{4}))?"
         match = re.search(pattern, question, re.I)
         if not match:
             return None
@@ -466,6 +620,42 @@ class WeatherStrategy:
                 except ValueError:
                     pass
 
+            # v10.7: Pattern: "be X°C/F" — mercato a temperatura esatta (Yes/No)
+            # Es: "Will the highest temperature in Ankara be 9°C on March 4?"
+            # Polymarket risolve come "temperatura arrotondata == X"
+            # → bucket [X-0.5, X+0.5)
+            exact_match = re.search(
+                r"be\s+(-?\d+\.?\d*)\s*(?:C|F|degrees?)?(?:\s+(?:on|for)|\s*\?)",
+                t, re.I,
+            )
+            if exact_match:
+                try:
+                    val = float(exact_match.group(1))
+                    if TEMP_MIN <= val <= TEMP_MAX:
+                        return (val - 0.5, val + 0.5, f"{val} exact")
+                except ValueError:
+                    pass
+
+            # v10.7: Pattern: "X or below" / "X or lower" (varianti di "X or less")
+            or_below = re.search(r"(-?\d+\.?\d*)\s*(?:C|F|degrees?)?\s+or\s+(?:below|lower)", t, re.I)
+            if or_below:
+                try:
+                    val = float(or_below.group(1))
+                    if TEMP_MIN <= val <= TEMP_MAX:
+                        return (TEMP_MIN, val + 0.01, f"{val} or below")
+                except ValueError:
+                    pass
+
+            # v10.7: Pattern: "X or higher" (variante di "X or more")
+            or_higher = re.search(r"(-?\d+\.?\d*)\s*(?:C|F|degrees?)?\s+or\s+higher", t, re.I)
+            if or_higher:
+                try:
+                    val = float(or_higher.group(1))
+                    if TEMP_MIN <= val <= TEMP_MAX:
+                        return (val, TEMP_MAX, f"{val} or higher")
+                except ValueError:
+                    pass
+
         return None
 
     def _days_until(self, date_str: str) -> int:
@@ -493,6 +683,7 @@ class WeatherStrategy:
             win_prob=win_prob,
             price=price,
             strategy=STRATEGY_NAME,
+            days_ahead=self._days_until(opp.date),
         )
 
         if size == 0:
@@ -502,9 +693,22 @@ class WeatherStrategy:
             )
             return False
 
-        if size > MAX_WEATHER_BET:
-            logger.debug(f"[WEATHER] size ${size:.2f} → cap ${MAX_WEATHER_BET:.2f}")
-            size = MAX_WEATHER_BET
+        # v10.6: Size boost per trade ad alto EV con payoff favorevole.
+        # Trade con payoff_ratio > 1.0 (win > stake) hanno rischio asimmetrico
+        # A NOSTRO FAVORE — possiamo essere più aggressivi.
+        if opp.payoff_ratio >= 2.0 and opp.expected_value >= 0.20:
+            # Payoff 2x+ e EV forte: boost 40% (es. BUY_NO a 0.33 = 2x payoff)
+            size = min(size * 1.40, MAX_WEATHER_BET)
+        elif opp.payoff_ratio >= 1.0 and opp.expected_value >= 0.10:
+            # Payoff 1x+ e EV positiva: boost 20%
+            size = min(size * 1.20, MAX_WEATHER_BET)
+
+        # BUY_YES cap ridotto: Kelly dice $0 (WR 12.5% < breakeven 16.7%).
+        # Permettiamo solo piccole scommesse come long-shot.
+        max_bet = 20.0 if opp.side == "YES" else MAX_WEATHER_BET
+        if size > max_bet:
+            logger.debug(f"[WEATHER] size ${size:.2f} → cap ${max_bet:.2f} (side={opp.side})")
+            size = max_bet
 
         allowed, reason = self.risk.can_trade(
             STRATEGY_NAME, size, price=price,

@@ -46,6 +46,9 @@ from utils.vpin_monitor import VPINMonitor
 from utils.risk_manager import RiskManager
 from utils.redeemer import Redeemer
 from utils.onchain_monitor import OnChainMonitor
+from utils.telegram_notifier import TelegramNotifier
+from utils.metaculus_feed import CrossPlatformFeed
+from utils.perplexity_feed import PerplexityFeed
 
 from strategies.arbitrage import ArbitrageStrategy
 from strategies.data_driven import DataDrivenStrategy
@@ -57,6 +60,9 @@ from strategies.high_prob_bond import HighProbBondStrategy
 from strategies.market_making import MarketMakingStrategy
 from strategies.whale_copy import WhaleCopyStrategy
 from strategies.resolution_sniper import ResolutionSniperStrategy
+from strategies.negrisk_arb import NegRiskArbScanner
+from strategies.holding_rewards import HoldingRewardsStrategy
+from strategies.favorite_longshot import FavoriteLongshotStrategy
 from utils.uma_monitor import UmaMonitor
 
 try:
@@ -114,7 +120,8 @@ BANNER = """
 # ── Dashboard ────────────────────────────────────────────────────
 
 def dashboard(risk: RiskManager, paper: bool, cycle: int,
-              unrealized_pnl: float = None, usdc_balance: float = None):
+              unrealized_pnl: float = None, usdc_balance: float = None,
+              real_portfolio: dict = None):
     s = risk.status
     mode = "PAPER" if paper else "LIVE"
     spnl = " | ".join(f"{k}=${v:+.2f}" for k, v in s["strategy_pnl"].items())
@@ -133,12 +140,24 @@ def dashboard(risk: RiskManager, paper: bool, cycle: int,
     usdc_str = f"${usdc_balance:>10,.2f}" if usdc_balance is not None else "        --"
     upnl_str = f"${unrealized_pnl:>+8,.2f}" if unrealized_pnl is not None else "      --"
 
+    # v10.8.4: Portfolio reale (deposito vs valore attuale)
+    if real_portfolio:
+        rp = real_portfolio
+        real_line = (
+            f"  REALE:    dep=${rp['deposited']:>8,.2f}  |  PnL=${rp['real_pnl']:>+8,.2f} ({rp['real_pnl_pct']:+.1f}%)"
+            f"\n  Cash: ${rp['usdc_cash']:>8,.2f}  |  Posizioni: ${rp['positions_value']:>8,.2f}  |  Totale: ${rp['portfolio_value']:>8,.2f}"
+            f"\n  Attive: {rp['n_active']:>3d} | Redeemable: {rp['n_redeemable']} (${rp['redeemable_value']:.2f})"
+        )
+    else:
+        real_line = "  REALE:           --  |  PnL:       --"
+
     print(f"""
 {'=' * 65}
   [{mode}] Ciclo #{cycle} | {datetime.now().strftime('%H:%M:%S')}
 {'─' * 65}
   Capitale: ${s['capital']:>10,.2f}  |  PnL oggi: ${s['daily_pnl']:>+8,.2f}
   USDC:     {usdc_str}  |  Unrealized: {upnl_str}
+{real_line}
   Trades:   {s['total_trades']:>10d}  |  Win rate: {s['win_rate']:>7.1f}%
   Aperte:   {s['open']:>10d}  |  W/L: {s['wins']}/{s['losses']}
   Esposto:  ${s['exposed']:>9,.2f}  |  Disponibile: ${s['available']:>8,.2f}  |  Floor: ${s['reserve_floor']:>8,.2f}
@@ -254,14 +273,23 @@ class MultiStrategyBot:
         self.onchain_monitor = OnChainMonitor(tracked_wallets=tracked_addrs)
         self.onchain_monitor.add_callback(self.whale.on_chain_trade)
 
-        # v5.9.2: Resolution Sniper
+        # v5.9.2: Resolution Sniper + v10.8: Perplexity verification
         self.uma_monitor = UmaMonitor()
+        self.perplexity_feed = PerplexityFeed()
         self.sniper = ResolutionSniperStrategy(
             self.api, self.risk,
             uma_monitor=self.uma_monitor,
+            perplexity=self.perplexity_feed,
             min_edge=0.03,  # 3% — fee-free markets
         )
-        self.risk.set_strategy_budget("resolution_sniper", config.risk.total_capital * 0.02)
+        self.risk.set_strategy_budget("resolution_sniper", config.capital_for("resolution_sniper"))
+
+        # ── v10.8.4: NegRisk Sum Arbitrage Scanner ──
+        self.negrisk_arb = NegRiskArbScanner()
+
+        # ── v10.8.4: Holding Rewards (4% APY) + Favorite-Longshot Bias ──
+        self.holding_rewards = HoldingRewardsStrategy()
+        self.favorite_longshot = FavoriteLongshotStrategy()
 
         # ── Auto-Redeem vincite risolte ──
         priv_key = config.creds.private_key.strip()
@@ -286,16 +314,21 @@ class MultiStrategyBot:
 
         self._running = False
         self._cycle = 0
+        self._real_portfolio = None
         self._usdc_balance = 0.0
         self._resolve_last_check = 0.0
         self._resolved_cache: set[str] = set()
         self._shared_markets_cache: list = []
+        self._weather_extra_cache: list = []  # v10.8: cache async weather markets
+        self._weather_extra_last: float = 0.0
 
         # ── v9.0: Layer 2 — Signal Validator + Devil's Advocate ──
         self.devils_advocate = DevilsAdvocate(risk_manager=self.risk)
+        self.xplatform_feed = CrossPlatformFeed()  # v10.8: Manifold/Metaculus sanity check
         self.signal_validator = SignalValidator(
             devil_advocate=self.devils_advocate,
             vpin_monitor=self.vpin_monitor,  # v9.2.1: gate #8 VPIN toxic flow
+            xplatform_feed=self.xplatform_feed,  # v10.8: gate #9 cross-platform
         )
 
         # ── v9.0: Layer 5 — Monitoring & Attribution ──
@@ -351,6 +384,9 @@ class MultiStrategyBot:
             except Exception as e:
                 logger.warning(f"[v9.0] Redis non disponibile: {e}")
 
+        # v10.8: Telegram notifier per alerting real-time
+        self.telegram = TelegramNotifier()
+
     async def start(self):
         print(BANNER)
 
@@ -363,13 +399,27 @@ class MultiStrategyBot:
         paper = self.config.paper_trading
         logger.info(f"Bot avviato in modalita' {'PAPER' if paper else 'LIVE'}")
         logger.info(
-            f"Allocazione v9.2.1: BOND={self.config.allocation.high_prob_bond}% "
-            f"GAB={self.config.allocation.arb_gabagool}% "
-            f"WEATHER={self.config.allocation.weather}% "
-            f"ARB={self.config.allocation.arbitrage}% "
-            f"DATA={self.config.allocation.data_driven}% "
+            f"Allocazione v10.8: WEATHER={self.config.allocation.weather}% "
+            f"SNIPER={self.config.allocation.resolution_sniper}% "
+            f"BOND={self.config.allocation.high_prob_bond}% "
             f"EVENT={self.config.allocation.event_driven}% "
             f"WHALE={self.config.allocation.whale_copy}%"
+        )
+
+        # v10.8: Notify startup via Telegram
+        active_strats = [
+            name for name, pct in [
+                ("weather", self.config.allocation.weather),
+                ("resolution_sniper", self.config.allocation.resolution_sniper),
+                ("event_driven", self.config.allocation.event_driven),
+                ("high_prob_bond", self.config.allocation.high_prob_bond),
+                ("whale_copy", self.config.allocation.whale_copy),
+            ] if pct > 0
+        ]
+        await self.telegram.notify_startup(
+            mode="PAPER" if paper else "LIVE",
+            capital=self.config.risk.total_capital,
+            strategies=[f"{s} ({getattr(self.config.allocation, s)}%)" for s in active_strats],
         )
 
         self._running = True
@@ -380,6 +430,7 @@ class MultiStrategyBot:
             self.ws_feed.connect(),    # v9.2: Polymarket WS price feed
             self.onchain_monitor.start(),  # v10.4: On-chain whale trade monitor
             self.glint_feed.connect(),  # v10.5: Glint.trade real-time intelligence
+            self._weather_fetch_loop(),  # v10.8: async weather market fetch
             self._main_loop(),
             self._dashboard_loop(),
         )
@@ -500,9 +551,50 @@ class MultiStrategyBot:
                 except Exception as e:
                     logger.error(f"[SNIPER] Errore strategia: {e}", exc_info=True)
 
+                # ── 0.6. NegRisk Sum Arbitrage ──
+                # v10.8.4: scansiona mercati multi-outcome per arbitraggio somma
+                try:
+                    negrisk_opps = self.negrisk_arb.scan(shared_markets)
+                    if _can_trade and negrisk_opps:
+                        for opp in negrisk_opps[:3]:
+                            self.negrisk_arb.execute(opp, self.api, self.risk, live=not paper)
+                except Exception as e:
+                    logger.error(f"[NEGRISK-ARB] Errore: {e}", exc_info=True)
+
+                # ── 0.7. Holding Rewards (4% APY on eligible long-term markets) ──
+                if self._cycle % 10 == 0:  # ogni 10 cicli (~5 min)
+                    try:
+                        held_ids = {p.get("asset", "") for p in self.risk.open_positions.values()} if hasattr(self.risk, 'open_positions') else set()
+                        hold_opps = self.holding_rewards.scan(shared_markets, existing_positions=held_ids)
+                        if _can_trade and hold_opps:
+                            for opp in hold_opps[:2]:
+                                self.holding_rewards.execute(opp, self.api, self.risk, live=not paper)
+                    except Exception as e:
+                        logger.error(f"[HOLD-REWARDS] Errore: {e}", exc_info=True)
+
+                # ── 0.8. Favorite-Longshot Bias ──
+                if self._cycle % 5 == 0:  # ogni 5 cicli (~2.5 min)
+                    try:
+                        fav_opps = self.favorite_longshot.scan(shared_markets)
+                        if _can_trade and fav_opps:
+                            for opp in fav_opps[:2]:
+                                self.favorite_longshot.execute(opp, self.api, self.risk, live=not paper)
+                    except Exception as e:
+                        logger.error(f"[FAV-LONG] Errore: {e}", exc_info=True)
+
                 # ── 1. Crypto 5-Min — DISABILITATO v7.0 (fees > edge, Kelly negativo) ──
 
                 # ── 2. Weather (previsioni meteo — mercati giornalieri) ──
+                # v10.8: Usa cache asincrona dei weather markets extra (popolata da _weather_fetch_loop)
+                try:
+                    if self._weather_extra_cache:
+                        seen_ids = {m.id for m in shared_markets}
+                        new = [m for m in self._weather_extra_cache if m.id not in seen_ids]
+                        if new:
+                            shared_markets = shared_markets + new
+                            logger.info(f"[WEATHER] +{len(new)} mercati da cache async")
+                except Exception:
+                    pass
                 try:
                     weather_opps = await self.weather.scan(shared_markets=shared_markets)
                     if _can_trade:
@@ -565,23 +657,45 @@ class MultiStrategyBot:
                         for ev in events[:10]:  # v5.6: era [:5], tutte e 5 bloccate → prova 10
                             if not self._running:
                                 break
+
+                            # v10.8: Panic fade bypassa flash move + VPIN gates
+                            # (quei segnali SONO il nostro trigger, non il nostro blocco)
+                            is_panic = getattr(ev, 'signal_type', '') == 'panic_fade'
+
                             signal = from_event_opportunity(ev)
                             kelly = self.risk.kelly_size(
                                 min(signal.price + signal.edge, 0.95), signal.price, "event_driven"
                             )
-                            report = self.signal_validator.validate(signal, trade_size=kelly)
-                            if report.result == ValidationResult.TRADE or (
-                                report.result == ValidationResult.REVIEW and signal.edge >= 0.04
-                            ):
-                                if report.result == ValidationResult.REVIEW:
-                                    logger.info(f"[EVENT] REVIEW accepted: edge={signal.edge:.4f} >= 0.04")
-                                self.attribution.record_entry(
-                                    ev.market.tokens.get(ev.side.lower(), ""),
-                                    "event_driven", getattr(ev, 'signal_type', 'structural'),
-                                    getattr(ev, 'event_type', ''),
-                                    edge_predicted=ev.edge, validation_score=report.score,
-                                )
-                                await self.event.execute(ev, paper=paper)
+
+                            if is_panic:
+                                # Panic fade: skip validator (flash/VPIN bloccherebbero),
+                                # ma verifica edge minimo e size > 0
+                                if kelly > 0 and ev.edge >= 0.03 and ev.confidence >= 0.50:
+                                    logger.info(
+                                        f"[EVENT] PANIC FADE: edge={ev.edge:.4f} "
+                                        f"conf={ev.confidence:.2f} — bypass validator"
+                                    )
+                                    self.attribution.record_entry(
+                                        ev.market.tokens.get(ev.side.lower(), ""),
+                                        "event_driven", "panic_fade",
+                                        getattr(ev, 'event_type', ''),
+                                        edge_predicted=ev.edge, validation_score=0.80,
+                                    )
+                                    await self.event.execute(ev, paper=paper)
+                            else:
+                                report = self.signal_validator.validate(signal, trade_size=kelly)
+                                if report.result == ValidationResult.TRADE or (
+                                    report.result == ValidationResult.REVIEW and signal.edge >= 0.04
+                                ):
+                                    if report.result == ValidationResult.REVIEW:
+                                        logger.info(f"[EVENT] REVIEW accepted: edge={signal.edge:.4f} >= 0.04")
+                                    self.attribution.record_entry(
+                                        ev.market.tokens.get(ev.side.lower(), ""),
+                                        "event_driven", getattr(ev, 'signal_type', 'structural'),
+                                        getattr(ev, 'event_type', ''),
+                                        edge_predicted=ev.edge, validation_score=report.score,
+                                    )
+                                    await self.event.execute(ev, paper=paper)
                 except Exception as e:
                     logger.error(f"[EVENT] Errore strategia: {e}", exc_info=True)
 
@@ -667,6 +781,11 @@ class MultiStrategyBot:
                                     f"${pnl:+.2f} ({t.strategy}) "
                                     f"redeemed={r.get('redeemed', False)}"
                                 )
+                                # v10.8: Telegram alert per risoluzione
+                                asyncio.ensure_future(self.telegram.notify_resolution(
+                                    market_name=r.get("question", t.market_id[:20]),
+                                    won=r["won"], pnl=pnl, strategy=t.strategy,
+                                ))
                 except Exception as e:
                     logger.error(f"[PNL] Errore monitoraggio risolti: {e}", exc_info=True)
 
@@ -734,6 +853,22 @@ class MultiStrategyBot:
                         )
                     except Exception as e:
                         logger.warning(f"[PNL-LIVE] Errore calcolo: {e}")
+
+                # ── v10.8.3: Portfolio reale dalla Data API (al primo ciclo, poi ogni 200) ──
+                if self._cycle % 200 == 0 or self._real_portfolio is None:
+                    try:
+                        portfolio = self._fetch_real_portfolio()
+                        if portfolio:
+                            self._real_portfolio = portfolio
+                            logger.info(
+                                f"[PORTFOLIO] REALE: dep=${portfolio['deposited']:.2f} "
+                                f"cash=${portfolio['usdc_cash']:.2f} pos=${portfolio['positions_value']:.2f} "
+                                f"tot=${portfolio['portfolio_value']:.2f} "
+                                f"PnL=${portfolio['real_pnl']:+.2f} ({portfolio['real_pnl_pct']:+.1f}%) "
+                                f"| {portfolio['n_active']} attive, {portfolio['n_redeemable']} redeemable"
+                            )
+                    except Exception as e:
+                        logger.warning(f"[PORTFOLIO] Errore: {e}")
 
                 # ── v10.4: P&L Report periodico (ogni 50 cicli) ──
                 if self._cycle % 50 == 0 and self._cycle > 0:
@@ -1319,6 +1454,84 @@ class MultiStrategyBot:
 
         return total_pnl, n_profit, n_loss
 
+    # Deposito totale reale su Polymarket (verificato manualmente)
+    TOTAL_DEPOSITED = 6203.22
+
+    def _fetch_real_portfolio(self) -> dict | None:
+        """v10.8.4: Legge portfolio reale dalla Data API + saldo USDC.e on-chain.
+        PnL calcolato come: (cash + posizioni) - deposito totale."""
+        try:
+            funder = self.config.creds.funder_address
+            if not funder:
+                return None
+            resp = requests.get(
+                f"https://data-api.polymarket.com/positions",
+                params={"user": funder},
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                return None
+            positions = resp.json()
+            if not isinstance(positions, list):
+                return None
+
+            total_current = 0.0
+            n_redeemable = 0
+            redeemable_val = 0.0
+            n_active = 0
+
+            for p in positions:
+                cur_v = float(p.get("currentValue", 0))
+                total_current += cur_v
+                if p.get("redeemable"):
+                    n_redeemable += 1
+                    redeemable_val += cur_v
+                elif cur_v > 0.01:
+                    n_active += 1
+
+            # Saldo USDC.e on-chain del proxy
+            usdc_cash = 0.0
+            try:
+                usdc_e = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+                call_data = "0x70a08231" + funder[2:].lower().zfill(64)
+                for rpc in [
+                    "https://polygon-bor-rpc.publicnode.com",
+                    "https://rpc.ankr.com/polygon",
+                ]:
+                    try:
+                        r = requests.post(rpc, json={
+                            "jsonrpc": "2.0", "method": "eth_call",
+                            "params": [{"to": usdc_e, "data": call_data}, "latest"],
+                            "id": 1
+                        }, timeout=8)
+                        result = r.json().get("result", "0x0")
+                        usdc_cash = int(result, 16) / 1e6
+                        break
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+            portfolio_value = usdc_cash + total_current
+            real_pnl = portfolio_value - self.TOTAL_DEPOSITED
+            real_pnl_pct = (real_pnl / self.TOTAL_DEPOSITED * 100) if self.TOTAL_DEPOSITED > 0 else 0
+
+            return {
+                "deposited": self.TOTAL_DEPOSITED,
+                "usdc_cash": round(usdc_cash, 2),
+                "positions_value": round(total_current, 2),
+                "portfolio_value": round(portfolio_value, 2),
+                "real_pnl": round(real_pnl, 2),
+                "real_pnl_pct": round(real_pnl_pct, 1),
+                "n_positions": len(positions),
+                "n_active": n_active,
+                "n_redeemable": n_redeemable,
+                "redeemable_value": round(redeemable_val, 2),
+            }
+        except Exception as e:
+            logger.warning(f"[PORTFOLIO] Errore fetch: {e}")
+            return None
+
     def _log_pnl_report(self):
         """v10.4: Report P&L periodico per strategia."""
         s = self.risk.status
@@ -1332,6 +1545,16 @@ class MultiStrategyBot:
         u = getattr(self, '_unrealized_pnl', None)
         if u is not None:
             lines.append(f"  Unrealized: ${u:+.2f} ({getattr(self, '_unrealized_up', 0)} ▲ / {getattr(self, '_unrealized_down', 0)} ▼)")
+
+        # v10.8.3: Portfolio reale
+        rp = getattr(self, '_real_portfolio', None)
+        if rp:
+            lines.append(
+                f"  REALE: dep=${rp['deposited']:.2f} tot=${rp['portfolio_value']:.2f} "
+                f"PnL=${rp['real_pnl']:+.2f} ({rp['real_pnl_pct']:+.1f}%) "
+                f"| cash=${rp['usdc_cash']:.2f} pos=${rp['positions_value']:.2f} "
+                f"| {rp['n_active']} attive, {rp['n_redeemable']} redeemable"
+            )
 
         # Per-strategy P&L
         if s['strategy_pnl']:
@@ -1426,6 +1649,29 @@ class MultiStrategyBot:
         lines.append("[HEALTH] ══════════════════════════")
         logger.info("\n".join(lines))
 
+    async def _weather_fetch_loop(self):
+        """v10.8: Fetch asincrono dei weather markets extra (offset 400-1400).
+        Gira ogni 60s in background, popola _weather_extra_cache senza bloccare il main loop."""
+        await asyncio.sleep(2)  # attendi primo fetch REST
+        while self._running:
+            try:
+                extra = []
+                base_ids = {m.id for m in self._shared_markets_cache} if self._shared_markets_cache else set()
+                for _off in range(400, 1400, 200):
+                    page = await asyncio.to_thread(self.api.fetch_markets, limit=200, offset=_off)
+                    if not page:
+                        break
+                    new = [m for m in page if m.id not in base_ids]
+                    extra.extend(new)
+                    base_ids.update(m.id for m in new)
+                self._weather_extra_cache = extra
+                self._weather_extra_last = time.time()
+                if extra:
+                    logger.debug(f"[WEATHER-ASYNC] Cache aggiornata: {len(extra)} mercati extra")
+            except Exception as e:
+                logger.debug(f"[WEATHER-ASYNC] Errore fetch: {e}")
+            await asyncio.sleep(60)
+
     async def _dashboard_loop(self):
         while self._running:
             await asyncio.sleep(20)
@@ -1434,6 +1680,18 @@ class MultiStrategyBot:
                     self.risk, self.config.paper_trading, self._cycle,
                     unrealized_pnl=getattr(self, '_unrealized_pnl', None),
                     usdc_balance=getattr(self, '_usdc_balance', None),
+                    real_portfolio=getattr(self, '_real_portfolio', None),
+                )
+                # v10.8: Telegram P&L report (ogni ora, rate-limited dal notifier)
+                s = self.risk.status
+                await self.telegram.notify_pnl_report(
+                    capital=s['capital'], daily_pnl=s['daily_pnl'],
+                    total_trades=s['total_trades'], win_rate=s['win_rate'],
+                    open_positions=s['open'],
+                    usdc_balance=getattr(self, '_usdc_balance', 0),
+                    unrealized_pnl=getattr(self, '_unrealized_pnl', 0) or 0,
+                    strategy_pnl=s['strategy_pnl'],
+                    real_portfolio=getattr(self, '_real_portfolio', None),
                 )
 
     async def stop(self):

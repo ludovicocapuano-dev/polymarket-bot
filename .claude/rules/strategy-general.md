@@ -5,11 +5,16 @@ globs: ["strategies/*.py", "bot.py", "config.py"]
 
 # Regole Generali Strategie
 
-## Allocazione v9.2.1
-- high_prob_bond=30%, data_driven=30%, weather=20%, event_driven=15%, whale_copy=5%
+## Allocazione v10.8.4
+- weather=90%, resolution_sniper=10%
+- negrisk_arb=indipendente (MAX_ARB_SIZE=$100, no budget allocation)
+- holding_rewards=indipendente ($20/mercato, 4% APY su 13 mercati eligible)
+- favorite_longshot=indipendente ($25/trade, max 10 posizioni, fee-free markets)
+- event_driven=0% (DISABILITATO v10.8: WR 0%, -$350), high_prob_bond=0% (DISABILITATO v10.8: asimmetria 1:17, -$55)
+- whale_copy=0% (DISABILITATO v10.8: 0 trade eseguiti), data_driven=0%
 - arb_gabagool=0% (DISABILITATO v9.1: exploit incrementNonce), arbitrage=0% (DISABILITATO v9.1)
 - crypto_5min=0% (ELIMINATO), market_making=0% (ELIMINATO)
-- Somma DEVE essere 100%. Config valida o il bot non parte.
+- Somma DEVE essere 100% (escluso negrisk_arb che opera indipendentemente). Config valida o il bot non parte.
 
 ## Sicurezza arb
 - arb_gabagool e arbitrage NON riabilitare senza verifica settlement on-chain atomica

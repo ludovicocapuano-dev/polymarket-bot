@@ -1,22 +1,25 @@
 """
-Feed previsioni meteo multi-sorgente per weather trading — v3.5
+Feed previsioni meteo multi-sorgente per weather trading — v3.6
 
-Architettura a 3 provider con consensus pesato:
- 1. Open-Meteo  — ensemble GFS 31 membri (gratuito, no API key)
- 2. Wethr.net   — 16+ modelli professionali (API key, $)
- 3. NWS API     — previsioni ufficiali USA (gratuito, solo NYC)
+Architettura a 4 provider con consensus pesato:
+ 1. Open-Meteo          — ensemble GFS 31 membri (gratuito, no API key)
+ 2. Wethr.net           — 16+ modelli professionali (API key, $)
+ 3. NWS API             — previsioni ufficiali USA (gratuito, solo NYC)
+ 4. Weather Underground — fonte di settlement Polymarket (API key, free con PWS)
 
 Le probabilita' per bucket vengono calcolate come media pesata
 dei singoli provider, ognuno con peso proporzionale alla qualita':
+  WeatherUnderground x2.0 (fonte di settlement Polymarket — peso massimo)
   Wethr.net  x1.5 (multi-model, resolution-specific)
   Open-Meteo x1.0 (ensemble GFS, buona copertura)
-  NWS        x0.8 (singolo modello, ma fonte di settlement)
+  NWS        x0.8 (singolo modello, fonte ufficiale USA)
 
 API:
   Ensemble:  https://ensemble-api.open-meteo.com/v1/ensemble
   Standard:  https://api.open-meteo.com/v1/forecast
   Wethr:     https://wethr.net/api/v2/
   NWS:       https://api.weather.gov/
+  WU:        https://api.weather.com/v3/wx/
 """
 
 import logging
@@ -153,6 +156,79 @@ WEATHER_CITIES: dict[str, dict] = {
         "nws_grid": None,
         "unit": "C",
     },
+    # v10.7: città aggiunte per coprire mercati Polymarket attivi
+    "tokyo": {
+        "lat": 35.765,
+        "lon": 140.386,
+        "keywords": ["tokyo", "narita"],
+        "station": "Narita Intl",
+        "wethr_code": "RJAA",
+        "nws_grid": None,
+        "unit": "C",
+    },
+    "sydney": {
+        "lat": -33.946,
+        "lon": 151.177,
+        "keywords": ["sydney"],
+        "station": "Sydney Kingsford Smith",
+        "wethr_code": "YSSY",
+        "nws_grid": None,
+        "unit": "C",
+    },
+    "denver": {
+        "lat": 39.856,
+        "lon": -104.674,
+        "keywords": ["denver"],
+        "station": "Denver Intl",
+        "wethr_code": "KDEN",
+        "nws_grid": ("BOU", 62, 60),
+        "unit": "F",
+    },
+    "los angeles": {
+        "lat": 33.943,
+        "lon": -118.408,
+        "keywords": ["los angeles", "la ", "lax"],
+        "station": "Los Angeles Intl",
+        "wethr_code": "KLAX",
+        "nws_grid": ("LOX", 149, 48),
+        "unit": "F",
+    },
+    "phoenix": {
+        "lat": 33.437,
+        "lon": -112.008,
+        "keywords": ["phoenix"],
+        "station": "Phoenix Sky Harbor",
+        "wethr_code": "KPHX",
+        "nws_grid": ("PSR", 160, 57),
+        "unit": "F",
+    },
+    "houston": {
+        "lat": 29.990,
+        "lon": -95.336,
+        "keywords": ["houston"],
+        "station": "George Bush Intl",
+        "wethr_code": "KIAH",
+        "nws_grid": ("HGX", 65, 97),
+        "unit": "F",
+    },
+    "wellington": {
+        "lat": -41.327,
+        "lon": 174.805,
+        "keywords": ["wellington"],
+        "station": "Wellington Airport",
+        "wethr_code": "NZWN",
+        "nws_grid": None,
+        "unit": "C",
+    },
+    "lucknow": {
+        "lat": 26.846,
+        "lon": 80.946,
+        "keywords": ["lucknow"],
+        "station": "Amausi Airport",
+        "wethr_code": "VILK",
+        "nws_grid": None,
+        "unit": "C",
+    },
 }
 
 # ── URL API ───────────────────────────────────────────────────
@@ -160,6 +236,7 @@ OPENMETEO_ENSEMBLE_URL = "https://ensemble-api.open-meteo.com/v1/ensemble"
 OPENMETEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 WETHR_BASE_URL = "https://wethr.net/api/v2"
 NWS_BASE_URL = "https://api.weather.gov"
+WU_BASE_URL = "https://api.weather.com"
 
 CACHE_DURATION = 1200  # v5.0: 20 min (piu' aggressivo per niche dominance)
 
@@ -751,6 +828,259 @@ class NWSProvider:
 
 
 # ══════════════════════════════════════════════════════════════
+#  Provider: Weather Underground (fonte settlement Polymarket)
+# ══════════════════════════════════════════════════════════════
+
+class WeatherUndergroundProvider:
+    """
+    Fetch previsioni da Weather Underground / IBM Weather Company.
+
+    CRITICO: Weather Underground e' la fonte che Polymarket usa per il
+    settlement dei weather markets. Allineare le nostre previsioni con WU
+    riduce il rischio di discrepanza tra forecast e settlement.
+
+    API: api.weather.com (v3 e v1 con fallback).
+    Auth: apiKey parameter (free con PWS, $$ senza).
+    Env var: WUNDERGROUND_API_KEY
+    """
+
+    WEIGHT = 2.0  # Peso massimo: fonte di settlement Polymarket
+
+    def __init__(self, session: requests.Session, api_key: str):
+        self._session = session
+        self._api_key = api_key
+        self._available = bool(api_key)
+        self._consecutive_errors = 0
+
+    @property
+    def available(self) -> bool:
+        return self._available
+
+    def fetch(self, city: str) -> dict[str, SourceForecast]:
+        """Ritorna dict date → SourceForecast per una citta'."""
+        if not self._available:
+            return {}
+
+        info = WEATHER_CITIES.get(city)
+        if not info:
+            return {}
+
+        # v3 prima, v1 come fallback
+        result = self._fetch_v3(city, info)
+        if not result:
+            result = self._fetch_v1(city, info)
+        return result
+
+    def fetch_observations(self, city: str) -> dict | None:
+        """
+        Fetch osservazioni correnti da WU (per same-day markets).
+
+        Ritorna dict con temperature corrente e max/min odierne.
+        Utile per confrontare con il settlement.
+        """
+        if not self._available:
+            return None
+
+        info = WEATHER_CITIES.get(city)
+        if not info:
+            return None
+
+        try:
+            resp = self._session.get(
+                f"{WU_BASE_URL}/v3/wx/observations/current",
+                params={
+                    "geocode": f"{info['lat']},{info['lon']}",
+                    "format": "json",
+                    "units": "m",
+                    "language": "en-US",
+                    "apiKey": self._api_key,
+                },
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                obs = {
+                    "temperature": data.get("temperature"),
+                    "temperatureMax24Hour": data.get("temperatureMax24Hour"),
+                    "temperatureMin24Hour": data.get("temperatureMin24Hour"),
+                }
+                logger.debug(
+                    f"[WU] Observations {city}: "
+                    f"temp={obs.get('temperature')}°C "
+                    f"max24h={obs.get('temperatureMax24Hour')}°C"
+                )
+                return obs
+            return None
+        except Exception as e:
+            logger.debug(f"[WU] Errore observations {city}: {e}")
+            return None
+
+    def _fetch_v3(self, city: str, info: dict) -> dict[str, SourceForecast]:
+        """Fetch da API v3: array-based response."""
+        try:
+            resp = self._session.get(
+                f"{WU_BASE_URL}/v3/wx/forecast/daily/5day",
+                params={
+                    "geocode": f"{info['lat']},{info['lon']}",
+                    "format": "json",
+                    "units": "m",
+                    "language": "en-US",
+                    "apiKey": self._api_key,
+                },
+                timeout=15,
+            )
+
+            if resp.status_code == 401:
+                logger.warning("[WU] API key non valida (401) — provider disabilitato")
+                self._available = False
+                return {}
+
+            if resp.status_code == 403:
+                logger.warning("[WU] Accesso negato (403) — verificare piano API")
+                self._consecutive_errors += 1
+                if self._consecutive_errors >= 3:
+                    self._available = False
+                return {}
+
+            if resp.status_code == 429:
+                logger.warning("[WU] Rate limit (429) — skip")
+                return {}
+
+            if resp.status_code != 200:
+                logger.debug(f"[WU] v3 forecast {resp.status_code} per {city}")
+                return {}
+
+            data = resp.json()
+            self._consecutive_errors = 0
+
+            # v3 response: arrays indexed by day
+            # dayOfWeek[], temperatureMax[], temperatureMin[], validTimeLocal[]
+            dates_raw = data.get("validTimeLocal", [])
+            temp_max = data.get("temperatureMax", data.get("calendarDayTemperatureMax", []))
+            temp_min = data.get("temperatureMin", data.get("calendarDayTemperatureMin", []))
+
+            if not dates_raw or not temp_max:
+                logger.debug(f"[WU] v3 response vuota per {city}")
+                return {}
+
+            results: dict[str, SourceForecast] = {}
+            for i, date_str in enumerate(dates_raw):
+                if i >= len(temp_max):
+                    break
+
+                # Estrai data YYYY-MM-DD dal timestamp
+                date = str(date_str)[:10] if date_str else ""
+                if not date or len(date) < 10:
+                    continue
+
+                t_max = temp_max[i]
+                if t_max is None:
+                    continue
+
+                t_max = float(t_max)
+                t_min = float(temp_min[i]) if i < len(temp_min) and temp_min[i] is not None else t_max - 5.0
+
+                # WU non ha ensemble — stima incertezza dall'orizzonte
+                from datetime import datetime
+                try:
+                    target = datetime.strptime(date, "%Y-%m-%d")
+                    days_ahead = max(0, (target - datetime.now()).days)
+                except (ValueError, TypeError):
+                    days_ahead = 2
+                sigma = max(0.8 + days_ahead * 0.2, (t_max - t_min) / 4.0)
+
+                results[date] = SourceForecast(
+                    provider="wunderground",
+                    temp=round(t_max, 1),
+                    uncertainty=round(sigma, 2),
+                    ensemble_temps=[],
+                    weight=self.WEIGHT,
+                )
+
+            if results:
+                first = next(iter(results.values()))
+                logger.info(
+                    f"[WU] Forecast {city}: {len(results)} giorni, "
+                    f"oggi={first.temp:.1f}°C ±{first.uncertainty:.1f} "
+                    f"(settlement source)"
+                )
+            return results
+
+        except Exception as e:
+            logger.debug(f"[WU] Errore v3 {city}: {e}")
+            return {}
+
+    def _fetch_v1(self, city: str, info: dict) -> dict[str, SourceForecast]:
+        """Fallback: API v1 con response object-based."""
+        try:
+            resp = self._session.get(
+                f"{WU_BASE_URL}/v1/geocode/{info['lat']}/{info['lon']}"
+                f"/forecast/daily/5day.json",
+                params={
+                    "apiKey": self._api_key,
+                    "units": "m",
+                    "language": "en-US",
+                },
+                timeout=15,
+            )
+
+            if resp.status_code != 200:
+                logger.debug(f"[WU] v1 forecast {resp.status_code} per {city}")
+                return {}
+
+            data = resp.json()
+            self._consecutive_errors = 0
+
+            # v1 response: forecasts array
+            forecasts = data.get("forecasts", [])
+            if not forecasts:
+                return {}
+
+            results: dict[str, SourceForecast] = {}
+            for fc in forecasts:
+                t_max = fc.get("max_temp")
+                if t_max is None:
+                    continue
+
+                # Data dal campo fcst_valid_local o dow
+                date_str = fc.get("fcst_valid_local", "")
+                date = str(date_str)[:10]
+                if not date or len(date) < 10:
+                    continue
+
+                t_max = float(t_max)
+                t_min = float(fc.get("min_temp", t_max - 5.0))
+
+                from datetime import datetime
+                try:
+                    target = datetime.strptime(date, "%Y-%m-%d")
+                    days_ahead = max(0, (target - datetime.now()).days)
+                except (ValueError, TypeError):
+                    days_ahead = 2
+                sigma = max(0.8 + days_ahead * 0.2, (t_max - t_min) / 4.0)
+
+                results[date] = SourceForecast(
+                    provider="wunderground",
+                    temp=round(t_max, 1),
+                    uncertainty=round(sigma, 2),
+                    ensemble_temps=[],
+                    weight=self.WEIGHT,
+                )
+
+            if results:
+                first = next(iter(results.values()))
+                logger.info(
+                    f"[WU] v1 Forecast {city}: {len(results)} giorni, "
+                    f"oggi={first.temp:.1f}°C"
+                )
+            return results
+
+        except Exception as e:
+            logger.debug(f"[WU] Errore v1 {city}: {e}")
+            return {}
+
+
+# ══════════════════════════════════════════════════════════════
 #  WeatherFeed: orchestratore multi-provider con consensus
 # ══════════════════════════════════════════════════════════════
 
@@ -774,6 +1104,7 @@ class WeatherFeed:
     _openmeteo: OpenMeteoProvider = field(init=False, default=None)
     _wethr: WethrProvider = field(init=False, default=None)
     _nws: NWSProvider = field(init=False, default=None)
+    _wunderground: WeatherUndergroundProvider = field(init=False, default=None)
 
     def __post_init__(self):
         self._openmeteo = OpenMeteoProvider(self._session)
@@ -783,9 +1114,14 @@ class WeatherFeed:
 
         self._nws = NWSProvider(self._session)
 
+        wu_key = os.getenv("WUNDERGROUND_API_KEY", "")
+        self._wunderground = WeatherUndergroundProvider(self._session, wu_key)
+
         providers = ["OpenMeteo"]
         if self._wethr.available:
             providers.append("Wethr.net")
+        if self._wunderground.available:
+            providers.append("WeatherUnderground(settlement)")
         providers.append("NWS")
         logger.info(f"[WEATHER] Provider attivi: {', '.join(providers)}")
 
@@ -819,6 +1155,15 @@ class WeatherFeed:
                 sources_by_date.setdefault(date, []).append(src)
         except Exception as e:
             logger.debug(f"[WEATHER] NWS fallback: {e}")
+
+        # 4. Weather Underground (settlement source — peso 2.0)
+        if self._wunderground.available:
+            try:
+                wu_data = self._wunderground.fetch(city)
+                for date, src in wu_data.items():
+                    sources_by_date.setdefault(date, []).append(src)
+            except Exception as e:
+                logger.debug(f"[WEATHER] WU fallback: {e}")
 
         # Costruisci CityForecast consensus per ogni data
         forecasts: list[CityForecast] = []
@@ -879,10 +1224,17 @@ class WeatherFeed:
 
     def get_observations(self, city: str) -> dict | None:
         """
-        Osservazioni real-time da Wethr.net (per mercati same-day).
+        Osservazioni real-time (per mercati same-day).
 
+        Priorita': WU (settlement source) > Wethr.net.
         Utile per sapere la max temperatura GIA' osservata oggi.
         """
+        # WU ha priorita' — e' la fonte di settlement
+        if self._wunderground.available:
+            wu_obs = self._wunderground.fetch_observations(city)
+            if wu_obs and wu_obs.get("temperature") is not None:
+                return wu_obs
+
         if not self._wethr.available:
             return None
         return self._wethr.fetch_observations(city)

@@ -156,6 +156,7 @@ class TelegramNotifier:
         usdc_balance: float,
         unrealized_pnl: float,
         strategy_pnl: dict[str, float],
+        real_portfolio: dict = None,
     ):
         """Report P&L periodico (ogni ora)."""
         now = time.time()
@@ -164,16 +165,33 @@ class TelegramNotifier:
         self._last_hourly_report = now
 
         spnl = "\n".join(
-            f"  • {k}: <b>${v:+.2f}</b>" for k, v in strategy_pnl.items()
+            f"  {k}: <b>${v:+.2f}</b>" for k, v in strategy_pnl.items()
         )
+
+        # v10.8.3: PnL reale dal portfolio Polymarket
+        if real_portfolio:
+            rp = real_portfolio
+            real_section = (
+                f"\n<b>PORTFOLIO REALE:</b>\n"
+                f"  Depositato: ${rp['deposited']:,.2f}\n"
+                f"  Cash USDC : ${rp['usdc_cash']:,.2f}\n"
+                f"  Posizioni : ${rp['positions_value']:,.2f}\n"
+                f"  Totale    : <b>${rp['portfolio_value']:,.2f}</b>\n"
+                f"  PnL       : <b>${rp['real_pnl']:+.2f} ({rp['real_pnl_pct']:+.1f}%)</b>\n"
+                f"  Attive    : {rp['n_active']} | Redeemable: {rp['n_redeemable']}\n"
+            )
+        else:
+            real_section = ""
+
         text = (
-            f"📊 <b>REPORT ORARIO</b>\n\n"
-            f"💰 Capitale    : ${capital:,.2f}\n"
-            f"📈 PnL oggi    : <b>${daily_pnl:+.2f}</b>\n"
-            f"💵 USDC liberi : ${usdc_balance:,.2f}\n"
-            f"📉 Unrealized  : ${unrealized_pnl:+.2f}\n"
-            f"🔢 Trades      : {total_trades} (Win: {win_rate:.1f}%)\n"
-            f"📂 Posizioni   : {open_positions}\n\n"
+            f"<b>REPORT ORARIO</b>\n\n"
+            f"Capitale    : ${capital:,.2f}\n"
+            f"PnL sessione: <b>${daily_pnl:+.2f}</b>\n"
+            f"USDC liberi : ${usdc_balance:,.2f}\n"
+            f"Unrealized  : ${unrealized_pnl:+.2f}\n"
+            f"Trades      : {total_trades} (Win: {win_rate:.1f}%)\n"
+            f"Posizioni   : {open_positions}\n"
+            f"{real_section}\n"
             f"<b>P/L per strategia:</b>\n{spnl}"
         )
         await self.send(text)

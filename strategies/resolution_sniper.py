@@ -22,10 +22,12 @@ Fonti:
 import logging
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from utils.polymarket_api import Market, PolymarketAPI
 from utils.risk_manager import RiskManager, Trade
 from utils.uma_monitor import UmaMonitor, ResolutionProposal
+from utils.perplexity_feed import PerplexityFeed
 
 logger = logging.getLogger(__name__)
 
@@ -57,11 +59,13 @@ class ResolutionSniperStrategy:
         api: PolymarketAPI,
         risk: RiskManager,
         uma_monitor: UmaMonitor | None = None,
+        perplexity: PerplexityFeed | None = None,
         min_edge: float = 0.03,
     ):
         self.api = api
         self.risk = risk
         self.uma = uma_monitor
+        self.perplexity = perplexity
         self.min_edge = min_edge
         self._trades_executed = 0
         self._recently_traded: dict[str, float] = {}
@@ -81,7 +85,12 @@ class ResolutionSniperStrategy:
             snipe_signals = self._check_resolution_snipes(markets)
             signals.extend(snipe_signals)
 
-        # 2. High-probability bonds
+        # 2. Perplexity active scan (v10.8.3)
+        if self.perplexity and self.perplexity.enabled:
+            pplx_signals = self._check_perplexity_snipes(markets)
+            signals.extend(pplx_signals)
+
+        # 3. High-probability bonds
         # v5.9.4: HIGH_PROB_BOND DISABILITATO — 0% win rate, prezzo != probabilita'
         # bond_signals = self._check_high_prob_bonds(markets)
         # signals.extend(bond_signals)
@@ -155,6 +164,169 @@ class ResolutionSniperStrategy:
                         f"Finalize in {secs_left/60:.0f}min"
                     ),
                 ))
+
+        return signals
+
+    def _check_perplexity_snipes(
+        self, markets: list[Market]
+    ) -> list[SniperSignal]:
+        """
+        v10.8.3: Scan attivo con Perplexity.
+        Cerca mercati in scadenza (end_date entro 24h o gia' passata)
+        dove il prezzo non e' ancora estremo, e chiede a Perplexity
+        se l'evento e' gia' accaduto.
+        """
+        signals = []
+        if not self.perplexity or not self.perplexity.enabled:
+            return signals
+
+        now = datetime.now(timezone.utc)
+        now_ts = time.time()
+        candidates = []
+
+        for m in markets:
+            # Cooldown 24h
+            if m.id in self._recently_traded:
+                if now_ts - self._recently_traded[m.id] < 86400:
+                    continue
+
+            # Skip mercati weather (gestiti dalla strategia weather)
+            tags_lower = [t.lower() for t in (m.tags or [])]
+            if "weather" in tags_lower or "temperature" in tags_lower:
+                continue
+
+            # Skip weather anche per question (tag non sempre presenti)
+            q_lower = m.question.lower()
+            if any(kw in q_lower for kw in [
+                "temperature", "highest temp", "lowest temp",
+                "degrees fahrenheit", "degrees celsius",
+                "will it rain", "precipitation", "snowfall",
+                "wind speed", "humidity",
+            ]):
+                continue
+
+            # Skip mercati sportivi, crypto up/down, e scommesse
+            # Skip mercati sportivi e scommesse (non eventi verificabili in anticipo)
+            if any(kw in q_lower for kw in [
+                "spread:", "over/under", "moneyline", "total points",
+                "total goals", "total runs", "handicap",
+                "o/u ", "vs.", "vs ", " win on ", "both teams to score",
+                "up or down",
+            ]):
+                continue
+
+            # Skip mercati sportivi per tag
+            if any(t in tags_lower for t in [
+                "sports", "nba", "nfl", "mlb", "nhl", "soccer", "football",
+                "basketball", "baseball", "hockey", "mma", "boxing",
+                "tennis", "cricket", "college", "ncaa",
+            ]):
+                continue
+
+            # Parse end_date
+            if not m.end_date:
+                continue
+            try:
+                end_dt = datetime.fromisoformat(m.end_date.replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                continue
+
+            # Solo mercati GIA' SCADUTI (end_date passata, max 48h fa)
+            # Perplexity puo' verificare solo eventi gia' accaduti, non futuri
+            hours_until = (end_dt - now).total_seconds() / 3600
+            if hours_until > 0 or hours_until < -48:
+                continue
+
+            # Skip se prezzo gia' estremo (outcome gia' priced in)
+            p_yes = m.prices.get("yes", 0.5)
+            p_no = m.prices.get("no", 0.5)
+            if p_yes >= 0.93 or p_no >= 0.93:
+                continue
+
+            # Skip mercati con poca liquidita'
+            if m.liquidity < 200:
+                continue
+
+            # Calcola edge potenziale (piu' lontano da 1.0 = piu' edge)
+            max_price = max(p_yes, p_no)
+            potential_edge = 1.0 - max_price
+            if potential_edge < self.min_edge:
+                continue
+
+            candidates.append((m, hours_until, potential_edge))
+
+        # Ordina per edge potenziale (migliori prima), limita query Perplexity
+        candidates.sort(key=lambda x: x[2], reverse=True)
+        max_queries = 30  # max queries per ciclo (~$0.15)
+        queried = 0
+
+        for m, hours_until, pot_edge in candidates:
+            if queried >= max_queries:
+                break
+
+            # Chiedi a Perplexity se l'evento e' gia' accaduto
+            result = self.perplexity.verify_event(m.question)
+            queried += 1
+
+            if not result or result.answer == "UNCERTAIN":
+                continue
+
+            if result.confidence < 0.70:
+                continue
+
+            # Determina side e edge
+            p_yes = m.prices.get("yes", 0.5)
+            p_no = m.prices.get("no", 0.5)
+
+            if result.answer == "YES":
+                side = "YES"
+                buy_price = p_yes
+            else:  # NO
+                side = "NO"
+                buy_price = p_no
+
+            edge = 1.0 - buy_price
+            if edge < self.min_edge:
+                continue
+
+            # Edge troppo alto = probabilmente falso positivo
+            # (se l'evento e' davvero accaduto, il prezzo sarebbe >0.60)
+            if edge > 0.40:
+                logger.debug(
+                    f"[SNIPER-PPLX] Skip edge troppo alto: {edge:.3f} "
+                    f"'{m.question[:50]}'"
+                )
+                continue
+
+            # Confidence: Perplexity confidence + bonus se scaduto
+            confidence = result.confidence
+            if hours_until < 0:  # gia' scaduto
+                confidence = min(confidence + 0.05, 0.95)
+
+            signals.append(SniperSignal(
+                market=m,
+                side=side,
+                edge=edge,
+                confidence=confidence,
+                signal_type="perplexity_snipe",
+                reasoning=(
+                    f"Perplexity: {result.answer} (conf={result.confidence:.0%}) | "
+                    f"Price={buy_price:.3f} Edge={edge:.3f} | "
+                    f"Expires {hours_until:+.0f}h | "
+                    f"'{m.question[:50]}'"
+                ),
+            ))
+
+            logger.info(
+                f"[SNIPER-PPLX] TROVATO: {side} '{m.question[:50]}' "
+                f"price={buy_price:.3f} edge={edge:.3f} conf={confidence:.0%}"
+            )
+
+        if queried > 0:
+            logger.info(
+                f"[SNIPER-PPLX] Scansionati {queried}/{len(candidates)} candidati "
+                f"→ {len(signals)} segnali (cost ~${queried * 0.005:.3f})"
+            )
 
         return signals
 
@@ -248,14 +420,32 @@ class ResolutionSniperStrategy:
                 logger.info(f"[SNIPER] Skip {signal.market.id[:8]}… posizione gia' aperta")
                 return False
 
+        # v10.8: Verifica Perplexity prima di comprare (solo UMA snipe, non perplexity_snipe)
+        if self.perplexity and signal.signal_type == "resolution_snipe":
+            confirmed, conf, expl = self.perplexity.verify_resolution(
+                signal.market.question, signal.side,
+            )
+            if not confirmed:
+                logger.info(
+                    f"[SNIPER] Perplexity NON conferma {signal.side} per "
+                    f"'{signal.market.question[:50]}': {expl[:80]}"
+                )
+                return False
+            # Boost confidence se Perplexity conferma
+            signal.confidence = min(signal.confidence + 0.05, 0.95)
+            logger.info(
+                f"[SNIPER] Perplexity CONFERMA {signal.side} "
+                f"(conf={conf:.0%}): {expl[:60]}"
+            )
+
         token_key = "yes" if signal.side == "YES" else "no"
         token_id = signal.market.tokens[token_key]
         price = signal.market.prices[token_key]
 
         # Size: per bonds, possiamo essere più aggressivi
         # perché la probabilità è alta
-        if signal.signal_type == "resolution_snipe":
-            # Sniping: edge alto ma rischio dispute → size moderata
+        if signal.signal_type in ("resolution_snipe", "perplexity_snipe"):
+            # Sniping: edge alto ma rischio Perplexity sbagliata → size moderata
             win_prob = signal.confidence
         else:
             # Bonding: la probabilita' reale e' price + edge (non solo price!)
@@ -331,4 +521,6 @@ class ResolutionSniperStrategy:
         return {
             "trades_executed": self._trades_executed,
             "uma_proposals": self.uma.active_proposals if self.uma else 0,
+            "perplexity_enabled": bool(self.perplexity and self.perplexity.enabled),
+            "perplexity_cost": self.perplexity.total_cost if self.perplexity else 0,
         }

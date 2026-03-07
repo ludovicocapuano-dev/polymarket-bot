@@ -1,25 +1,20 @@
 """
-Strategia 3: Event-Driven Trading v2 — News-Reactive + Sentiment
-=================================================================
-v5.9.3: Riscrittura completa dei segnali per massimizzare ROI.
+Strategia 3: Event-Driven Trading v3 — News-Reactive + Panic Fade
+===================================================================
+v10.8: Aggiunto segnale PANIC FADE (liquidity vacuum trade).
 
-Cambiamenti chiave rispetto a v5.9.2:
-- NUOVO segnale primario: News-Reactive (underreaction pattern)
-  Quando Finlight rileva breaking news con sentiment forte e
-  il prezzo del mercato non ha ancora reagito → compra subito.
-  Finestra di profitto: 5-30 minuti dopo la news.
-
-- Overconfidence reversal ORA RICHIEDE conferma news:
-  Non scommette piu' alla cieca contro il consenso.
-  Solo quando le news recenti contraddicono il prezzo estremo.
-
-- RIMOSSI: segnali spread-based e volume mispricing
-  Erano rumore e si sovrapponevano con gabagool (arb puro).
-
-- NUOVO: News Strength score (0-1) per calibrare dimensione trade
+Segnali attivi:
+1. Glint-Reactive: segnali pre-matchati da Glint.trade (se disponibile)
+2. News-Reactive: breaking news + market underreaction (5-30 min window)
+3. Structural: overconfidence + political mispricing + news conferma
+4. PANIC FADE (v10.8): mean reversion su mercati con prezzo estremo
+   Logica: quando il prezzo si muove a estremi (YES>0.82 o YES<0.18)
+   con strong breaking news, il mercato sta over-reacting.
+   Trade CONTRO la folla: il panico rientra, il prezzo torna alla media.
+   Ispirato a: "liquidity vacuum trade" (contrarian mean reversion).
 
 Fonti:
-- Research: prediction markets underreact 5-30 min dopo news
+- Research: prediction markets overreact 70-80% del tempo su breaking news
 - Top 668 wallet Polymarket: event-driven ROI 1025%
 - Mercati non-crypto sono FEE-FREE → min_edge puo' essere basso
 """
@@ -177,7 +172,13 @@ class EventDrivenStrategy:
         news_opps = [o for o in news_opps if o.market.id not in glint_market_ids]
         opportunities.extend(news_opps)
 
-        # ── 2. Segnali strutturali per mercati classificati ──
+        # ── 2.5 PANIC FADE: mean reversion su prezzi estremi ──
+        covered_ids = glint_market_ids | {o.market.id for o in news_opps}
+        panic_opps = self._check_panic_fade(markets, covered_ids)
+        opportunities.extend(panic_opps)
+        covered_ids.update(o.market.id for o in panic_opps)
+
+        # ── 3. Segnali strutturali per mercati classificati ──
         classified = 0
         for m in markets:
             event_type = self._classify_event(m)
@@ -187,8 +188,8 @@ class EventDrivenStrategy:
 
             opp = self._evaluate_structural(m, event_type)
             if opp:
-                # Evita duplicati con glint-reactive e news-reactive
-                if m.id not in glint_market_ids and not any(o.market.id == m.id for o in news_opps):
+                # Evita duplicati
+                if m.id not in covered_ids:
                     opportunities.append(opp)
 
         # Ordina per edge * confidence (expected value)
@@ -209,6 +210,182 @@ class EventDrivenStrategy:
             logger.info(
                 f"[EVENT] Scan {len(markets)} mercati ({classified} classificati) → "
                 f"0 opportunita'"
+            )
+
+        return opportunities
+
+    # ── SEGNALE 2.5: PANIC FADE (liquidity vacuum / mean reversion) ──
+
+    def _check_panic_fade(
+        self, markets: list[Market], exclude_ids: set[str]
+    ) -> list[EventOpportunity]:
+        """
+        v10.8: Panic Fade — trade contrarian su mercati con prezzo estremo.
+
+        Logica: quando il prezzo raggiunge estremi (YES>0.82 o YES<0.18)
+        su mercati con volume e breaking news, il mercato sta over-reacting.
+        La maggioranza dei retail chiude in perdita, noi prendiamo il lato opposto.
+
+        Condizioni di ingresso:
+        1. Prezzo estremo (YES > 0.82 o YES < 0.18)
+        2. Volume significativo (> $50K) — mercato attivo, non illiquido
+        3. Breaking news nella stessa categoria — conferma che il move ha causa
+        4. Classificabile come evento (political/geo/macro/tech/crypto)
+
+        Edge = proporzionale a quanto estremo e' il prezzo.
+        Trade CONTRO il consenso: se YES>0.82 → BUY NO (fade the panic).
+        """
+        if not markets:
+            return []
+
+        # Raccogli breaking news attive (una volta per scan)
+        breaking_categories: set[str] = set()
+        breaking_by_cat: dict[str, float] = {}  # category → |sentiment|
+
+        # Twitter breaking
+        if self.twitter:
+            try:
+                for cat, ns in self.twitter.detect_breaking_news(
+                    min_articles=1, min_sentiment=0.15
+                ):
+                    breaking_categories.add(cat)
+                    breaking_by_cat[cat] = max(
+                        breaking_by_cat.get(cat, 0), abs(ns.sentiment)
+                    )
+            except Exception:
+                pass
+
+        # GDELT breaking
+        if self.gdelt:
+            try:
+                for cat, ns in self.gdelt.detect_breaking_events(
+                    min_articles=2, min_sentiment=0.20
+                ):
+                    breaking_categories.add(cat)
+                    breaking_by_cat[cat] = max(
+                        breaking_by_cat.get(cat, 0), abs(ns.sentiment)
+                    )
+            except Exception:
+                pass
+
+        # Glint breaking
+        if self.glint and self.glint.available:
+            try:
+                for cat, avg_sent, n_signals in self.glint.detect_breaking_news(
+                    min_articles=1, min_sentiment=0.15
+                ):
+                    breaking_categories.add(cat)
+                    breaking_by_cat[cat] = max(
+                        breaking_by_cat.get(cat, 0), abs(avg_sent)
+                    )
+            except Exception:
+                pass
+
+        if not breaking_categories:
+            return []
+
+        opportunities: list[EventOpportunity] = []
+
+        for m in markets:
+            if m.id in exclude_ids:
+                continue
+
+            # Cooldown
+            if time.time() - self._recently_traded.get(m.id, 0) < 120:
+                continue
+
+            # Classifica evento
+            event_type = self._classify_event(m)
+            if not event_type:
+                continue
+
+            # Il mercato deve avere breaking news nella sua categoria
+            if event_type not in breaking_categories:
+                continue
+
+            p_yes = m.prices.get("yes", 0.5)
+            p_no = m.prices.get("no", 0.5)
+
+            # Volume minimo: mercato attivo (non illiquido)
+            if m.volume < 50000:
+                continue
+
+            # ── Condizione core: prezzo estremo ──
+            side = ""
+            edge = 0.0
+            confidence = 0.0
+
+            if p_yes > 0.82:
+                # Mercato troppo bullish → fade, BUY NO
+                # Edge: quanto più estremo il prezzo, più forte il mean reversion
+                # YES@0.82 → edge 3%, YES@0.90 → edge 7%, YES@0.95 → edge 10%
+                overshoot = p_yes - 0.75  # distanza dal "fair range"
+                edge = min(overshoot * 0.50, 0.12)  # cap a 12%
+                side = "NO"
+                # Confidence: più alta se volume alto + strong sentiment
+                confidence = 0.55
+                if m.volume > 200000:
+                    confidence += 0.05
+                news_strength = breaking_by_cat.get(event_type, 0)
+                if news_strength > 0.40:
+                    confidence += 0.05
+
+            elif p_yes < 0.18:
+                # Mercato troppo bearish → fade, BUY YES
+                overshoot = 0.25 - p_yes  # distanza dal "fair range"
+                edge = min(overshoot * 0.50, 0.12)
+                side = "YES"
+                confidence = 0.55
+                if m.volume > 200000:
+                    confidence += 0.05
+                news_strength = breaking_by_cat.get(event_type, 0)
+                if news_strength > 0.40:
+                    confidence += 0.05
+
+            if not side or edge < 0.03:
+                continue
+
+            # Filtro prezzo token
+            buy_price = p_no if side == "NO" else p_yes
+            if buy_price < MIN_TOKEN_PRICE or buy_price > MAX_TOKEN_PRICE:
+                continue
+
+            # Filtro payoff: non comprare token troppo caro (>0.70)
+            if buy_price > 0.70:
+                continue
+
+            confidence = min(confidence, 0.70)  # cap — mean reversion non e' garantito
+
+            news_sent_val = breaking_by_cat.get(event_type, 0)
+            # Sentiment opposto al side (stiamo fading)
+            if side == "NO":
+                news_sent_val = -abs(news_sent_val)
+            else:
+                news_sent_val = abs(news_sent_val)
+
+            opportunities.append(EventOpportunity(
+                market=m,
+                event_type=event_type,
+                edge=edge,
+                side=side,
+                confidence=confidence,
+                reasoning=(
+                    f"PANIC FADE: YES@{p_yes:.3f} (extreme) "
+                    f"vol=${m.volume:,.0f} "
+                    f"breaking={event_type} "
+                    f"→ BUY {side} (mean reversion)"
+                ),
+                signal_type="panic_fade",
+                news_sentiment=news_sent_val,
+                news_volume="HIGH",
+                news_label="CONTRARIAN",
+                news_strength=breaking_by_cat.get(event_type, 0),
+            ))
+
+        if opportunities:
+            logger.info(
+                f"[EVENT] Panic fade: {len(opportunities)} opportunita' "
+                f"(breaking in: {', '.join(breaking_categories)})"
             )
 
         return opportunities
@@ -832,8 +1009,13 @@ class EventDrivenStrategy:
         market_id = opp.market.id
         last_traded = self._recently_traded.get(market_id, 0)
 
-        # Cooldown ridotto per news-reactive e glint-reactive (reazione veloce)
-        cooldown = 180 if opp.signal_type in ("news_reactive", "glint_reactive") else self._TRADE_COOLDOWN
+        # Cooldown: panic_fade 120s (veloce), news/glint 180s, structural 300s
+        if opp.signal_type == "panic_fade":
+            cooldown = 120
+        elif opp.signal_type in ("news_reactive", "glint_reactive"):
+            cooldown = 180
+        else:
+            cooldown = self._TRADE_COOLDOWN
         if now - last_traded < cooldown:
             return False
 
@@ -867,6 +1049,10 @@ class EventDrivenStrategy:
         # v5.9.3: Size boost per news-reactive/glint-reactive (segnale forte + fee-free)
         if opp.signal_type in ("news_reactive", "glint_reactive") and opp.news_strength > 0.5:
             size = min(size * 1.3, self.risk.config.max_bet_size)
+
+        # v10.8: Panic fade — size conservativa (50% Kelly), mean reversion non garantito
+        if opp.signal_type == "panic_fade":
+            size = size * 0.50
 
         allowed, reason = self.risk.can_trade(
             STRATEGY_NAME, size, price=price,

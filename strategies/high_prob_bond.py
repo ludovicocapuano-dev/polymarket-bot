@@ -45,7 +45,7 @@ STRATEGY_NAME = "high_prob_bond"
 # ── Parametri strategia ──
 MIN_PROB = 0.93              # prezzo minimo YES per considerare
 MAX_DAYS_TO_RESOLUTION = 14  # massimo giorni alla risoluzione
-MIN_EDGE = 0.01              # edge minimo (prezzo basso = margine sicuro)
+MIN_EDGE = 0.03              # v10.5: da 0.01 — con 0.01 un loss cancella 20 wins
 MIN_ANNUAL_YIELD = 1.0       # rendimento annualizzato minimo (100%)
 MAX_BOND_POSITIONS = 5       # max posizioni bond contemporanee
 MAX_BUDGET_PER_BOND = 0.20   # max 20% del budget su un singolo bond
@@ -60,12 +60,20 @@ HARD_BLACKLIST = [
     "nfl", "nba", "mlb", "nhl", "soccer", "football", "basketball",
     "tennis", "championship", "playoff", "world cup", "super bowl",
     "match", "game score",
+    # v10.6: NCAA/college sports — "Niagara vs Quinnipiac" passava il filtro
+    "ncaa", "college basketball", "college football", "division i",
+    "march madness", "bowl game", "varsity",
+    # v10.6: Pattern head-to-head (Team A vs Team B = quasi sempre sport)
+    " vs ", " vs. ", "eagles", "bobcats", "bulldogs", "wildcats",
+    "tigers", "bears", "lions", "hawks", "falcons", "panthers",
+    "wolves", "warriors", "knights", "spartans", "trojans",
+    "cardinals", "mustangs", "cougars", "hornets", "huskies",
 ]
 
 # v8.0: SOFT blacklist svuotata — tutto hard o niente
 SOFT_BLACKLIST: list[str] = []
 
-MIN_CERTAINTY = 0.55            # soglia minima per tradare
+MIN_CERTAINTY = 0.75            # v10.5: da 0.55 — troppi falsi positivi a certainty bassa
 SOFT_BLACKLIST_CERTAINTY = 0.80 # soglia per mercati soft-blacklisted
 
 
@@ -295,8 +303,10 @@ class HighProbBondStrategy:
             strategy=STRATEGY_NAME,
         )
 
-        # Size conservativo: min(kelly, max_bet_size * 0.5)
-        size = min(kelly, self.risk.config.max_bet_size * 0.5)
+        # v10.5: Size ridotto — bond rischia $X per vincere $X*0.05
+        # Con max_bet=40, max bond=$12 (era $20). Un loss da $12 richiede
+        # ~12 wins da $1 per recuperare, non 20.
+        size = min(kelly, self.risk.config.max_bet_size * 0.30)
 
         # Limite budget per singolo bond: max 20% del budget strategia
         budget = getattr(self.risk, '_strategy_budgets', {}).get(STRATEGY_NAME, 0)

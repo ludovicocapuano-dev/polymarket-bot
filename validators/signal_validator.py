@@ -1,7 +1,7 @@
 """
-Signal Validator v9.2.1 — Gate finale prima dell'esecuzione.
+Signal Validator v10.8 — Gate finale prima dell'esecuzione.
 
-8 gate checks:
+9 gate checks:
 1. Min edge threshold (>=0.02)
 2. Confidence >= 60%
 3. Resolution clarity (end_date < 30gg)
@@ -10,6 +10,7 @@ Signal Validator v9.2.1 — Gate finale prima dell'esecuzione.
 6. EV positivo dopo fee round-trip
 7. Non flaggato dal Devil's Advocate
 8. VPIN < 0.7 (no toxic flow — Easley, López de Prado, O'Hara 2012)
+9. Cross-platform sanity check (Manifold/Metaculus divergence < 20%)
 """
 
 from dataclasses import dataclass, field
@@ -68,10 +69,12 @@ class SignalValidator:
     MIN_LIQUIDITY_MULTIPLIER = 2.0
     MAX_SPREAD = 0.05
     VPIN_TOXIC_THRESHOLD = 0.7  # v9.2.1: VPIN > 0.7 = toxic flow
+    XPLATFORM_MAX_DIVERGENCE = 0.20  # v10.8: max divergenza cross-platform
 
-    def __init__(self, devil_advocate=None, vpin_monitor=None):
+    def __init__(self, devil_advocate=None, vpin_monitor=None, xplatform_feed=None):
         self.devil_advocate = devil_advocate
         self.vpin_monitor = vpin_monitor  # v9.2.1
+        self.xplatform_feed = xplatform_feed  # v10.8: cross-platform sanity check
 
     def validate(self, signal: UnifiedSignal, trade_size: float) -> SignalReport:
         """Esegue 7 gate checks e ritorna un SignalReport."""
@@ -142,6 +145,22 @@ class SignalValidator:
                 failed.append(f"vpin={vpin:.3f} >= {self.VPIN_TOXIC_THRESHOLD} (toxic flow)")
         else:
             passed.append("vpin=disabled")
+
+        # Gate 9: Cross-platform sanity check (v10.8)
+        if self.xplatform_feed and signal.question and signal.signal_type != "weather":
+            try:
+                poly_prob = signal.price if signal.side == "YES" else (1.0 - signal.price)
+                is_div, div_amount, div_detail = self.xplatform_feed.check_divergence(
+                    signal.question, poly_prob, min_divergence=self.XPLATFORM_MAX_DIVERGENCE,
+                )
+                if not is_div:
+                    passed.append(f"xplatform=OK (div={div_amount:.0%})")
+                else:
+                    failed.append(f"xplatform=DIVERGENT ({div_detail})")
+            except Exception:
+                passed.append("xplatform=error (skip)")
+        else:
+            passed.append("xplatform=skip")
 
         # Calcola score (0-1)
         total_checks = len(passed) + len(failed)

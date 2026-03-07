@@ -36,6 +36,18 @@ TIME_PROF_SKIP_MAX = 0.50
 
 WHITELIST_PATH = "logs/whale_whitelist.json"
 
+# ── Data API Pagination ──
+DATA_API_PAGE_SIZE = 200
+DATA_API_MAX_OFFSET = 1000     # hard cap Data API (oltre non ritorna dati)
+DATA_API_MAX_PAGES = 6         # safety: max 6 pagine (1200 record)
+
+# ── Goldsky Subgraph ──
+GOLDSKY_ENDPOINT = "https://api.goldsky.com/api/public/project_cl6mb8i9h0003e201j6li0diw/subgraphs/orderbook-subgraph/0.0.1/gn"
+GOLDSKY_PAGE_SIZE = 1000
+GOLDSKY_REQUEST_INTERVAL = 1.0  # secondi tra richieste
+GOLDSKY_CACHE_TTL = 3600 * 6    # 6 ore
+GOLDSKY_MAX_PAGES = 50          # safety: max 50K events
+
 
 @dataclass
 class MarketTrades:
@@ -89,6 +101,13 @@ class WalletMetrics:
     composite_score: float = 0.0             # 0-1
     recommendation: str = "SKIP"             # COPY / WATCH / SKIP
     profiled_at: float = field(default_factory=time.time)
+    # v10.4: Metriche avanzate (ispirate da polybot)
+    execution_quality: float = 0.0           # avg_price / avg_mid — <1.0 = buona esecuzione
+    maker_ratio: float = 0.0                 # % trade eseguiti come maker (sotto mid)
+    complete_set_ratio: float = 0.0          # % trade parte di complete set (entro 60s)
+    complete_set_avg_edge: float = 0.0       # edge medio sui complete set: 1-(p_yes+p_no)
+    complete_set_avg_pairing_s: float = 0.0  # tempo medio tra le due gambe (secondi)
+    trader_type: str = "UNKNOWN"             # DIRECTIONAL / ARBITRAGEUR / MIXED / UNKNOWN
 
 
 @dataclass
@@ -111,6 +130,9 @@ class WhaleProfiler:
         self.verbose = verbose
         self._session = requests.Session()
         self._session.headers["Accept"] = "application/json"
+        # Goldsky state
+        self._goldsky_cache: dict[str, tuple[list[dict], float]] = {}
+        self._goldsky_last_request_at: float = 0.0
 
     def profile_all_wallets(self) -> WhaleWhitelist:
         """Entry point: profila tutti i TRACKED_WALLETS."""
@@ -196,11 +218,16 @@ class WhaleProfiler:
                 recommendation="SKIP",
             )
 
-        # Calcola metriche
+        # Calcola metriche base
         time_prof = self._calc_time_profitable(trades)
         pattern, acc_score = self._calc_accumulation_pattern(market_trades)
         n_hedged, hedge_ratio = self._calc_hedge_check(market_trades)
         avg_min, is_bot = self._calc_trading_intensity(trades)
+
+        # Calcola metriche avanzate (v10.4)
+        exec_quality = self._calc_execution_quality(trades)
+        maker_ratio = self._calc_maker_ratio(trades)
+        cs_ratio, cs_edge, cs_pairing, trader_type = self._calc_complete_set_detection(trades)
 
         metrics = WalletMetrics(
             address=address,
@@ -215,6 +242,12 @@ class WhaleProfiler:
             total_markets_analyzed=n_markets,
             total_trades_analyzed=n_trades,
             data_quality=data_quality,
+            execution_quality=exec_quality,
+            maker_ratio=maker_ratio,
+            complete_set_ratio=cs_ratio,
+            complete_set_avg_edge=cs_edge,
+            complete_set_avg_pairing_s=cs_pairing,
+            trader_type=trader_type,
         )
 
         metrics.composite_score = self._compute_composite_score(metrics)
@@ -226,82 +259,405 @@ class WhaleProfiler:
 
     def _fetch_full_trade_history(self, address: str) -> list[dict]:
         """
-        Fetch storico trade completo via Data API.
+        Fetch storico trade completo via Data API con paginazione.
+        v10.4: paginazione offset (cap 1000) + Goldsky supplementation.
         v10.2: migrato da gamma-api (404 dal 2026) a data-api.polymarket.com.
-        Endpoint: GET /activity?user=ADDRESS&limit=200
         NON applica il filtro 120s di whale_copy — serve tutto lo storico.
         """
         trades = []
+        total_raw_items = 0
+        last_page_full = False
+        prev_page_sig = None
+
         try:
-            resp = self._session.get(
-                "https://data-api.polymarket.com/activity",
-                params={"user": address, "limit": 200},
-                timeout=15,
-            )
-            if resp.status_code != 200:
-                logger.debug(
-                    f"[WHALE_PROFILER] data-api HTTP {resp.status_code} "
-                    f"per {address[:10]}..."
+            for page in range(DATA_API_MAX_PAGES):
+                offset = page * DATA_API_PAGE_SIZE
+                if offset > DATA_API_MAX_OFFSET:
+                    break
+
+                resp = self._session.get(
+                    "https://data-api.polymarket.com/activity",
+                    params={
+                        "user": address,
+                        "limit": DATA_API_PAGE_SIZE,
+                        "offset": offset,
+                    },
+                    timeout=15,
                 )
-                return []
+                if resp.status_code != 200:
+                    logger.debug(
+                        f"[WHALE_PROFILER] data-api HTTP {resp.status_code} "
+                        f"per {address[:10]}... offset={offset}"
+                    )
+                    break
 
-            data = resp.json()
-            items = data if isinstance(data, list) else data.get("data", data.get("positions", []))
+                data = resp.json()
+                items = data if isinstance(data, list) else data.get("data", data.get("positions", []))
+                page_count = len(items)
+                total_raw_items += page_count
 
-            for item in items:
-                # Filtra solo BUY/TRADE (skip REDEEM, SELL per profiling)
-                trade_type = item.get("type", "").upper()
-                if trade_type in ("REDEEM",):
-                    continue
+                if page_count == 0:
+                    break
 
-                market_id = (
-                    item.get("conditionId", "") or
-                    item.get("market_id", "") or
-                    item.get("marketId", "") or
-                    item.get("condition_id", "")
+                # Page signature per rilevare stallo (Data API a volte
+                # ritorna la stessa pagina con offset diversi)
+                page_sig = (
+                    page_count,
+                    items[0].get("transactionHash", ""),
+                    items[-1].get("transactionHash", ""),
                 )
-                if not market_id:
-                    continue
+                if page_sig == prev_page_sig:
+                    logger.debug(
+                        f"[WHALE_PROFILER] Pagina stabile a offset={offset}, "
+                        f"stop paginazione per {address[:10]}..."
+                    )
+                    break
+                prev_page_sig = page_sig
 
-                # Side: data-api usa outcomeIndex (0=YES, 1=NO) e side ("BUY"/"SELL")
-                side = item.get("side", item.get("outcome", ""))
-                if isinstance(side, str):
-                    side = side.upper()
-                    if side in ("BUY", "LONG", ""):
-                        idx = item.get("outcomeIndex", item.get("outcome_index", -1))
-                        if idx == 0:
-                            side = "YES"
-                        elif idx == 1:
-                            side = "NO"
-                        elif side in ("YES", "NO"):
-                            pass
-                        else:
-                            side = item.get("outcome", "YES").upper()
-                    elif side in ("SELL", "SHORT"):
-                        side = "SELL"
+                for item in items:
+                    trade = self._parse_data_api_item(item)
+                    if trade is not None:
+                        trades.append(trade)
 
-                price = float(item.get("price", item.get("avgPrice", 0)))
-                size = float(item.get("usdcSize", item.get("size", item.get("value", 0))))
-
-                # Timestamp (data-api usa unix timestamp in secondi)
-                ts_raw = item.get("timestamp", item.get("createdAt", item.get("created_at", "")))
-                ts = self._parse_timestamp(ts_raw)
-
-                question = item.get("question", item.get("title", ""))
-
-                trades.append({
-                    "market_id": market_id,
-                    "side": side,
-                    "price": price,
-                    "size": size,
-                    "timestamp": ts,
-                    "question": question,
-                })
+                last_page_full = (page_count >= DATA_API_PAGE_SIZE)
+                if not last_page_full:
+                    break  # Ultima pagina (non piena)
 
         except Exception as e:
             logger.warning(f"[WHALE_PROFILER] Errore fetch history {address[:10]}...: {e}")
 
+        if total_raw_items > DATA_API_PAGE_SIZE:
+            logger.info(
+                f"[WHALE_PROFILER] Paginazione Data API: {total_raw_items} raw items, "
+                f"{len(trades)} trade parsed per {address[:10]}..."
+            )
+
+        # Goldsky supplementation: se l'ultima pagina Data API era piena,
+        # i dati potrebbero essere troncati → fetch Goldsky per completare
+        if last_page_full:
+            logger.info(
+                f"[GOLDSKY] Data API hit pagination limit ({total_raw_items} items) "
+                f"for {address[:10]}... — fetching full history from subgraph"
+            )
+            try:
+                gs_trades = self._fetch_goldsky_history_cached(address)
+                if gs_trades:
+                    # Deduplica: preferisci tx_hash se disponibile, fallback
+                    # a (timestamp, market_id, side)
+                    existing_keys = set()
+                    for t in trades:
+                        key = self._trade_dedup_key(t)
+                        existing_keys.add(key)
+
+                    merged = 0
+                    for gt in gs_trades:
+                        key = self._trade_dedup_key(gt)
+                        if key not in existing_keys:
+                            trades.append(gt)
+                            existing_keys.add(key)
+                            merged += 1
+
+                    logger.info(
+                        f"[GOLDSKY] Merged {merged} additional trades "
+                        f"(total: {len(trades)}) for {address[:10]}..."
+                    )
+            except Exception as e:
+                logger.warning(f"[GOLDSKY] Errore supplementation {address[:10]}...: {e}")
+
         return trades
+
+    def _parse_data_api_item(self, item: dict) -> dict | None:
+        """Parsa un singolo item dalla Data API in formato trade standard."""
+        # Filtra solo BUY/TRADE (skip REDEEM, SELL per profiling)
+        trade_type = item.get("type", "").upper()
+        if trade_type in ("REDEEM",):
+            return None
+
+        market_id = (
+            item.get("conditionId", "") or
+            item.get("market_id", "") or
+            item.get("marketId", "") or
+            item.get("condition_id", "")
+        )
+        if not market_id:
+            return None
+
+        # Side: data-api usa outcomeIndex (0=YES, 1=NO) e side ("BUY"/"SELL")
+        side = item.get("side", item.get("outcome", ""))
+        if isinstance(side, str):
+            side = side.upper()
+            if side in ("BUY", "LONG", ""):
+                idx = item.get("outcomeIndex", item.get("outcome_index", -1))
+                if idx == 0:
+                    side = "YES"
+                elif idx == 1:
+                    side = "NO"
+                elif side in ("YES", "NO"):
+                    pass
+                else:
+                    side = item.get("outcome", "YES").upper()
+            elif side in ("SELL", "SHORT"):
+                side = "SELL"
+
+        price = float(item.get("price", item.get("avgPrice", 0)))
+        size = float(item.get("usdcSize", item.get("size", item.get("value", 0))))
+
+        # Timestamp (data-api usa unix timestamp in secondi)
+        ts_raw = item.get("timestamp", item.get("createdAt", item.get("created_at", "")))
+        ts = self._parse_timestamp(ts_raw)
+
+        question = item.get("question", item.get("title", ""))
+        tx_hash = item.get("transactionHash", item.get("transaction_hash", ""))
+        token_id = item.get("asset", item.get("tokenId", item.get("token_id", "")))
+
+        return {
+            "market_id": market_id,
+            "side": side,
+            "price": price,
+            "size": size,
+            "timestamp": ts,
+            "question": question,
+            "transaction_hash": tx_hash,
+            "token_id": token_id,
+        }
+
+    @staticmethod
+    def _trade_dedup_key(trade: dict) -> tuple:
+        """
+        Chiave di deduplicazione per merge Data API + Goldsky.
+        Usa tx_hash + market_id + side se tx_hash disponibile,
+        altrimenti fallback a (timestamp, market_id, side, price).
+        """
+        tx = trade.get("transaction_hash", "")
+        if tx:
+            return (tx, trade.get("market_id", ""), trade.get("side", ""))
+        return (
+            round(trade.get("timestamp", 0), 0),
+            trade.get("market_id", ""),
+            trade.get("side", ""),
+            round(trade.get("price", 0), 3),
+        )
+
+    # ── Goldsky Subgraph Methods ──
+
+    def _fetch_goldsky_history_cached(self, address: str) -> list[dict]:
+        """
+        Fetch storico trade da Goldsky con cache in-memory + file.
+        Cache TTL: 6 ore.
+        """
+        addr_lower = address.lower()
+        now = time.time()
+
+        # 1. In-memory cache
+        if addr_lower in self._goldsky_cache:
+            cached_trades, cached_at = self._goldsky_cache[addr_lower]
+            if now - cached_at < GOLDSKY_CACHE_TTL:
+                logger.debug(f"[GOLDSKY] Cache hit (memory) for {addr_lower[:10]}...")
+                return cached_trades
+
+        # 2. File cache
+        cache_dir = "logs/goldsky_cache"
+        cache_file = os.path.join(cache_dir, f"{addr_lower}.json")
+        try:
+            if os.path.exists(cache_file):
+                mtime = os.path.getmtime(cache_file)
+                if now - mtime < GOLDSKY_CACHE_TTL:
+                    with open(cache_file) as f:
+                        cached_trades = json.load(f)
+                    self._goldsky_cache[addr_lower] = (cached_trades, mtime)
+                    logger.debug(f"[GOLDSKY] Cache hit (file) for {addr_lower[:10]}...")
+                    return cached_trades
+        except Exception:
+            pass  # Cache corrotta → fetch fresco
+
+        # 3. Fetch fresco
+        trades = self._fetch_goldsky_history(addr_lower)
+
+        # Salva in cache
+        self._goldsky_cache[addr_lower] = (trades, now)
+        try:
+            os.makedirs(cache_dir, exist_ok=True)
+            with open(cache_file, "w") as f:
+                json.dump(trades, f)
+        except Exception as e:
+            logger.debug(f"[GOLDSKY] Errore salvataggio cache file: {e}")
+
+        return trades
+
+    def _fetch_goldsky_history(self, address: str) -> list[dict]:
+        """
+        Fetch storico completo da Goldsky subgraph (orderFilledEvents).
+        Due passate: maker + taker. Paginazione via timestamp_gt + id_gt.
+        """
+        all_trades: list[dict] = []
+        seen_ids: set[str] = set()
+
+        for role in ("maker", "taker"):
+            timestamp_gt = "0"
+            id_gt = ""
+            for page in range(GOLDSKY_MAX_PAGES):
+                # Rate limiting
+                elapsed = time.time() - self._goldsky_last_request_at
+                if elapsed < GOLDSKY_REQUEST_INTERVAL:
+                    time.sleep(GOLDSKY_REQUEST_INTERVAL - elapsed)
+
+                query = self._goldsky_query(address, role, timestamp_gt, id_gt)
+
+                try:
+                    self._goldsky_last_request_at = time.time()
+                    resp = self._session.post(
+                        GOLDSKY_ENDPOINT,
+                        json={"query": query},
+                        timeout=15,
+                    )
+                    if resp.status_code != 200:
+                        logger.warning(
+                            f"[GOLDSKY] HTTP {resp.status_code} for "
+                            f"{address[:10]}... role={role} page={page}"
+                        )
+                        break
+
+                    data = resp.json()
+                    events = data.get("data", {}).get("orderFilledEvents", [])
+
+                    if not events:
+                        break
+
+                    for event in events:
+                        eid = event.get("id", "")
+                        if eid in seen_ids:
+                            continue
+                        seen_ids.add(eid)
+
+                        normalized = self._normalize_goldsky_event(event, address)
+                        if normalized is not None:
+                            all_trades.append(normalized)
+
+                    # Paginazione: ultimo evento come cursor
+                    last = events[-1]
+                    timestamp_gt = str(last.get("timestamp", "0"))
+                    id_gt = last.get("id", "")
+
+                    if len(events) < GOLDSKY_PAGE_SIZE:
+                        break  # Ultima pagina
+
+                except requests.exceptions.Timeout:
+                    logger.warning(
+                        f"[GOLDSKY] Timeout page {page} for "
+                        f"{address[:10]}... role={role}"
+                    )
+                    break
+                except Exception as e:
+                    logger.warning(
+                        f"[GOLDSKY] Errore page {page} for "
+                        f"{address[:10]}... role={role}: {e}"
+                    )
+                    break
+
+        logger.info(
+            f"[GOLDSKY] Fetched {len(all_trades)} trades for {address[:10]}..."
+        )
+        return all_trades
+
+    def _goldsky_query(
+        self, address: str, role: str, timestamp_gt: str, id_gt: str
+    ) -> str:
+        """Costruisce query GraphQL per orderFilledEvents."""
+        where_clause = f'{role}: "{address}"'
+        if timestamp_gt and timestamp_gt != "0":
+            where_clause += f', timestamp_gt: "{timestamp_gt}"'
+        if id_gt:
+            where_clause += f', id_gt: "{id_gt}"'
+
+        return (
+            "{\n"
+            f"  orderFilledEvents(\n"
+            f"    first: {GOLDSKY_PAGE_SIZE}\n"
+            f"    orderBy: timestamp\n"
+            f"    orderDirection: asc\n"
+            f"    where: {{{where_clause}}}\n"
+            f"  ) {{\n"
+            f"    id\n"
+            f"    maker\n"
+            f"    taker\n"
+            f"    makerAssetId\n"
+            f"    takerAssetId\n"
+            f"    makerAmountFilled\n"
+            f"    takerAmountFilled\n"
+            f"    timestamp\n"
+            f"    transactionHash\n"
+            f"  }}\n"
+            "}"
+        )
+
+    def _normalize_goldsky_event(
+        self, event: dict, wallet_address: str
+    ) -> dict | None:
+        """
+        Normalizza un orderFilledEvent Goldsky in formato trade standard.
+
+        Identifica il lato USDC (assetId == "0" nel CTF subgraph) per
+        determinare direzione e prezzo. Skip token-for-token swap.
+        """
+        try:
+            maker = (event.get("maker") or "").lower()
+            taker = (event.get("taker") or "").lower()
+            maker_asset = event.get("makerAssetId", "")
+            taker_asset = event.get("takerAssetId", "")
+            maker_amount = float(event.get("makerAmountFilled", 0))
+            taker_amount = float(event.get("takerAmountFilled", 0))
+            timestamp = event.get("timestamp", "")
+
+            # Identifica lato USDC: assetId "0" = USDC nel CTF subgraph
+            wallet = wallet_address.lower()
+
+            if maker_asset == "0":
+                usdc_amount = maker_amount / 1e6
+                token_amount = taker_amount / 1e6
+                token_asset_id = taker_asset
+                # Maker dà USDC → chi è il wallet?
+                if wallet == maker:
+                    side = "BUY"  # wallet paga USDC = compra token
+                else:
+                    side = "SELL"  # wallet riceve token, controparte paga USDC
+            elif taker_asset == "0":
+                usdc_amount = taker_amount / 1e6
+                token_amount = maker_amount / 1e6
+                token_asset_id = maker_asset
+                # Taker dà USDC
+                if wallet == taker:
+                    side = "BUY"  # wallet paga USDC = compra token
+                else:
+                    side = "SELL"  # wallet riceve USDC = vende token
+            else:
+                # Nessun lato USDC — token-for-token swap, skip
+                return None
+
+            if token_amount <= 0 or usdc_amount <= 0:
+                return None
+
+            price = usdc_amount / token_amount
+
+            # Sanity check prezzo
+            if price < 0.001 or price > 1.5:
+                return None
+
+            ts = float(timestamp) if timestamp else time.time()
+            tx_hash = event.get("transactionHash", "")
+
+            return {
+                "market_id": f"gs_{token_asset_id}",
+                "side": side,
+                "price": round(price, 4),
+                "size": round(usdc_amount, 2),
+                "timestamp": ts,
+                "question": "",
+                "transaction_hash": tx_hash,
+                "token_id": token_asset_id,
+            }
+
+        except Exception:
+            return None
 
     def _parse_timestamp(self, ts_raw) -> float:
         """Parsa timestamp in diversi formati."""
@@ -519,14 +875,186 @@ class WhaleProfiler:
 
         return avg_min, is_bot
 
+    # ── Metriche Avanzate v10.4 (ispirate da polybot) ──
+
+    def _calc_execution_quality(self, trades: list[dict]) -> float:
+        """
+        Calcola la qualita' di esecuzione: quanto il whale paga rispetto
+        al mid-price stimato. < 1.0 = buona esecuzione (paga meno del mid).
+
+        Stima mid come prezzo medio per mercato (proxy in assenza di TOB).
+        """
+        if not trades:
+            return 0.0
+
+        # Calcola prezzo medio per mercato come proxy del mid
+        market_prices: dict[str, list[float]] = {}
+        for t in trades:
+            p = t.get("price", 0)
+            if p > 0:
+                market_prices.setdefault(t["market_id"], []).append(p)
+
+        market_mid: dict[str, float] = {}
+        for mid, prices in market_prices.items():
+            market_mid[mid] = sum(prices) / len(prices)
+
+        # Calcola rapporto prezzo effettivo / mid per i BUY
+        ratios = []
+        for t in trades:
+            side = t.get("side", "").upper()
+            price = t.get("price", 0)
+            mid = market_mid.get(t["market_id"], 0)
+            if side in ("YES", "BUY") and price > 0 and mid > 0:
+                ratios.append(price / mid)
+
+        if not ratios:
+            return 0.0
+
+        return sum(ratios) / len(ratios)
+
+    def _calc_maker_ratio(self, trades: list[dict]) -> float:
+        """
+        Stima la % di trade eseguiti come maker (prezzo <= mid del mercato).
+
+        Un whale che opera prevalentemente sotto il mid (maker) e' piu'
+        sofisticato — exec type classification ispirata da polybot.
+        """
+        if not trades:
+            return 0.0
+
+        # Prezzo medio per mercato come proxy del mid
+        market_prices: dict[str, list[float]] = {}
+        for t in trades:
+            p = t.get("price", 0)
+            if p > 0:
+                market_prices.setdefault(t["market_id"], []).append(p)
+
+        market_mid: dict[str, float] = {}
+        for mid, prices in market_prices.items():
+            market_mid[mid] = sum(prices) / len(prices)
+
+        n_maker = 0
+        n_total = 0
+        for t in trades:
+            price = t.get("price", 0)
+            mid = market_mid.get(t["market_id"], 0)
+            side = t.get("side", "").upper()
+            if price <= 0 or mid <= 0:
+                continue
+            n_total += 1
+            # BUY sotto il mid = maker, SELL sopra il mid = maker
+            if side in ("YES", "BUY") and price <= mid:
+                n_maker += 1
+            elif side in ("NO", "SELL") and price >= mid:
+                n_maker += 1
+
+        return n_maker / n_total if n_total > 0 else 0.0
+
+    def _calc_complete_set_detection(
+        self, trades: list[dict]
+    ) -> tuple[float, float, float, str]:
+        """
+        Rileva complete sets: coppie di BUY su outcome opposti (YES+NO)
+        sullo stesso mercato entro 60 secondi.
+
+        Returns: (complete_set_ratio, avg_edge, avg_pairing_seconds, trader_type)
+        - complete_set_ratio: % trade che fanno parte di un complete set
+        - avg_edge: edge medio (1 - price_yes - price_no), positivo = arbitraggio
+        - avg_pairing_seconds: tempo medio tra le due gambe
+        - trader_type: ARBITRAGEUR (>40% cs) / DIRECTIONAL (<10%) / MIXED
+        """
+        if len(trades) < 2:
+            return 0.0, 0.0, 0.0, "UNKNOWN"
+
+        # Raggruppa BUY per mercato
+        market_buys: dict[str, list[dict]] = {}
+        for t in trades:
+            side = t.get("side", "").upper()
+            if side in ("YES", "BUY", "NO"):
+                market_buys.setdefault(t["market_id"], []).append(t)
+
+        paired_count = 0
+        edges = []
+        pairing_times = []
+        used_indices: set[tuple[str, int]] = set()
+
+        for mid, buys in market_buys.items():
+            if len(buys) < 2:
+                continue
+
+            sorted_buys = sorted(buys, key=lambda t: t.get("timestamp", 0))
+
+            # Per ogni trade, cerca il trade con outcome opposto piu' vicino
+            for i, t1 in enumerate(sorted_buys):
+                if (mid, i) in used_indices:
+                    continue
+                side1 = t1.get("side", "").upper()
+
+                for j in range(i + 1, len(sorted_buys)):
+                    if (mid, j) in used_indices:
+                        continue
+                    t2 = sorted_buys[j]
+                    side2 = t2.get("side", "").upper()
+
+                    # Devono essere outcome opposti
+                    if not self._are_opposite_sides(side1, side2):
+                        continue
+
+                    delta_s = abs(
+                        t2.get("timestamp", 0) - t1.get("timestamp", 0)
+                    )
+                    if delta_s > 60:
+                        break  # Ordinati, se >60s non vale la pena continuare
+
+                    # Match! Complete set trovato
+                    used_indices.add((mid, i))
+                    used_indices.add((mid, j))
+                    paired_count += 2
+
+                    p1 = t1.get("price", 0)
+                    p2 = t2.get("price", 0)
+                    if p1 > 0 and p2 > 0:
+                        edge = 1.0 - p1 - p2
+                        edges.append(edge)
+                    pairing_times.append(delta_s)
+                    break
+
+        total_buy_trades = sum(len(v) for v in market_buys.values())
+        cs_ratio = paired_count / total_buy_trades if total_buy_trades > 0 else 0.0
+        avg_edge = sum(edges) / len(edges) if edges else 0.0
+        avg_pairing = sum(pairing_times) / len(pairing_times) if pairing_times else 0.0
+
+        # Classificazione trader
+        if cs_ratio >= 0.40:
+            trader_type = "ARBITRAGEUR"
+        elif cs_ratio < 0.10:
+            trader_type = "DIRECTIONAL"
+        else:
+            trader_type = "MIXED"
+
+        return cs_ratio, avg_edge, avg_pairing, trader_type
+
+    @staticmethod
+    def _are_opposite_sides(side1: str, side2: str) -> bool:
+        """Verifica se due side sono opposti (YES/NO o BUY/SELL)."""
+        opposites = {
+            ("YES", "NO"), ("NO", "YES"),
+            ("BUY", "SELL"), ("SELL", "BUY"),
+            ("YES", "SELL"), ("SELL", "YES"),
+            ("BUY", "NO"), ("NO", "BUY"),
+        }
+        return (side1, side2) in opposites
+
     def _compute_composite_score(self, metrics: WalletMetrics) -> float:
         """
         Score composito pesato.
 
+        v10.4: aggiunto maker_ratio_bonus (20%), ribilanciati pesi.
         score = (
-            time_profitable_pct * 0.35 +
-            accumulation_score  * 0.30 +
-            hedge_bonus         * 0.20 +
+            time_profitable_pct * 0.30 +
+            accumulation_score  * 0.25 +
+            maker_ratio_bonus   * 0.20 +
+            hedge_bonus         * 0.10 +
             intensity_score     * 0.15
         ) × data_quality_penalty
         """
@@ -550,10 +1078,20 @@ class WhaleProfiler:
         else:
             intensity_score = 0.5
 
+        # Maker ratio bonus (v10.4): whale che operano come maker sono
+        # piu' sofisticati — exec type classification ispirata da polybot
+        if metrics.maker_ratio >= 0.60:
+            maker_bonus = 1.0
+        elif metrics.maker_ratio >= 0.40:
+            maker_bonus = 0.7
+        else:
+            maker_bonus = 0.3
+
         raw_score = (
-            metrics.time_profitable_pct * 0.35 +
-            metrics.accumulation_score * 0.30 +
-            hedge_bonus * 0.20 +
+            metrics.time_profitable_pct * 0.30 +
+            metrics.accumulation_score * 0.25 +
+            maker_bonus * 0.20 +
+            hedge_bonus * 0.10 +
             intensity_score * 0.15
         )
 
@@ -632,6 +1170,13 @@ class WhaleProfiler:
                 "total_trades_analyzed": m.total_trades_analyzed,
                 "data_quality": m.data_quality,
                 "profiled_at": m.profiled_at,
+                # v10.4: metriche avanzate
+                "execution_quality": round(m.execution_quality, 4),
+                "maker_ratio": round(m.maker_ratio, 4),
+                "complete_set_ratio": round(m.complete_set_ratio, 4),
+                "complete_set_avg_edge": round(m.complete_set_avg_edge, 4),
+                "complete_set_avg_pairing_s": round(m.complete_set_avg_pairing_s, 1),
+                "trader_type": m.trader_type,
             }
 
         with open(WHITELIST_PATH, "w") as f:
@@ -661,25 +1206,28 @@ class WhaleProfiler:
 
 def _print_report(wl: WhaleWhitelist) -> None:
     """Stampa report tabellare."""
-    print("\n" + "=" * 90)
-    print("  WHALE PROFILER — Report Analisi Comportamentale")
-    print("=" * 90)
+    print("\n" + "=" * 120)
+    print("  WHALE PROFILER v10.4 — Report Analisi Comportamentale")
+    print("=" * 120)
     print(
-        f"  {'Nome':<16} {'Score':>6} {'Rec':<6} {'TimProf':>7} "
-        f"{'Pattern':<16} {'Hedge':>6} {'Bot':>4} {'Quality':<8} {'Trades':>6}"
+        f"  {'Nome':<14} {'Score':>5} {'Rec':<5} {'TimP':>5} "
+        f"{'Pattern':<13} {'Hedge':>5} {'Maker':>5} {'CS%':>4} "
+        f"{'Type':<10} {'Bot':>3} {'Quality':<7} {'Trades':>6}"
     )
-    print("-" * 90)
+    print("-" * 120)
 
     for addr, m in sorted(wl.wallets.items(), key=lambda x: x[1].composite_score, reverse=True):
-        bot_str = "Yes" if m.is_likely_bot else "No"
+        bot_str = "Y" if m.is_likely_bot else "N"
         print(
-            f"  {m.name:<16} {m.composite_score:>6.2f} {m.recommendation:<6} "
-            f"{m.time_profitable_pct:>6.0%} "
-            f"{m.accumulation_pattern:<16} {m.hedge_ratio:>5.0%} "
-            f"{bot_str:>4} {m.data_quality:<8} {m.total_trades_analyzed:>6}"
+            f"  {m.name:<14} {m.composite_score:>5.2f} {m.recommendation:<5} "
+            f"{m.time_profitable_pct:>4.0%} "
+            f"{m.accumulation_pattern:<13} {m.hedge_ratio:>4.0%} "
+            f"{m.maker_ratio:>4.0%} {m.complete_set_ratio:>3.0%} "
+            f"{m.trader_type:<10} {bot_str:>3} {m.data_quality:<7} "
+            f"{m.total_trades_analyzed:>6}"
         )
 
-    print("-" * 90)
+    print("-" * 120)
     s = wl.summary
     print(
         f"  Totale: {s.get('total', 0)} wallet | "
@@ -687,7 +1235,7 @@ def _print_report(wl: WhaleWhitelist) -> None:
         f"WATCH: {s.get('watch', 0)} | "
         f"SKIP: {s.get('skip', 0)}"
     )
-    print("=" * 90 + "\n")
+    print("=" * 120 + "\n")
 
 
 def main():
