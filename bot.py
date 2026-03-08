@@ -294,7 +294,7 @@ class MultiStrategyBot:
         # v10.8.6: BTC Latency Arb v2.0 — Black-Scholes + Half-Kelly (PAPER ONLY)
         self.btc_latency = BTCLatencyStrategy(
             api=self.api, risk=self.risk, binance=self.binance,
-            bankroll=5000.0, base_size=100.0, max_size=2000.0,
+            bankroll=500.0, base_size=25.0, max_size=150.0,
         )
 
         # ── Auto-Redeem vincite risolte ──

@@ -23,15 +23,15 @@ class PolymarketCreds:
 
 @dataclass
 class RiskConfig:
-    total_capital: float = 3500.0  # v10.8.4: riflette portafoglio reale (~$3,559)
+    total_capital: float = 4600.0  # v11.0: +$1,124 bridge USDC da L1
     max_bet_size: float = 75.0   # v10.8.4: da $40, proporzionale al capitale
     max_bet_percent: float = 8.0
-    max_daily_loss: float = 150.0   # v10.8.4: proporzionale al nuovo capitale
+    max_daily_loss: float = 200.0   # v11.0: proporzionale al nuovo capitale ($4,600)
     min_edge: float = 0.04
     kelly_fraction: float = 0.25
     max_consecutive_losses: int = 10
-    max_open_positions: int = 25  # v10.8.4: più diversificazione con più capitale
-    reserve_floor_pct: float = 20.0  # v10.8.4: 20% = $700 cuscinetto (più in assoluto)
+    max_open_positions: int = 30  # v11.0: più capitale = più diversificazione
+    reserve_floor_pct: float = 20.0  # 20% = $920 cuscinetto
 
 
 @dataclass
