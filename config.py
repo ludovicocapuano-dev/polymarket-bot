@@ -23,7 +23,7 @@ class PolymarketCreds:
 
 @dataclass
 class RiskConfig:
-    total_capital: float = 4600.0  # v11.0: +$1,124 bridge USDC da L1
+    total_capital: float = 4350.0  # v11.1: reale da Polymarket ($499 USDC + $3,848 portfolio)
     max_bet_size: float = 75.0   # v10.8.4: da $40, proporzionale al capitale
     max_bet_percent: float = 8.0
     max_daily_loss: float = 200.0   # v11.0: proporzionale al nuovo capitale ($4,600)

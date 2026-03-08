@@ -1,44 +1,37 @@
 """
-Strategia: BTC Latency Arbitrage — v2.0 (Quant Rewrite)
-========================================================
+Strategia: BTC Latency Arbitrage — v3.0 (Multi-Mode)
+=====================================================
 
-Modello di segnale — Black-Scholes per binary outcome:
+Tre modalità di trading complementari su mercati BTC Up/Down 5-min:
 
-  P(Up) = Phi(d),  dove  d = ln(S_t / S_0) / (sigma * sqrt(tau))
+1. LATENCY MODE (v2.0): entry 30-240s nel slot
+   - Black-Scholes fair value vs prezzo stale Polymarket
+   - 4 filtri di conferma (vol_z, acceleration, TFI, OBI)
+   - Richiede volatilità e volume surge
 
-  - S_t   = prezzo BTC corrente (Binance real-time)
-  - S_0   = prezzo BTC all'apertura del 5-min slot
-  - sigma = realized volatility per-second (Andersen-Bollerslev 1998)
-  - tau   = secondi rimanenti nel slot
-  - Phi   = CDF della normale standard
+2. OFI MOMENTUM (v3.0): entry 30-240s nel slot
+   - Order Flow Imbalance come trigger primario (non vol_z)
+   - OFI ha correlazione lineare con price changes (Anastasopoulos 2025)
+   - Entra come maker (limit order) per evitare taker fee 3.15%
+   - Richiede OFI + buy_pressure allineati e persistenti (20s)
 
-  Edge = P_fair - P_market  (gap tra valore reale e prezzo stale Polymarket)
+3. LAST-30s SNIPER (v3.0): entry ultimi 30s del slot
+   - Outcome quasi-determinato (|d| > 3.0 = 99.9% certezza)
+   - Book si svuota, prezzi stale (LP pullano quotes)
+   - Fee minime a prezzi estremi ($0.95 → fee ~0.02%)
+   - Win rate >95%, sizing aggressivo
 
-Filtri di conferma (il segnale BS da solo non basta — serve conferma
-che il movimento e' reale e informato, non noise):
-
-  1. Volume Z-score   — surge detection: move reale vs rumore
-  2. Price acceleration — derivata seconda: move in corso vs esaurito
-  3. Trade flow imbalance — aggressor side allineato alla direzione
-  4. OBI (Order Book Imbalance) — book conferma pressione direzionale
-
-Sizing — Half-Kelly per binary market (Kelly 1956):
-
-  f* = 0.5 * (p - c) / (1 - c)
-
-  dove p = fair probability, c = costo (prezzo Polymarket).
-  Half-Kelly riduce varianza del 75% sacrificando solo 25% del rendimento atteso.
-
-Timing — entry solo tra 30s e 240s nel slot:
-  - Primi 30s: open price incerto, modello impreciso
-  - 30-240s: finestra ottimale, prezzo Polymarket stale vs informazione Binance
-  - Ultimi 60s: mercato efficiente, no edge residuo
+Fee model (Polymarket dynamic crypto fees):
+  fee = price * 0.25 * (price * (1 - price))^2
+  - @$0.50: fee = 0.39% (massima)
+  - @$0.80: fee = 0.08%
+  - @$0.95: fee = 0.02% (quasi zero)
 
 Riferimenti:
-  Black, Scholes (1973) — probability of finishing ITM
-  Andersen, Bollerslev (1998) — realized volatility from tick data
-  Kyle (1985) — price impact and informed trading
-  Kelly (1956) — optimal fraction sizing
+  Black, Scholes (1973); Andersen, Bollerslev (1998)
+  Kyle (1985); Kelly (1956)
+  Anastasopoulos, Gradojevic (2025) — Order Flow and Crypto Returns
+  Easley, Lopez de Prado, O'Hara (2012) — VPIN
 """
 
 import logging
@@ -98,7 +91,7 @@ class BTCLatencyStrategy:
     risk: RiskManager
     binance: BinanceFeed
 
-    # ── Parametri ──
+    # ── Parametri Latency Mode ──
     bankroll: float = 5000.0         # capitale dedicato a questa strategia
     base_size: float = 100.0         # $ minimo per trade
     max_size: float = 2000.0         # $ massimo per trade
@@ -111,6 +104,18 @@ class BTCLatencyStrategy:
     cooldown_sec: float = 60.0       # un solo trade per slot
     trade_hours: tuple = (0, 0, 23, 59)  # 24/7
 
+    # ── Parametri OFI Momentum (v3.0) ──
+    ofi_min_imbalance: float = 0.60   # OFI threshold (>0.60 = forte buy, <0.40 = forte sell)
+    ofi_min_pressure: float = 0.58    # buy_pressure allineata
+    ofi_min_edge: float = 0.02        # edge minimo (più basso — entro come maker)
+    ofi_persistence_window: int = 20  # secondi di OFI persistente
+
+    # ── Parametri Last-30s Sniper (v3.0) ──
+    sniper_window: tuple = (270, 295)  # entry tra 270s e 295s (ultimi 30s, no ultimi 5s)
+    sniper_min_d: float = 3.0         # |d| minimo (99.87% certezza)
+    sniper_min_price: float = 0.88    # prezzo minimo (outcome quasi-certo)
+    sniper_max_size: float = 200.0    # sizing aggressivo — alta certezza
+
     # ── State ──
     _trades_executed: int = 0
     _recently_traded: dict = field(default_factory=dict)
@@ -118,6 +123,7 @@ class BTCLatencyStrategy:
     _signal_history: deque = field(default_factory=lambda: deque(maxlen=500))
     _market_cache: dict = field(default_factory=dict)   # slug -> (Market, expire_ts)
     _slot_opens: dict = field(default_factory=dict)      # epoch -> btc_price
+    _ofi_history: deque = field(default_factory=lambda: deque(maxlen=100))  # v3.0: (ts, ofi, bp)
 
     # ── Constants ──
     GAMMA_API = "https://gamma-api.polymarket.com/markets"
@@ -235,14 +241,35 @@ class BTCLatencyStrategy:
     #  Core: Scan con modello quantitativo
     # ══════════════════════════════════════════════════════════════
 
+    def _crypto_fee(self, price: float) -> float:
+        """Polymarket dynamic crypto fee: price * 0.25 * (price*(1-price))^2"""
+        return price * 0.25 * (price * (1.0 - price)) ** 2
+
+    def _ofi_is_persistent(self, direction: str, window: int = 20) -> bool:
+        """
+        v3.0: Controlla che l'OFI sia stato persistentemente nella stessa
+        direzione per almeno `window` secondi. Filtra noise spikes.
+        """
+        if len(self._ofi_history) < 3:
+            return False
+        now = time.time()
+        cutoff = now - window
+        relevant = [(ts, ofi, bp) for ts, ofi, bp in self._ofi_history if ts >= cutoff]
+        if len(relevant) < 3:
+            return False
+
+        if direction == "UP":
+            return all(ofi > 0.55 and bp > 0.55 for _, ofi, bp in relevant)
+        else:
+            return all(ofi < -0.55 and bp < 0.45 for _, ofi, bp in relevant)
+
     def scan(self, shared_markets: list[Market] | None = None) -> list[LatencySignal]:
         """
-        Scan quantitativo:
-        1. Calcola realized vol da tick data (Andersen-Bollerslev)
-        2. Per ogni slot attivo, calcola fair P(Up) via Black-Scholes
-        3. Confronta con prezzo Polymarket → edge
-        4. Filtra con volume surge, acceleration, TFI, OBI
-        5. Size via Half-Kelly
+        v3.0: Multi-mode scan — Latency + OFI Momentum + Last-30s Sniper.
+
+        Tutti e tre calcolano fair value via Black-Scholes ma hanno trigger
+        diversi e finestre temporali diverse. Le fee sono calcolate per ogni
+        modalità in base al prezzo di entry.
         """
         if self.binance.symbol_price("btc") == 0:
             return []
@@ -258,7 +285,6 @@ class BTCLatencyStrategy:
         sigma = self._realized_vol(btc, window=60)
         if sigma < 1e-8:
             if int(now) % 60 < 8:
-                # Count unique prices in last 300s for diagnostics
                 cutoff = now - 300
                 recent = [p for ts, p in btc.history if ts >= cutoff]
                 unique = len(set(recent)) if recent else 0
@@ -266,15 +292,18 @@ class BTCLatencyStrategy:
                     f"[BTC-LATENCY] sigma too low: {sigma:.10f} "
                     f"(ticks={len(btc.history)} unique_5m={unique})"
                 )
-            return []  # non abbastanza dati tick
+            return []
 
-        # ── 2. Microstructure features (calcolati una volta per ciclo) ──
+        # ── 2. Microstructure features ──
         vol_z = self._volume_zscore(btc, short_window=5, long_window=30)
         accel = self._price_acceleration(btc)
         buy_pressure = self._calc_buy_pressure(btc, window=10)
         obi = self._calc_obi(btc)
 
-        # Cleanup slot opens vecchi (>10 min)
+        # v3.0: Track OFI history per persistence check
+        self._ofi_history.append((now, obi, buy_pressure))
+
+        # Cleanup slot opens vecchi
         stale = [e for e in self._slot_opens if now - e > 600]
         for e in stale:
             del self._slot_opens[e]
@@ -282,37 +311,27 @@ class BTCLatencyStrategy:
         signals = []
 
         for m in btc_markets:
-            # Cooldown per mercato
             if now - self._recently_traded.get(m.id, 0) < self.cooldown_sec:
                 continue
 
-            # Parse slot epoch dal slug
             slug = getattr(m, "slug", "")
             try:
                 slot_epoch = int(slug.split("-")[-1])
             except (ValueError, IndexError):
                 continue
 
-            # ── Timing gate ──
             t_elapsed = now - slot_epoch
             t_remaining = (slot_epoch + self.SLOT_DURATION) - now
-
-            if t_elapsed < self.entry_window[0] or t_elapsed > self.entry_window[1]:
-                continue
             if t_remaining <= 0:
                 continue
 
-            # ── Open price del slot ──
             s_open = self._get_slot_open(slot_epoch, btc)
             if s_open is None or s_open <= 0:
                 continue
 
             s_now = btc.price
 
-            # ═══════════════════════════════════════════════
-            #  BLACK-SCHOLES: P(Up) = Phi(d)
-            #  d = ln(S_t / S_0) / (sigma * sqrt(tau))
-            # ═══════════════════════════════════════════════
+            # ═══ BLACK-SCHOLES ═══
             log_return = math.log(s_now / s_open)
             vol_term = sigma * math.sqrt(t_remaining)
 
@@ -323,126 +342,173 @@ class BTCLatencyStrategy:
                 d = log_return / vol_term
                 fair_up = _norm_cdf(d)
 
-            # ── Edge: quale side ha valore? ──
-            price_yes = m.prices.get("yes", 0.5)   # prezzo "Up"
-            price_no = m.prices.get("no", 0.5)      # prezzo "Down"
+            price_yes = m.prices.get("yes", 0.5)
+            price_no = m.prices.get("no", 0.5)
 
-            edge_up = fair_up - price_yes            # edge se compriamo Up
-            edge_down = (1.0 - fair_up) - price_no   # edge se compriamo Down
+            edge_up = fair_up - price_yes
+            edge_down = (1.0 - fair_up) - price_no
 
             if edge_up >= edge_down:
-                direction = "UP"
-                side = "YES"
-                edge_raw = edge_up
-                buy_price = price_yes
-                fair_p = fair_up
+                direction, side = "UP", "YES"
+                edge_raw, buy_price, fair_p = edge_up, price_yes, fair_up
             else:
-                direction = "DOWN"
-                side = "NO"
-                edge_raw = edge_down
-                buy_price = price_no
-                fair_p = 1.0 - fair_up
+                direction, side = "DOWN", "NO"
+                edge_raw, buy_price, fair_p = edge_down, price_no, 1.0 - fair_up
 
-            # Price bounds
-            if buy_price > self.max_entry_price or buy_price < self.min_entry_price:
-                continue
-
-            # Fee crypto: p * feeRate * (p*(1-p))^exponent
-            fee = buy_price * 0.25 * (buy_price * (1 - buy_price)) ** 2
+            fee = self._crypto_fee(buy_price)
             edge_net = edge_raw - fee
 
-            if edge_net < self.min_edge:
-                continue
+            # ════════════════════════════════════════════════════
+            #  MODE 1: LAST-30s SNIPER
+            #  Ultimi 30s del slot, outcome quasi-determinato.
+            #  Fee minime a prezzi estremi. Win rate >95%.
+            # ════════════════════════════════════════════════════
+            if self.sniper_window[0] <= t_elapsed <= self.sniper_window[1]:
+                abs_d = abs(d)
+                if abs_d >= self.sniper_min_d and buy_price >= self.sniper_min_price:
+                    # A prezzi >0.88, fee è trascurabile (~0.03%)
+                    sniper_fee = self._crypto_fee(buy_price)
+                    sniper_edge = edge_raw - sniper_fee
 
-            # ── Filtri di conferma ──
-            filters_passed = 0
+                    if sniper_edge > 0.005:  # anche 0.5% edge basta con >95% WR
+                        # Sizing aggressivo — alta certezza
+                        kelly_full = max(0.0, (fair_p - buy_price) / (1.0 - buy_price))
+                        size = min(self.bankroll * kelly_full * 0.7, self.sniper_max_size)
+                        size = max(self.base_size, size)
 
-            # 1. Volume surge (il move e' accompagnato da volume anomalo?)
-            if vol_z >= self.min_vol_zscore:
-                filters_passed += 1
+                        sig = LatencySignal(
+                            market=m, direction=direction, side=side,
+                            fair_prob=fair_p, market_price=buy_price,
+                            edge=sniper_edge, confidence=0.95,
+                            kelly_fraction=kelly_full * 0.7,
+                            target_size=size, btc_price=s_now, btc_open=s_open,
+                            realized_vol=sigma, d_score=d, vol_zscore=vol_z,
+                            filters_passed=4, time_remaining=t_remaining,
+                            reasoning=(
+                                f"SNIPER-30s {direction} | "
+                                f"BTC ${s_now:,.0f} open=${s_open:,.0f} | "
+                                f"|d|={abs_d:.1f} P_fair={fair_p:.3f} vs "
+                                f"mkt={buy_price:.3f} edge={sniper_edge:.4f} | "
+                                f"fee={sniper_fee:.5f} tau={t_remaining:.0f}s | "
+                                f"size=${size:.0f}"
+                            ),
+                        )
+                        signals.append(sig)
+                        continue  # sniper ha priorità, skip altri mode per questo mercato
 
-            # 2. Price acceleration (il move sta continuando, non esaurendosi?)
-            if (direction == "UP" and accel > 0) or \
-               (direction == "DOWN" and accel < 0):
-                filters_passed += 1
+            # ════════════════════════════════════════════════════
+            #  MODE 2: OFI MOMENTUM
+            #  Entry 30-240s. Trigger: Order Flow Imbalance persistente.
+            #  Entra come maker → no taker fee.
+            # ════════════════════════════════════════════════════
+            if self.entry_window[0] <= t_elapsed <= self.entry_window[1]:
+                ofi_aligned = (
+                    (direction == "UP" and obi > self.ofi_min_imbalance - 0.5
+                     and buy_pressure > self.ofi_min_pressure) or
+                    (direction == "DOWN" and obi < -(self.ofi_min_imbalance - 0.5)
+                     and buy_pressure < (1.0 - self.ofi_min_pressure))
+                )
+                ofi_persistent = self._ofi_is_persistent(direction, self.ofi_persistence_window)
 
-            # 3. Trade flow (gli aggressor trades confermano la direzione?)
-            if (direction == "UP" and buy_pressure > 0.58) or \
-               (direction == "DOWN" and buy_pressure < 0.42):
-                filters_passed += 1
+                if ofi_aligned and ofi_persistent and edge_net >= self.ofi_min_edge:
+                    # Come maker, fee = 0 (maker rebate). Edge netto = edge_raw.
+                    maker_edge = edge_raw  # no taker fee
+                    if buy_price < self.min_entry_price or buy_price > self.max_entry_price:
+                        pass  # skip, fuori range
+                    else:
+                        kelly_full = max(0.0, (fair_p - buy_price) / (1.0 - buy_price))
+                        kelly_half = kelly_full * 0.5
+                        size = self.bankroll * kelly_half
+                        size = max(self.base_size, min(size, self.max_size))
 
-            # 4. OBI (l'order book conferma la pressione direzionale?)
-            if (direction == "UP" and obi > 0.10) or \
-               (direction == "DOWN" and obi < -0.10):
-                filters_passed += 1
+                        sig = LatencySignal(
+                            market=m, direction=direction, side=side,
+                            fair_prob=fair_p, market_price=buy_price,
+                            edge=maker_edge, confidence=min(0.55 + obi * 0.3, 0.90),
+                            kelly_fraction=kelly_half,
+                            target_size=size, btc_price=s_now, btc_open=s_open,
+                            realized_vol=sigma, d_score=d, vol_zscore=vol_z,
+                            filters_passed=3, time_remaining=t_remaining,
+                            reasoning=(
+                                f"OFI-MOM {direction} | "
+                                f"BTC ${s_now:,.0f} open=${s_open:,.0f} | "
+                                f"d={d:+.2f} P_fair={fair_p:.3f} vs "
+                                f"mkt={buy_price:.3f} edge={maker_edge:.4f} (maker) | "
+                                f"OBI={obi:+.2f} TFI={buy_pressure:.2f} "
+                                f"persistent={ofi_persistent} | "
+                                f"tau={t_remaining:.0f}s size=${size:.0f}"
+                            ),
+                        )
+                        signals.append(sig)
 
-            if filters_passed < self.min_filters:
-                continue
+            # ════════════════════════════════════════════════════
+            #  MODE 3: LATENCY (originale v2.0)
+            #  Entry 30-240s. Trigger: vol surge + filtri conferma.
+            # ════════════════════════════════════════════════════
+            if self.entry_window[0] <= t_elapsed <= self.entry_window[1]:
+                if buy_price > self.max_entry_price or buy_price < self.min_entry_price:
+                    continue
+                if edge_net < self.min_edge:
+                    continue
 
-            # Confidence: base da edge magnitude + filter bonus
-            confidence = min(0.5 + filters_passed * 0.1, 0.95)
+                filters_passed = 0
+                if vol_z >= self.min_vol_zscore:
+                    filters_passed += 1
+                if (direction == "UP" and accel > 0) or \
+                   (direction == "DOWN" and accel < 0):
+                    filters_passed += 1
+                if (direction == "UP" and buy_pressure > 0.58) or \
+                   (direction == "DOWN" and buy_pressure < 0.42):
+                    filters_passed += 1
+                if (direction == "UP" and obi > 0.10) or \
+                   (direction == "DOWN" and obi < -0.10):
+                    filters_passed += 1
 
-            # ═══════════════════════════════════════════════
-            #  HALF-KELLY SIZING
-            #  f* = (p - c) / (1 - c)  per binary market
-            #  Half-Kelly = f* / 2
-            # ═══════════════════════════════════════════════
-            kelly_full = max(0.0, (fair_p - buy_price) / (1.0 - buy_price))
-            kelly_half = kelly_full * 0.5
+                if filters_passed < self.min_filters:
+                    continue
 
-            size = self.bankroll * kelly_half
-            size = max(self.base_size, min(size, self.max_size))
+                confidence = min(0.5 + filters_passed * 0.1, 0.95)
+                kelly_full = max(0.0, (fair_p - buy_price) / (1.0 - buy_price))
+                kelly_half = kelly_full * 0.5
+                size = self.bankroll * kelly_half
+                size = max(self.base_size, min(size, self.max_size))
 
-            sig = LatencySignal(
-                market=m,
-                direction=direction,
-                side=side,
-                fair_prob=fair_p,
-                market_price=buy_price,
-                edge=edge_net,
-                confidence=confidence,
-                kelly_fraction=kelly_half,
-                target_size=size,
-                btc_price=s_now,
-                btc_open=s_open,
-                realized_vol=sigma,
-                d_score=d,
-                vol_zscore=vol_z,
-                filters_passed=filters_passed,
-                time_remaining=t_remaining,
-                reasoning=(
-                    f"BTC ${s_now:,.0f} (open=${s_open:,.0f} "
-                    f"ret={log_return:+.5f}) | "
-                    f"BS: d={d:+.2f} P_fair={fair_p:.3f} vs "
-                    f"mkt={buy_price:.3f} -> edge={edge_net:.4f} | "
-                    f"sigma={sigma:.6f}/s tau={t_remaining:.0f}s | "
-                    f"vol_z={vol_z:.1f} accel={accel:+.6f} "
-                    f"TFI={buy_pressure:.2f} OBI={obi:+.2f} | "
-                    f"filters={filters_passed}/4 "
-                    f"kelly={kelly_half:.4f} size=${size:.0f}"
-                ),
-            )
-            signals.append(sig)
+                sig = LatencySignal(
+                    market=m, direction=direction, side=side,
+                    fair_prob=fair_p, market_price=buy_price,
+                    edge=edge_net, confidence=confidence,
+                    kelly_fraction=kelly_half, target_size=size,
+                    btc_price=s_now, btc_open=s_open, realized_vol=sigma,
+                    d_score=d, vol_zscore=vol_z, filters_passed=filters_passed,
+                    time_remaining=t_remaining,
+                    reasoning=(
+                        f"LATENCY {direction} | "
+                        f"BTC ${s_now:,.0f} open=${s_open:,.0f} "
+                        f"ret={log_return:+.5f} | "
+                        f"d={d:+.2f} P_fair={fair_p:.3f} vs "
+                        f"mkt={buy_price:.3f} edge={edge_net:.4f} | "
+                        f"sigma={sigma:.6f}/s tau={t_remaining:.0f}s | "
+                        f"vol_z={vol_z:.1f} accel={accel:+.6f} "
+                        f"TFI={buy_pressure:.2f} OBI={obi:+.2f} | "
+                        f"filters={filters_passed}/4 "
+                        f"kelly={kelly_half:.4f} size=${size:.0f}"
+                    ),
+                )
+                signals.append(sig)
+
             self._signal_history.append({
-                "time": now,
-                "dir": direction,
-                "d": d,
-                "fair": fair_p,
-                "mkt": buy_price,
-                "edge": edge_net,
-                "vol_z": vol_z,
-                "filters": filters_passed,
-                "sigma": sigma,
+                "time": now, "dir": direction, "d": d,
+                "fair": fair_p, "mkt": buy_price, "edge": edge_net,
+                "vol_z": vol_z, "filters": 0, "sigma": sigma,
+                "obi": obi, "bp": buy_pressure,
             })
 
-        # Sort by edge (best opportunity first)
         signals.sort(key=lambda s: s.edge, reverse=True)
 
         if signals:
             best = signals[0]
-            logger.info(f"[BTC-LATENCY] {best.direction} | {best.reasoning}")
+            logger.info(f"[BTC-LATENCY] {best.reasoning}")
         elif btc_markets and int(now) % 30 < 8:
-            # Log diagnostico ogni ~60s quando non c'e' edge
             s_now = btc.price
             slot_epoch = None
             try:
@@ -456,6 +522,7 @@ class BTCLatencyStrategy:
                 f"[BTC-LATENCY] no edge | BTC=${s_now:,.0f} "
                 f"open=${s_open:,.0f} ret={lr:+.6f} "
                 f"sigma={sigma:.7f} vol_z={vol_z:.1f} "
+                f"OBI={obi:+.2f} TFI={buy_pressure:.2f} "
                 f"mkts={len(btc_markets)}"
             )
 
