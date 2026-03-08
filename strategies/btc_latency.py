@@ -257,10 +257,14 @@ class BTCLatencyStrategy:
         # ── 1. Realized volatility (per-second) ──
         sigma = self._realized_vol(btc, window=60)
         if sigma < 1e-8:
-            if int(now) % 30 < 8:
+            if int(now) % 60 < 8:
+                # Count unique prices in last 300s for diagnostics
+                cutoff = now - 300
+                recent = [p for ts, p in btc.history if ts >= cutoff]
+                unique = len(set(recent)) if recent else 0
                 logger.info(
                     f"[BTC-LATENCY] sigma too low: {sigma:.10f} "
-                    f"(history={len(btc.history)} ticks)"
+                    f"(ticks={len(btc.history)} unique_5m={unique})"
                 )
             return []  # non abbastanza dati tick
 
@@ -468,30 +472,44 @@ class BTCLatencyStrategy:
         RV = sum(log_return_i^2)  over window
         sigma_per_sec = sqrt(RV / total_seconds)
 
-        Usa tick data dal Binance trade stream.
+        v11.0: Adaptive window + deduplicated ticks.
+        - Deduplicates consecutive identical prices (noise from illiquid periods)
+        - Falls back to longer windows (120s, 300s) if 60s has < 5 unique prices
+        - Minimum unique prices threshold to avoid sigma=0 on stale data
         """
         if len(btc.history) < 10:
             return 0.0
 
         now = time.time()
-        cutoff = now - window
-        prices = [(ts, p) for ts, p in btc.history if ts >= cutoff]
 
-        if len(prices) < 10:
-            return 0.0
+        # Try progressively longer windows until we get enough unique prices
+        for w in [window, 120, 300]:
+            cutoff = now - w
+            raw_prices = [(ts, p) for ts, p in btc.history if ts >= cutoff]
 
-        # Realized variance: sum of squared log returns
-        rv = 0.0
-        for i in range(1, len(prices)):
-            if prices[i - 1][1] > 0:
-                lr = math.log(prices[i][1] / prices[i - 1][1])
-                rv += lr * lr
+            if len(raw_prices) < 10:
+                continue
 
-        total_time = prices[-1][0] - prices[0][0]
-        if total_time <= 0:
-            return 0.0
+            # Deduplicate: keep only ticks where price actually changed
+            deduped = [raw_prices[0]]
+            for i in range(1, len(raw_prices)):
+                if raw_prices[i][1] != raw_prices[i - 1][1]:
+                    deduped.append(raw_prices[i])
 
-        return math.sqrt(rv / total_time)
+            # Need at least 5 unique price changes for meaningful vol
+            if len(deduped) >= 5:
+                # Realized variance on deduplicated ticks
+                rv = 0.0
+                for i in range(1, len(deduped)):
+                    if deduped[i - 1][1] > 0:
+                        lr = math.log(deduped[i][1] / deduped[i - 1][1])
+                        rv += lr * lr
+
+                total_time = deduped[-1][0] - deduped[0][0]
+                if total_time > 0:
+                    return math.sqrt(rv / total_time)
+
+        return 0.0
 
     def _get_slot_open(self, slot_epoch: int, btc) -> float | None:
         """
