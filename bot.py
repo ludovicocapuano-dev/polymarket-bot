@@ -198,14 +198,20 @@ class MultiStrategyBot:
         # (prima era 6h e il MGR non vedeva mai le posizioni vecchie!)
         self.risk.load_open_positions(max_age_hours=96.0)
 
-        # v5.7: Rimossa la safety check distruttiva che cancellava TUTTE
-        # le posizioni se superavano l'80% del limite. Causava perdita tracking.
-        # Ora logga solo un warning.
+        # v11.1: Sync con portfolio reale on-chain — il risk manager
+        # deve sapere quante posizioni ci sono DAVVERO per non superare i limiti
+        funder = config.creds.funder_address.strip()
+        if funder:
+            self.risk.sync_onchain_positions(funder)
+
         max_pos = config.risk.max_open_positions
-        if len(self.risk.open_trades) > max_pos * 0.9:
+        real_count = len(self.risk.open_trades) + self.risk._onchain_position_count
+        if real_count > max_pos * 0.9:
             logger.warning(
-                f"[STARTUP] {len(self.risk.open_trades)} posizioni caricate "
-                f"(>{max_pos*0.9:.0f}) — vicino al limite {max_pos}"
+                f"[STARTUP] {real_count} posizioni reali "
+                f"({len(self.risk.open_trades)} tracciate + "
+                f"{self.risk._onchain_position_count} on-chain) "
+                f"— vicino/oltre il limite {max_pos}"
             )
 
         # Imposta budget per strategia
@@ -899,6 +905,15 @@ class MultiStrategyBot:
                         self._log_pnl_report()
                     except Exception as e:
                         logger.debug(f"[PNL-REPORT] Errore: {e}")
+
+                # ── v11.1: Re-sync posizioni on-chain ogni 100 cicli ──
+                if self._cycle % 100 == 0 and self._cycle > 0:
+                    try:
+                        funder = self.config.creds.funder_address.strip()
+                        if funder:
+                            self.risk.sync_onchain_positions(funder)
+                    except Exception as e:
+                        logger.debug(f"[SYNC] Errore re-sync: {e}")
 
                 # ── v9.0: Drift + Calibration (ogni 500 cicli) ──
                 if self._cycle % 500 == 0 and self._cycle > 0:

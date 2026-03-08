@@ -92,6 +92,59 @@ class RiskManager:
         self.empirical_kelly = None
         # v11.0: Drift detector (iniettato da bot.py) per dynamic σ
         self.drift_detector = None
+        # v11.1: Conteggio posizioni on-chain (sync dal Data API)
+        self._onchain_position_count = 0
+        self._onchain_exposure = 0.0
+
+    def sync_onchain_positions(self, funder_address: str):
+        """
+        v11.1: Sincronizza il conteggio posizioni reali dal Polymarket Data API.
+
+        Il risk manager traccia solo i trade aperti nella sessione corrente.
+        Ma on-chain ci possono essere 100+ posizioni da sessioni precedenti.
+        Questo metodo fetcha il portfolio reale e aggiorna i contatori
+        per evitare di superare i limiti.
+        """
+        import requests as _req
+        try:
+            resp = _req.get(
+                "https://data-api.polymarket.com/positions",
+                params={"user": funder_address, "sizeThreshold": "0"},
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                logger.warning(f"[SYNC] Data API returned {resp.status_code}")
+                return
+
+            positions = resp.json()
+            if not isinstance(positions, list):
+                return
+
+            # Conta posizioni attive (valore > $1)
+            active_positions = []
+            total_value = 0.0
+            tracked_market_ids = {t.market_id for t in self.open_trades}
+
+            for p in positions:
+                cur_v = float(p.get("currentValue", 0))
+                if cur_v < 1.0:
+                    continue
+                active_positions.append(p)
+                total_value += cur_v
+
+            # Posizioni on-chain NON tracciate dal risk manager
+            untracked = len(active_positions) - len(tracked_market_ids)
+            self._onchain_position_count = max(0, untracked)
+            self._onchain_exposure = total_value - self.total_exposed
+
+            logger.info(
+                f"[SYNC] Portfolio on-chain: {len(active_positions)} posizioni attive "
+                f"(${total_value:.2f}), {len(tracked_market_ids)} tracciate, "
+                f"{self._onchain_position_count} non tracciate "
+                f"(${self._onchain_exposure:.2f} extra exposure)"
+            )
+        except Exception as e:
+            logger.warning(f"[SYNC] Errore sync posizioni on-chain: {e}")
 
     @property
     def total_exposed(self) -> float:
@@ -100,8 +153,8 @@ class RiskManager:
 
     @property
     def available_capital(self) -> float:
-        """Capitale disponibile per nuovi trade."""
-        return self.capital - self.total_exposed
+        """Capitale disponibile per nuovi trade (include esposizione on-chain)."""
+        return self.capital - self.total_exposed - max(0, self._onchain_exposure)
 
     def set_strategy_budget(self, name: str, budget: float):
         self._strategy_budgets[name] = budget
@@ -138,8 +191,14 @@ class RiskManager:
             self._halt_strategy(strategy, f"{strat_losses} loss consecutive")
             return False, f"Troppe perdite consecutive per {strategy}"
 
-        if len(self.open_trades) >= self.config.max_open_positions:
-            return False, f"Max posizioni aperte ({self.config.max_open_positions})"
+        # v11.1: conteggio reale = tracciate + on-chain non tracciate
+        real_position_count = len(self.open_trades) + self._onchain_position_count
+        if real_position_count >= self.config.max_open_positions:
+            return False, (
+                f"Max posizioni aperte ({real_position_count} reali: "
+                f"{len(self.open_trades)} tracciate + "
+                f"{self._onchain_position_count} on-chain)"
+            )
 
         # v8.1: Reserve floor — mantieni almeno X% del capitale liquido
         reserve_floor = self.config.total_capital * (self.config.reserve_floor_pct / 100.0)
