@@ -354,11 +354,47 @@ def main():
         print_recommendations(experiments, WEATHER_PARAMS)
         return
 
-    # Load trades
+    # Load trades — try multiple sources
     log_files = sorted(LOG_DIR.glob("bot_*.log"))
     trades = parse_trades_json()
     if not trades:
         trades = parse_trades_from_logs(log_files)
+
+    # v12.0: Also load on-chain trade data if available
+    onchain_file = LOG_DIR / "weather_trades_onchain.json"
+    if onchain_file.exists():
+        try:
+            onchain_data = json.loads(onchain_file.read_text())
+            onchain_trades = []
+            for d in onchain_data:
+                t = Trade(
+                    timestamp=d.get("timestamp", ""),
+                    strategy=d.get("strategy", ""),
+                    city=d.get("city", ""),
+                    direction=d.get("direction", ""),
+                    price=d.get("price", 0),
+                    size=d.get("size", 0),
+                    edge=d.get("edge", 0),
+                    confidence=d.get("confidence", 0),
+                    sources=d.get("sources", 1),
+                    horizon=d.get("horizon", 0),
+                    outcome=d.get("outcome", ""),
+                    pnl=d.get("pnl", 0),
+                    question=d.get("question", ""),
+                    payoff=d.get("payoff", 0),
+                    uncertainty=d.get("uncertainty", 0),
+                )
+                onchain_trades.append(t)
+            # Merge: on-chain trades have real PnL data
+            if onchain_trades:
+                # Deduplicate by preferring on-chain (has real outcomes)
+                existing_questions = {t.question for t in trades}
+                for t in onchain_trades:
+                    if t.question not in existing_questions:
+                        trades.append(t)
+                print(f"  + {len(onchain_trades)} on-chain trades loaded")
+        except Exception as e:
+            print(f"  Warning: could not load on-chain trades: {e}")
 
     if not trades:
         print("No trades found. Run the bot first to generate trade data.")

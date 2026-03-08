@@ -263,15 +263,14 @@ def strategy_risk_binhr(wins: int, losses: int, avg_win: float, avg_loss: float)
 
     p_star = -avg_loss_neg / denom  # = |avg_loss| / (avg_win + |avg_loss|)
 
-    # Probability of failure: P[X < ceil(p* * n)] where X ~ Binomial(n, observed_p)
-    observed_p = wins / n
-    # Under the null hypothesis that true p = observed_p,
-    # what's the probability we'd see fewer wins than break-even requires?
-    min_wins_needed = math.ceil(p_star * n)
-
-    # P[failure] = P[wins < min_wins_needed | p = observed_p]
-    # This is the binomial CDF
-    prob_failure = _binom_cdf(min_wins_needed - 1, n, observed_p)
+    # Probability of failure: P[X <= wins | p = p_star]
+    # Under the null that true win rate = break-even p_star,
+    # what's the probability of seeing this few (or fewer) wins?
+    if wins == 0:
+        prob_failure = 1.0
+    else:
+        # P[X < wins | p = p_star] = P[X <= wins-1 | p = p_star]
+        prob_failure = 1.0 - _binom_cdf(wins - 1, n, p_star)
 
     return float(p_star), float(prob_failure)
 

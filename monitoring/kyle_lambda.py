@@ -63,12 +63,13 @@ class KyleLambdaEstimator:
         prices = np.array([h[0] for h in history])
         volumes = np.array([h[1] for h in history])
 
-        var_vol = np.var(volumes)
+        # Use np.cov for both to ensure consistent ddof=1 (sample statistics)
+        cov_matrix = np.cov(prices, volumes)
+        var_vol = cov_matrix[1, 1]
         if var_vol <= 0:
             return self.DEFAULT_LAMBDA
 
-        cov = np.cov(prices, volumes)[0, 1]
-        lam = abs(cov / var_vol)
+        lam = abs(cov_matrix[0, 1] / var_vol)
 
         self._lambda_cache[market_id] = lam
         return lam

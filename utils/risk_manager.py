@@ -77,8 +77,7 @@ class RiskManager:
         self._strategy_halt_reason: dict[str, str] = {}
         self._strategy_consecutive_losses: dict[str, int] = {}
 
-        # v12.0: Consecutive loss halt per strategia (24h cooldown dopo 4 loss consecutive)
-        self._consec_loss_count: dict[str, int] = {}  # strategy -> consecutive loss count
+        # v12.0: Consecutive loss 24h cooldown (unified with _strategy_consecutive_losses)
         self._strategy_halt_until: dict[str, float] = {}  # strategy -> timestamp until halted
 
         # v8.0: Stop-loss cooldown — blocca ri-acquisto sullo stesso mercato
@@ -199,19 +198,29 @@ class RiskManager:
         if self._strategy_halted.get(strategy, False):
             return False, f"HALT {strategy}: {self._strategy_halt_reason.get(strategy, '')}"
 
+        # v12.0: Consecutive loss halt — N losses → 24h cooldown per strategia
+        # (sostituisce l'halt permanente pre-v12.0)
         strat_losses = self._strategy_consecutive_losses.get(strategy, 0)
         if strat_losses >= self.config.max_consecutive_losses:
-            self._halt_strategy(strategy, f"{strat_losses} loss consecutive")
-            return False, f"Troppe perdite consecutive per {strategy}"
-
-        # v12.0: Consecutive loss halt — 4 losses → 24h cooldown per strategia
-        halt_until = self._strategy_halt_until.get(strategy, 0)
-        if halt_until > time.time():
-            remaining_h = (halt_until - time.time()) / 3600
-            return False, (
-                f"Consecutive loss halt: {strategy} bloccata per altre "
-                f"{remaining_h:.1f}h (4 loss consecutive)"
-            )
+            halt_until = self._strategy_halt_until.get(strategy, 0)
+            if halt_until == 0:
+                # First trigger: set 24h cooldown
+                halt_until = time.time() + 86400
+                self._strategy_halt_until[strategy] = halt_until
+                logger.warning(
+                    f"[CONSEC_LOSS_HALT] {strategy}: {strat_losses} consecutive losses "
+                    f"→ halted for 24h"
+                )
+            if halt_until > time.time():
+                remaining_h = (halt_until - time.time()) / 3600
+                return False, (
+                    f"Consecutive loss halt: {strategy} bloccata per altre "
+                    f"{remaining_h:.1f}h ({strat_losses} loss consecutive)"
+                )
+            else:
+                # Cooldown expired, reset counter
+                self._strategy_consecutive_losses[strategy] = 0
+                self._strategy_halt_until[strategy] = 0
 
         # v11.1: conteggio reale = tracciate + on-chain non tracciate
         real_position_count = len(self.open_trades) + self._onchain_position_count
@@ -561,27 +570,21 @@ class RiskManager:
             f"→ cushion={cushion:.2f}"
         )
 
-        # v11.0: Graduated Drawdown Response (Qlib-inspired graceful degradation)
-        # 3-tier response replaces linear CPPI:
-        # Tier 1 (loss < 50% daily limit): scale = 1 - loss_pct (normal CPPI)
-        # Tier 2 (50-80%): scale = 0.30, tighten edge requirements
-        # Tier 3 (> 80%): scale = 0.10, near-stop (only very high edge trades)
-        if self._daily_pnl < 0:
+        # v12.0.1: Grossman-Zhou continuous drawdown scaling (replaces v11.0 3-tier CPPI)
+        # Linear ramp: at 0% loss → 1.0, at 100% loss → 0.0
+        # Harvey/Rattray graduated steps as floor: 50%→0.75, 75%→0.50, 100%→0.0
+        if self._daily_pnl < 0 and self.config.max_daily_loss > 0:
             daily_loss_pct = abs(self._daily_pnl) / self.config.max_daily_loss
-            if daily_loss_pct >= 0.80:
-                cppi_scale = 0.10
-                logger.warning(
-                    f"[DEGRADATION-T3] daily_pnl=${self._daily_pnl:+.2f} "
-                    f"({daily_loss_pct:.0%} of limit) → near-stop, scale=0.10"
-                )
-            elif daily_loss_pct >= 0.50:
-                cppi_scale = 0.30
+            gz_scale = max(0.0, 1.0 - daily_loss_pct)
+            grad_scale = self.drawdown_multiplier()
+            # Use max: graduated steps are the FLOOR, GZ smooths in between
+            cppi_scale = max(gz_scale, grad_scale) if daily_loss_pct < 1.0 else 0.0
+            if cppi_scale < 1.0:
                 logger.info(
-                    f"[DEGRADATION-T2] daily_pnl=${self._daily_pnl:+.2f} "
-                    f"({daily_loss_pct:.0%} of limit) → defensive, scale=0.30"
+                    f"[DRAWDOWN] daily_pnl=${self._daily_pnl:+.2f} "
+                    f"({daily_loss_pct:.0%} of limit) → gz={gz_scale:.2f} "
+                    f"grad={grad_scale:.2f} → scale={cppi_scale:.2f}"
                 )
-            else:
-                cppi_scale = max(0.40, 1.0 - daily_loss_pct)
             size *= cppi_scale
 
         # v7.2: Scaling per strategia in drawdown
@@ -607,25 +610,8 @@ class RiskManager:
                 f"→ scale={vol_scale:.2f}"
             )
 
-        # v12.0: Graduated Drawdown + Grossman-Zhou continuous scaling
-        grad_mult = self.drawdown_multiplier()
-        gz_mult = max(0.0, 1.0 - abs(min(0.0, self._daily_pnl)) / self.config.max_daily_loss) if self.config.max_daily_loss > 0 else 1.0
-        dd_mult = min(grad_mult, gz_mult)
-        if dd_mult < 1.0:
-            logger.info(
-                f"[DRAWDOWN-SIZE] graduated={grad_mult:.2f} gz={gz_mult:.2f} "
-                f"→ dd_mult={dd_mult:.2f}, size ${size:.2f} → ${size * dd_mult:.2f}"
-            )
-            size *= dd_mult
-
-        # v12.0: Volatility targeting per-strategy (realized vol scaling)
-        vol_target_mult = self.volatility_target_multiplier(strategy)
-        if vol_target_mult != 1.0:
-            logger.info(
-                f"[VOL_TARGET_SIZING] {strategy} mult={vol_target_mult:.2f}, "
-                f"size ${size:.2f} → ${size * vol_target_mult:.2f}"
-            )
-            size *= vol_target_mult
+        # NOTE: drawdown scaling already applied above (v12.0.1 unified GZ+graduated)
+        # NOTE: volatility targeting already applied above (v7.3)
 
         # v12.0: Max single position cap at 5% of total_capital (in sizing)
         max_single = self.config.total_capital * 0.05
@@ -725,23 +711,11 @@ class RiskManager:
                 if won:
                     self._consecutive_losses = 0
                     self._strategy_consecutive_losses[t.strategy] = 0
-                    # v12.0: Reset consecutive loss counter on win
-                    self._consec_loss_count[t.strategy] = 0
+                    self._strategy_halt_until[t.strategy] = 0  # reset cooldown on win
                 else:
                     self._consecutive_losses += 1
                     self._strategy_consecutive_losses[t.strategy] = \
                         self._strategy_consecutive_losses.get(t.strategy, 0) + 1
-                    # v12.0: Consecutive loss halt — 4 losses → 24h cooldown
-                    self._consec_loss_count[t.strategy] = \
-                        self._consec_loss_count.get(t.strategy, 0) + 1
-                    consec = self._consec_loss_count[t.strategy]
-                    if consec >= 4:
-                        halt_until = time.time() + 86400  # 24 hours
-                        self._strategy_halt_until[t.strategy] = halt_until
-                        logger.warning(
-                            f"[CONSEC_LOSS_HALT] {t.strategy}: {consec} consecutive losses "
-                            f"→ halted for 24h (until {datetime.fromtimestamp(halt_until, tz=timezone.utc).isoformat()})"
-                        )
 
                 self._save_open_positions()
                 # v11.1: salva trades.json subito — non perdere outcome al restart
@@ -819,8 +793,8 @@ class RiskManager:
         for k in list(self._strategy_halted.keys()):
             if self._strategy_halted.get(k):
                 self.resume(k)
-        # v12.0: Reset consecutive loss counters on daily reset
-        self._consec_loss_count.clear()
+        # v12.0: Reset consecutive loss cooldowns on daily reset
+        self._strategy_halt_until.clear()
         logger.info(f"Reset giornaliero. PnL chiuso: ${old_pnl:+.2f}")
 
     @property

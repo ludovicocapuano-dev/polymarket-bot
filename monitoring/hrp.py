@@ -138,7 +138,8 @@ class HRPAllocator:
 
     def _cluster_var(self, cov: np.ndarray) -> float:
         """Inverse-variance portfolio variance for a cluster."""
-        ivp = 1.0 / np.diag(cov)
+        diag = np.maximum(np.diag(cov), 1e-10)  # prevent div-by-zero if zero variance
+        ivp = 1.0 / diag
         ivp /= ivp.sum()
         return float(ivp @ cov @ ivp)
 

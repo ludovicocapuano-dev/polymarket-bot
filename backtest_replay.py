@@ -156,7 +156,7 @@ def parse_trades_json() -> list[Trade]:
             confidence=d.get("confidence", 0),
             sources=d.get("sources", d.get("n_sources", 1)),
             horizon=d.get("horizon", d.get("days_ahead", 0)),
-            outcome=d.get("outcome", ""),
+            outcome=d.get("outcome", "") or d.get("result", ""),
             pnl=d.get("pnl", 0),
             question=d.get("question", ""),
             payoff=d.get("payoff", 0),

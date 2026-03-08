@@ -91,7 +91,7 @@ class SingleStateKalman:
         innovation = z - self.x
         self.x = self.x + K * innovation
 
-        # Update covariance (Joseph form for numerical stability)
+        # Update covariance (simplified scalar form, equivalent to Joseph form for 1D)
         self.P = (1 - K) * self.P
 
         self.n_obs += 1
