@@ -53,13 +53,15 @@ class HoldingRewardsStrategy:
     """Buys positions in eligible long-term markets for 4% APY holding rewards."""
 
     APY = 0.04
-    MIN_POSITION = 35.0  # v10.8.4: da $20, più yield assoluto
-    MAX_POSITION = 75.0  # v10.8.4: da $50
+    MIN_POSITION = 20.0  # v11.1: ridotto — yield irrisorio, rischio reale
+    MAX_POSITION = 50.0
     SCAN_INTERVAL = 3600  # scan every hour (positions are long-term)
-    MIN_VOLUME = 5000  # minimum market volume to avoid dead markets
-    # Price range for favorites: want high-prob outcomes for safety
-    MIN_FAVORITE_PRICE = 0.55
-    MAX_FAVORITE_PRICE = 0.95
+    MIN_VOLUME = 50000  # v11.1: alzato da 5K — mercati liquidi hanno prezzi migliori
+    # v11.1: solo favoriti quasi-certi. @$0.78 il rischio non giustifica 4% APY.
+    # A $0.92 serve 95.7% WR per break-even sul solo stake. Con 4% APY
+    # il break-even scende a ~93%. Solo prezzi >0.90 hanno senso.
+    MIN_FAVORITE_PRICE = 0.90
+    MAX_FAVORITE_PRICE = 0.97
 
     def __init__(self):
         self._last_scan = 0.0
