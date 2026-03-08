@@ -64,7 +64,13 @@ from strategies.negrisk_arb import NegRiskArbScanner
 from strategies.holding_rewards import HoldingRewardsStrategy
 from strategies.favorite_longshot import FavoriteLongshotStrategy
 from strategies.btc_latency import BTCLatencyStrategy
+from strategies.abandoned_position import AbandonedPositionStrategy
+from strategies.cross_platform_arb import CrossPlatformArbStrategy
 from utils.uma_monitor import UmaMonitor
+from monitoring.quant_metrics import evaluate_all_strategies
+from monitoring.hrp import HRPAllocator
+from monitoring.kyle_lambda import KyleLambdaEstimator
+from utils.kalman_forecast import WeatherKalmanFilter
 
 try:
     from finbert_feed import FinBERTFeed
@@ -297,11 +303,24 @@ class MultiStrategyBot:
         # ── v10.8.4: Holding Rewards (4% APY) + Favorite-Longshot Bias ──
         self.holding_rewards = HoldingRewardsStrategy()
         self.favorite_longshot = FavoriteLongshotStrategy()
-        # v10.8.6: BTC Latency Arb v2.0 — Black-Scholes + Half-Kelly (PAPER ONLY)
+        # v10.8.6: BTC Latency Arb v3.0 — Multi-Mode (Sniper + OFI + Latency)
         self.btc_latency = BTCLatencyStrategy(
             api=self.api, risk=self.risk, binance=self.binance,
             bankroll=500.0, base_size=25.0, max_size=150.0,
         )
+
+        # v12.0: Book-derived strategies
+        self.abandoned_position = AbandonedPositionStrategy()
+        self.cross_platform_arb = CrossPlatformArbStrategy(
+            cross_platform_feed=self.cross_platform_feed if hasattr(self, 'cross_platform_feed') else None
+        )
+
+        # v12.0: Quant monitoring (Lopez de Prado)
+        active_strats = ["weather", "resolution_sniper", "favorite_longshot",
+                         "holding_rewards", "negrisk_arb", "btc_latency"]
+        self.hrp_allocator = HRPAllocator(strategy_names=active_strats)
+        self.kyle_lambda = KyleLambdaEstimator()
+        self.kalman_filter = WeatherKalmanFilter()
 
         # ── Auto-Redeem vincite risolte ──
         priv_key = config.creds.private_key.strip()
@@ -597,8 +616,7 @@ class MultiStrategyBot:
                     except Exception as e:
                         logger.error(f"[FAV-LONG] Errore: {e}", exc_info=True)
 
-                # ── 0.9. BTC Latency Arb (PAPER ONLY — prototipo v10.8.5) ──
-                # Ispirato a Female-Bongo ($508K profit). Paper test per validare.
+                # ── 0.9. BTC Latency Arb v3.0 (Multi-Mode) ──
                 try:
                     latency_signals = self.btc_latency.scan()
                     if latency_signals:
@@ -606,6 +624,25 @@ class MultiStrategyBot:
                             await self.btc_latency.execute(sig, paper=True)  # SEMPRE paper
                 except Exception as e:
                     logger.warning(f"[BTC-LATENCY] Errore: {e}", exc_info=True)
+
+                # ── 0.10. Abandoned Position Arb (v12.0, near risk-free) ──
+                try:
+                    aband_opps = self.abandoned_position.scan(shared_markets)
+                    if _can_trade and aband_opps:
+                        for opp in aband_opps[:3]:
+                            self.abandoned_position.execute(opp, self.api, self.risk, live=not paper)
+                except Exception as e:
+                    logger.warning(f"[ABANDONED-POS] Errore: {e}", exc_info=True)
+
+                # ── 0.11. Cross-Platform Arb (v12.0, ogni 10 cicli) ──
+                if self._cycle % 10 == 3:
+                    try:
+                        xplat_opps = self.cross_platform_arb.scan(shared_markets)
+                        if _can_trade and xplat_opps:
+                            for opp in xplat_opps[:2]:
+                                self.cross_platform_arb.execute(opp, self.api, self.risk, live=not paper)
+                    except Exception as e:
+                        logger.warning(f"[XPLAT-ARB] Errore: {e}", exc_info=True)
 
                 # ── 1. Crypto 5-Min — DISABILITATO v7.0 (fees > edge, Kelly negativo) ──
 
@@ -950,6 +987,23 @@ class MultiStrategyBot:
                                 self.empirical_kelly.update(strat, closed, self._cycle)
                     except Exception as e:
                         logger.warning(f"[v10.0] Errore empirical kelly: {e}")
+
+                    # v12.0: PSR + DSR + binHR (Lopez de Prado)
+                    try:
+                        trades_by_strat = {}
+                        for t in self.risk.trades:
+                            if t.result in ("WIN", "LOSS") and t.pnl is not None:
+                                trades_by_strat.setdefault(t.strategy, []).append(t.pnl)
+                        if trades_by_strat:
+                            reports = evaluate_all_strategies(trades_by_strat, n_tested=13)
+                            for name, r in reports.items():
+                                if not r.is_structurally_viable:
+                                    logger.warning(
+                                        f"[QUANT-RISK] {name} AT RISK: P(fail)={r.prob_failure:.1%} "
+                                        f"WR={r.win_rate:.1%} vs BE={r.breakeven_precision:.1%}"
+                                    )
+                    except Exception as e:
+                        logger.warning(f"[v12.0] Errore quant metrics: {e}")
 
                 # ── v9.0: Tail Risk + Portfolio VaR (ogni 200 cicli) ──
                 if self._cycle % 200 == 0 and self._cycle > 0:

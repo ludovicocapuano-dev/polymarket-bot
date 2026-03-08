@@ -10,6 +10,8 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+import numpy as np
+
 from config import RiskConfig
 
 logger = logging.getLogger(__name__)
@@ -74,6 +76,10 @@ class RiskManager:
         self._strategy_halted: dict[str, bool] = {}
         self._strategy_halt_reason: dict[str, str] = {}
         self._strategy_consecutive_losses: dict[str, int] = {}
+
+        # v12.0: Consecutive loss halt per strategia (24h cooldown dopo 4 loss consecutive)
+        self._consec_loss_count: dict[str, int] = {}  # strategy -> consecutive loss count
+        self._strategy_halt_until: dict[str, float] = {}  # strategy -> timestamp until halted
 
         # v8.0: Stop-loss cooldown — blocca ri-acquisto sullo stesso mercato
         # dopo uno stop loss per evitare loop distruttivi (bond loop bug)
@@ -178,9 +184,16 @@ class RiskManager:
         if self._global_halted:
             return False, f"HALT GLOBALE: {self._global_halt_reason}"
 
-        if self._daily_pnl <= -self.config.max_daily_loss:
+        # v12.0: Graduated drawdown control replaces binary check
+        dd_mult = self.drawdown_multiplier()
+        if dd_mult <= 0.0:
             self._halt_global(f"Perdita giornaliera: ${abs(self._daily_pnl):.2f}")
-            return False, "Limite perdita giornaliera superato"
+            return False, "Limite perdita giornaliera superato (graduated drawdown = 0)"
+        elif dd_mult < 1.0:
+            logger.info(
+                f"[DRAWDOWN] Graduated reduction active: daily_pnl=${self._daily_pnl:+.2f}, "
+                f"multiplier={dd_mult:.2f}"
+            )
 
         # Halt per strategia: loss consecutive isolate
         if self._strategy_halted.get(strategy, False):
@@ -190,6 +203,15 @@ class RiskManager:
         if strat_losses >= self.config.max_consecutive_losses:
             self._halt_strategy(strategy, f"{strat_losses} loss consecutive")
             return False, f"Troppe perdite consecutive per {strategy}"
+
+        # v12.0: Consecutive loss halt — 4 losses → 24h cooldown per strategia
+        halt_until = self._strategy_halt_until.get(strategy, 0)
+        if halt_until > time.time():
+            remaining_h = (halt_until - time.time()) / 3600
+            return False, (
+                f"Consecutive loss halt: {strategy} bloccata per altre "
+                f"{remaining_h:.1f}h (4 loss consecutive)"
+            )
 
         # v11.1: conteggio reale = tracciate + on-chain non tracciate
         real_position_count = len(self.open_trades) + self._onchain_position_count
@@ -332,7 +354,49 @@ class RiskManager:
             if not allowed:
                 return False, reason
 
+        # v12.0: Max single position cap at 5% of total_capital
+        max_single = self.config.total_capital * 0.05
+        if size > max_single:
+            return False, (
+                f"Max single position cap: ${size:.2f} > 5% of "
+                f"${self.config.total_capital:.2f} (${max_single:.2f})"
+            )
+
         return True, "OK"
+
+    # ── v12.0: Graduated Drawdown Control ────────────────────────
+    def drawdown_multiplier(self) -> float:
+        """Graduated drawdown control (Strategic Risk Management, Harvey/Rattray)."""
+        if self.config.max_daily_loss <= 0:
+            return 1.0
+        # _daily_pnl is negative when losing; use abs() for ratio
+        daily_loss = abs(min(0.0, self._daily_pnl))
+        ratio = daily_loss / self.config.max_daily_loss
+        if ratio >= 1.0:
+            return 0.0
+        elif ratio >= 0.75:
+            return 0.5
+        elif ratio >= 0.50:
+            return 0.75
+        return 1.0
+
+    # ── v12.0: Volatility Targeting (per-strategy realized vol) ──
+    def volatility_target_multiplier(self, strategy: str) -> float:
+        """Scale bet size inversely to recent realized vol (Strategic Risk Mgmt)."""
+        trades = [t for t in self.trades if t.strategy == strategy and t.result in ("WIN", "LOSS") and t.pnl is not None]
+        if len(trades) < 10:
+            return 1.0  # not enough data
+        recent_pnl = [t.pnl for t in trades[-20:]]
+        realized_vol = float(np.std(recent_pnl)) if len(recent_pnl) > 1 else 1.0
+        if realized_vol <= 0:
+            return 1.0
+        target_vol = float(np.mean([abs(p) for p in recent_pnl])) * 0.5  # target = half of mean absolute PnL
+        mult = min(2.0, max(0.3, target_vol / realized_vol))
+        logger.debug(
+            f"[VOL_TARGET_v12] {strategy} realized_vol=${realized_vol:.4f} "
+            f"target_vol=${target_vol:.4f} → mult={mult:.2f}"
+        )
+        return mult
 
     # ── Dynamic Kelly fractions per strategia (v5.3) ────────────
     # Dal modello matematico:
@@ -543,6 +607,30 @@ class RiskManager:
                 f"→ scale={vol_scale:.2f}"
             )
 
+        # v12.0: Graduated Drawdown + Grossman-Zhou continuous scaling
+        grad_mult = self.drawdown_multiplier()
+        gz_mult = max(0.0, 1.0 - abs(min(0.0, self._daily_pnl)) / self.config.max_daily_loss) if self.config.max_daily_loss > 0 else 1.0
+        dd_mult = min(grad_mult, gz_mult)
+        if dd_mult < 1.0:
+            logger.info(
+                f"[DRAWDOWN-SIZE] graduated={grad_mult:.2f} gz={gz_mult:.2f} "
+                f"→ dd_mult={dd_mult:.2f}, size ${size:.2f} → ${size * dd_mult:.2f}"
+            )
+            size *= dd_mult
+
+        # v12.0: Volatility targeting per-strategy (realized vol scaling)
+        vol_target_mult = self.volatility_target_multiplier(strategy)
+        if vol_target_mult != 1.0:
+            logger.info(
+                f"[VOL_TARGET_SIZING] {strategy} mult={vol_target_mult:.2f}, "
+                f"size ${size:.2f} → ${size * vol_target_mult:.2f}"
+            )
+            size *= vol_target_mult
+
+        # v12.0: Max single position cap at 5% of total_capital (in sizing)
+        max_single = self.config.total_capital * 0.05
+        size = min(size, max_single)
+
         # v7.0: Kelly-proporzionale con floor dinamico basato su budget.
         # RIMOSSO il floor fisso PREFERRED_MIN=$50 che annullava il Kelly
         # forzando TUTTI i trade alla stessa size indipendentemente dall'edge.
@@ -637,10 +725,23 @@ class RiskManager:
                 if won:
                     self._consecutive_losses = 0
                     self._strategy_consecutive_losses[t.strategy] = 0
+                    # v12.0: Reset consecutive loss counter on win
+                    self._consec_loss_count[t.strategy] = 0
                 else:
                     self._consecutive_losses += 1
                     self._strategy_consecutive_losses[t.strategy] = \
                         self._strategy_consecutive_losses.get(t.strategy, 0) + 1
+                    # v12.0: Consecutive loss halt — 4 losses → 24h cooldown
+                    self._consec_loss_count[t.strategy] = \
+                        self._consec_loss_count.get(t.strategy, 0) + 1
+                    consec = self._consec_loss_count[t.strategy]
+                    if consec >= 4:
+                        halt_until = time.time() + 86400  # 24 hours
+                        self._strategy_halt_until[t.strategy] = halt_until
+                        logger.warning(
+                            f"[CONSEC_LOSS_HALT] {t.strategy}: {consec} consecutive losses "
+                            f"→ halted for 24h (until {datetime.fromtimestamp(halt_until, tz=timezone.utc).isoformat()})"
+                        )
 
                 self._save_open_positions()
                 # v11.1: salva trades.json subito — non perdere outcome al restart
@@ -718,6 +819,8 @@ class RiskManager:
         for k in list(self._strategy_halted.keys()):
             if self._strategy_halted.get(k):
                 self.resume(k)
+        # v12.0: Reset consecutive loss counters on daily reset
+        self._consec_loss_count.clear()
         logger.info(f"Reset giornaliero. PnL chiuso: ${old_pnl:+.2f}")
 
     @property
