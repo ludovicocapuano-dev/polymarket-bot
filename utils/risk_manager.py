@@ -584,6 +584,8 @@ class RiskManager:
                         self._strategy_consecutive_losses.get(t.strategy, 0) + 1
 
                 self._save_open_positions()
+                # v11.1: salva trades.json subito — non perdere outcome al restart
+                self.save_trades()
                 logger.info(
                     f"[{t.strategy}] {'VINTO' if won else 'PERSO'} "
                     f"PnL=${pnl:+.2f} | Giorn=${self._daily_pnl:+.2f} | "
