@@ -66,6 +66,14 @@ def _market_efficiency(market: Market) -> float:
 STRATEGY_NAME = "weather"
 MAX_WEATHER_BET = 60.0  # v10.8.4: da $35, proporzionale al capitale ($3.5K)
 
+# v11.1: City performance tiers basati su dati reali (275 trade, 17 giorni)
+# Tier 1: WR >= 75%, volume alto → full budget
+# Tier 2: WR 57-74% → budget ridotto 60%
+# Tier 3: WR < 50% → BLACKLIST (perdono soldi)
+CITY_BLACKLIST = {"london", "paris"}  # 35% WR combinato, 5W/9L
+CITY_TIER2 = {"miami", "buenos aires", "ankara"}  # WR 50-58%, marginali
+CITY_TIER2_MAX_BET = 25.0  # cap ridotto per città marginali
+
 # ── Pattern per riconoscere mercati weather ──────────────────
 WEATHER_PATTERNS = [
     re.compile(r"(?:highest|high|max)\s+temp", re.I),
@@ -248,6 +256,14 @@ class WeatherStrategy:
             logger.debug(f"[WEATHER-SKIP] no city: {q[:80]}")
             return None
 
+        # v11.1: Blacklist citta' con WR < 50% (London 33%, Paris 37%)
+        if city.lower() in CITY_BLACKLIST:
+            logger.debug(
+                f"[WEATHER-SKIP] blacklisted city: {city} "
+                f"(WR storico < 50%)"
+            )
+            return None
+
         # 2. Rileva data
         date = self._parse_date(q)
         if not date:
@@ -386,29 +402,33 @@ class WeatherStrategy:
 
         buy_price = price_yes if best_side == "YES" else price_no
 
-        # v10.8.4: BUY_YES "Forecast Divergence" — strategia provata dai top trader.
-        # Compra YES su bins sottovalutati dove forecast dice alta probabilità.
-        # Dati vecchi (1W/7L) erano con edge basse. Con edge >= 15% e prezzo basso,
-        # il payoff asimmetrico (5-20x) compensa il win rate più basso.
-        # Exact bucket YES: consentiti solo se forecast_prob >= 0.30 e prezzo <= $0.12
-        # Range bucket YES: consentiti se prezzo <= $0.15 e edge >= 15%
+        # v11.1: BUY_YES severamente ristretto — dati: 12% WR (3W/22L).
+        # Profittevole SOLO per 2 outlier ($256 Toronto + $215 Seoul).
+        # Requisiti stringenti: prezzo basso + alta probabilità + 2+ fonti.
         is_exact_bucket = "exact" in label
         if best_side == "YES":
+            # v11.1: BUY_YES richiede SEMPRE 2+ fonti (singola fonte = coin flip)
+            if n_sources < 2:
+                logger.debug(
+                    f"[WEATHER-SKIP] BUY_YES single-source: {city} {label} "
+                    f"sources={n_sources} (need >=2)"
+                )
+                return None
             if is_exact_bucket:
-                # Exact: solo se forecast è molto fiducioso e prezzo è basso
-                if buy_price > 0.12 or forecast_prob < 0.30:
+                # Exact: forecast molto fiducioso + prezzo basso + edge alta
+                if buy_price > 0.10 or forecast_prob < 0.40:
                     logger.debug(
                         f"[WEATHER-SKIP] BUY_YES exact: {city} {label} "
                         f"price={buy_price:.3f} prob={forecast_prob:.3f} "
-                        f"(need price<=0.12 AND prob>=0.30)"
+                        f"(need price<=0.10 AND prob>=0.40)"
                     )
                     return None
             else:
-                # Range: prezzo basso con edge significativa
-                if buy_price > 0.15:
+                # Range: prezzo molto basso con edge forte
+                if buy_price > 0.12:
                     logger.debug(
-                        f"[WEATHER-SKIP] BUY_YES high-price: {city} {label} "
-                        f"price={buy_price:.3f} (max 0.15 per YES)"
+                        f"[WEATHER-SKIP] BUY_YES range high-price: {city} {label} "
+                        f"price={buy_price:.3f} (max 0.12 per YES)"
                     )
                     return None
 
@@ -731,11 +751,24 @@ class WeatherStrategy:
             # Payoff 1x+ e EV positiva: boost 20%
             size = min(size * 1.20, MAX_WEATHER_BET)
 
-        # BUY_YES cap ridotto: Kelly dice $0 (WR 12.5% < breakeven 16.7%).
-        # Permettiamo solo piccole scommesse come long-shot.
-        max_bet = 20.0 if opp.side == "YES" else MAX_WEATHER_BET
+        # v11.1: Sizing caps basati su dati reali
+        # BUY_YES: ridotto a $15 (era $20) — 12% WR, solo longshot
+        # BUY_NO +2d: ridotto a $30 — MAE 3.5F rende edge incerto
+        # Tier 2 cities: cap $25 (Miami 58%, Buenos Aires 57%, Ankara 50%)
+        days_ahead = self._days_until(opp.date)
+        if opp.side == "YES":
+            max_bet = 15.0
+        elif days_ahead >= 2:
+            max_bet = 30.0  # +2d: forecast meno affidabile
+        else:
+            max_bet = MAX_WEATHER_BET
+
+        # City tier cap
+        if opp.city.lower() in CITY_TIER2:
+            max_bet = min(max_bet, CITY_TIER2_MAX_BET)
+
         if size > max_bet:
-            logger.debug(f"[WEATHER] size ${size:.2f} → cap ${max_bet:.2f} (side={opp.side})")
+            logger.debug(f"[WEATHER] size ${size:.2f} → cap ${max_bet:.2f} (side={opp.side} city={opp.city})")
             size = max_bet
 
         allowed, reason = self.risk.can_trade(
