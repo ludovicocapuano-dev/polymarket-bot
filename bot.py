@@ -88,6 +88,7 @@ from monitoring.attribution import AttributionEngine
 from monitoring.drift_detector import DriftDetector
 from monitoring.calibration import CalibrationEngine
 from monitoring.empirical_kelly import EmpiricalKelly
+from monitoring.meta_labeler import MetaLabeler
 from risk.correlation_monitor import CorrelationMonitor
 from risk.tail_risk import TailRiskAgent
 from agents.orchestrator import OrchestratorAgent
@@ -233,9 +234,14 @@ class MultiStrategyBot:
         # v7.0: crypto_5min DISABILITATO (Kelly negativo, fees 3.15% > edge)
         # self.crypto5 = Crypto5MinStrategy(...)
 
+        # v12.0.1: Meta-Labeler (Lopez de Prado AFML Ch 3)
+        self.meta_labeler = MetaLabeler()
+        self.meta_labeler.load()
+
         self.weather = WeatherStrategy(
             self.api, self.risk, self.weather_feed,
             min_edge=0.03,  # v5.3: 3% (same-day 1.8% via 0.6x) + Bayesian posterior
+            meta_labeler=self.meta_labeler,  # v12.0.1: Lopez de Prado meta-labeling
         )
         self.arb = ArbitrageStrategy(
             self.api, self.risk,
@@ -378,6 +384,8 @@ class MultiStrategyBot:
 
         # ── v9.0: Layer 3 — Correlation Monitor & Tail Risk ──
         self.correlation_monitor = CorrelationMonitor(risk_manager=self.risk)
+        self.risk.meta_labeler = self.meta_labeler  # v12.0.1: meta-labeling callback
+
         self.risk.correlation_monitor = self.correlation_monitor
         self.risk.drift_detector = self.drift_detector  # v11.0: dynamic σ
         self.risk.ws_feed = self.ws_feed  # v9.2.1: flash move protection
@@ -609,7 +617,7 @@ class MultiStrategyBot:
                 # ── 0.8. Favorite-Longshot Bias ──
                 if self._cycle % 5 == 0:  # ogni 5 cicli (~2.5 min)
                     try:
-                        fav_opps = self.favorite_longshot.scan(shared_markets)
+                        fav_opps = self.favorite_longshot.scan(shared_markets, risk=self.risk)
                         if _can_trade and fav_opps:
                             for opp in fav_opps[:2]:
                                 self.favorite_longshot.execute(opp, self.api, self.risk, live=not paper)
@@ -1004,6 +1012,15 @@ class MultiStrategyBot:
                                     )
                     except Exception as e:
                         logger.warning(f"[v12.0] Errore quant metrics: {e}")
+
+                    # v12.0.1: Meta-Labeler status
+                    if self.meta_labeler:
+                        ml = self.meta_labeler.status()
+                        logger.info(
+                            f"[QUANT] MetaLabel: phase={ml['phase']} "
+                            f"samples={ml['samples']}/{ml['warm_at']} "
+                            f"WR={ml['wr']:.3f} predictions={ml['predictions']}"
+                        )
 
                 # ── v9.0: Tail Risk + Portfolio VaR (ogni 200 cicli) ──
                 if self._cycle % 200 == 0 and self._cycle > 0:

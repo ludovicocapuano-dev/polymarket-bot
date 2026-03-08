@@ -20,6 +20,7 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
+from utils.risk_manager import Trade
 
 logger = logging.getLogger(__name__)
 
@@ -265,6 +266,20 @@ class AbandonedPositionStrategy:
                     f"return={opp.expected_return_pct:.1f}% vol24h=${opp.volume_24h:.0f} "
                     f"hours_left={opp.hours_to_resolution:.1f}h"
                 )
+                # v12.0.1: register trade in risk manager
+                if risk:
+                    trade = Trade(
+                        timestamp=time.time(),
+                        strategy="abandoned_position",
+                        market_id=opp.market_id,
+                        token_id=opp.token_id,
+                        side=f"BUY_{opp.side}",
+                        size=size,
+                        price=target_price,
+                        edge=opp.expected_return_pct / 100,
+                        reason="abandoned",
+                    )
+                    risk.open_trade(trade)
                 return True
             else:
                 logger.warning(f"[ABANDONED] Order failed: {opp.question[:50]}")

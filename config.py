@@ -30,7 +30,7 @@ class RiskConfig:
     min_edge: float = 0.04
     kelly_fraction: float = 0.25
     max_consecutive_losses: int = 10
-    max_open_positions: int = 30  # v11.0: più capitale = più diversificazione
+    max_open_positions: int = 100  # v12.0.1: alzato da 30 — 95 posizioni reali on-chain
     reserve_floor_pct: float = 20.0  # 20% = $920 cuscinetto
 
 

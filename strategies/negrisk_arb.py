@@ -11,6 +11,7 @@ import logging
 import time
 from dataclasses import dataclass
 from typing import Optional
+from utils.risk_manager import Trade
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +218,20 @@ class NegRiskArbScanner:
                 f"[NEGRISK-ARB] COMPLETE: {opp.event_slug} "
                 f"all {success_count} legs filled, profit~${profit:.2f}"
             )
+            # v12.0.1: register arb as single trade in risk manager
+            if risk:
+                trade = Trade(
+                    timestamp=time.time(),
+                    strategy="negrisk_arb",
+                    market_id=opp.event_id,
+                    token_id=opp.outcomes[0]['token_id'] if opp.outcomes else "",
+                    side=f"ARB_{opp.arb_type.upper()}",
+                    size=max_size,
+                    price=opp.sum_prices,
+                    edge=opp.profit_per_dollar,
+                    reason=f"negrisk {opp.n_outcomes} legs",
+                )
+                risk.open_trade(trade)
             return True
         else:
             logger.warning(

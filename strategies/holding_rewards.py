@@ -15,6 +15,7 @@ import logging
 import time
 from dataclasses import dataclass
 from typing import Optional
+from utils.risk_manager import Trade
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +161,20 @@ class HoldingRewardsStrategy:
                     f"[HOLD-REWARDS] BUY {opp.side} ${size:.0f} @{opp.price:.2f} "
                     f"'{opp.question[:50]}' yield=${opp.daily_yield_per_100:.3f}/day/$100"
                 )
+                # v12.0.1: register in risk manager
+                if risk:
+                    trade = Trade(
+                        timestamp=time.time(),
+                        strategy="holding_rewards",
+                        market_id=opp.market_id,
+                        token_id=opp.token_id,
+                        side=f"BUY_{opp.side}",
+                        size=size,
+                        price=opp.price,
+                        edge=0.0,
+                        reason=f"hold-rewards yield={opp.daily_yield_per_100:.3f}",
+                    )
+                    risk.open_trade(trade)
                 return True
             else:
                 logger.warning(f"[HOLD-REWARDS] Order failed: {opp.question[:50]}")

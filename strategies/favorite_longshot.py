@@ -29,6 +29,7 @@ import logging
 import math
 import time
 from dataclasses import dataclass
+from utils.risk_manager import Trade
 
 logger = logging.getLogger(__name__)
 
@@ -195,7 +196,7 @@ class FavoriteLongshotStrategy:
 
         return max(alpha, 1.01)  # alpha must be > 1 for bias to exist
 
-    def scan(self, markets: list) -> list[FavoriteLongshotOpportunity]:
+    def scan(self, markets: list, risk=None) -> list[FavoriteLongshotOpportunity]:
         now = time.time()
         if now - self._last_scan < self.SCAN_INTERVAL:
             return []
@@ -221,6 +222,14 @@ class FavoriteLongshotStrategy:
                 continue
             if m.condition_id in self._positions:
                 if now - self._positions[m.condition_id] < self.COOLDOWN_PER_MARKET:
+                    continue
+
+            # v12.0.1: check risk manager for existing positions (survives restart)
+            if risk:
+                existing = [t for t in risk.open_trades
+                            if t.market_id == m.condition_id or
+                            t.token_id in (m.tokens.get("yes", ""), m.tokens.get("no", ""))]
+                if existing:
                     continue
 
             scanned += 1
@@ -297,7 +306,7 @@ class FavoriteLongshotStrategy:
 
         return opportunities
 
-    def execute(self, opp: FavoriteLongshotOpportunity, api, risk,
+    def execute(self, opp: FavoriteLongshotOpportunity, api, risk=None,
                 live: bool = False) -> bool:
         size = opp.target_size
 
@@ -326,6 +335,20 @@ class FavoriteLongshotStrategy:
                     f"p_true={opp.p_true:.3f} edge={opp.edge:.3f} "
                     f"alpha={opp.alpha:.2f} '{opp.question[:50]}'"
                 )
+                # v12.0.1: register trade in risk manager
+                if risk:
+                    trade = Trade(
+                        timestamp=time.time(),
+                        strategy="favorite_longshot",
+                        market_id=opp.market_id,
+                        token_id=opp.token_id,
+                        side=f"BUY_{opp.side}",
+                        size=size,
+                        price=opp.price,
+                        edge=opp.edge,
+                        reason=f"fav-long alpha={opp.alpha:.2f}",
+                    )
+                    risk.open_trade(trade)
                 return True
             else:
                 logger.warning(f"[FAV-LONG] Order failed: {opp.question[:50]}")

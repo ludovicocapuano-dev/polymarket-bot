@@ -110,6 +110,7 @@ class WeatherOpportunity:
     # v10.6: Metriche EV per ranking profittevole
     expected_value: float = 0.0     # EV per $1 investito
     payoff_ratio: float = 0.0       # profit/loss ratio se win
+    meta_features: object = None    # v12.0.1: MetaFeatures for meta-labeling
 
 
 class WeatherStrategy:
@@ -130,12 +131,14 @@ class WeatherStrategy:
         weather: WeatherFeed,
         min_edge: float = 0.04,      # v5.0: edge minimo 4% (niche dominance)
         min_confidence: float = 0.55,
+        meta_labeler=None,           # v12.0.1: Lopez de Prado meta-labeling
     ):
         self.api = api
         self.risk = risk
         self.weather = weather
         self.min_edge = min_edge
         self.min_confidence = min_confidence
+        self.meta_labeler = meta_labeler
         self._trades_executed = 0
         self._recently_traded: dict[str, float] = {}
         self._TRADE_COOLDOWN = 600  # v5.0: 10 min cooldown (niche dominance)
@@ -506,6 +509,27 @@ class WeatherStrategy:
             )
             return None
 
+        # v12.0.1: Build MetaFeatures for meta-labeling
+        mf = None
+        if self.meta_labeler:
+            from monitoring.meta_labeler import MetaFeatures
+            mf = MetaFeatures(
+                n_sources=n_sources,
+                sigma=forecast.uncertainty_in_unit(unit),
+                spread=abs(1.0 - price_yes - price_no),
+                volume_24h=getattr(market, 'volume', 0) or 0,
+                price=buy_price,
+                days_ahead=days_ahead,
+                hour_utc=datetime.now().hour,
+                edge=best_edge,
+                confidence=confidence,
+                side=1 if best_side == "YES" else 0,
+                expected_value=expected_value,
+                payoff_ratio=payoff_ratio,
+                is_latency_opp=_is_latency_opportunity,
+                bucket_width=high - low,
+            )
+
         return WeatherOpportunity(
             market=market,
             city=city,
@@ -520,6 +544,7 @@ class WeatherStrategy:
             confidence=confidence,
             expected_value=expected_value,
             payoff_ratio=payoff_ratio,
+            meta_features=mf,
             reasoning=(
                 f"{city.upper()} {date} | "
                 f"Bucket: {label} ({unit}) | "
@@ -741,6 +766,21 @@ class WeatherStrategy:
             )
             return False
 
+        # v12.0.1: Meta-labeling size adjustment (Lopez de Prado AFML Ch 3)
+        if self.meta_labeler and opp.meta_features:
+            meta_prob = self.meta_labeler.predict(opp.meta_features)
+            if meta_prob < 0.40:
+                logger.info(
+                    f"[META-LABEL] SKIP {opp.city} {opp.bucket_label}: "
+                    f"P(profit)={meta_prob:.3f} < 0.40"
+                )
+                return False
+            size *= meta_prob
+            logger.debug(
+                f"[META-LABEL] {opp.city}: P(profit)={meta_prob:.3f} "
+                f"-> size=${size:.2f}"
+            )
+
         # v10.6: Size boost per trade ad alto EV con payoff favorevole.
         # Trade con payoff_ratio > 1.0 (win > stake) hanno rischio asimmetrico
         # A NOSTRO FAVORE — possiamo essere più aggressivi.
@@ -790,6 +830,7 @@ class WeatherStrategy:
             edge=opp.edge,
             reason=opp.reasoning,
         )
+        trade._meta_features = opp.meta_features
 
         if paper:
             logger.info(

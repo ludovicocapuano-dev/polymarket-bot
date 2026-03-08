@@ -52,6 +52,7 @@ class Trade:
     pnl: float = 0.0
     reason: str = ""
     sell_failures: int = 0  # v5.9.9: track failed sell attempts
+    _meta_features: object = None  # v12.0.1: MetaFeatures for meta-labeling
 
 
 class RiskManager:
@@ -125,14 +126,19 @@ class RiskManager:
             if not isinstance(positions, list):
                 return
 
-            # Conta posizioni attive (valore > $1)
+            # v12.0.1: Conta posizioni attive NON risolte (valore > $1, not redeemable)
             active_positions = []
+            resolved_count = 0
             total_value = 0.0
             tracked_market_ids = {t.market_id for t in self.open_trades}
 
             for p in positions:
                 cur_v = float(p.get("currentValue", 0))
                 if cur_v < 1.0:
+                    continue
+                # v12.0.1: filtra posizioni risolte/redeemable
+                if p.get("redeemable", False):
+                    resolved_count += 1
                     continue
                 active_positions.append(p)
                 total_value += cur_v
@@ -143,8 +149,9 @@ class RiskManager:
             self._onchain_exposure = total_value - self.total_exposed
 
             logger.info(
-                f"[SYNC] Portfolio on-chain: {len(active_positions)} posizioni attive "
-                f"(${total_value:.2f}), {len(tracked_market_ids)} tracciate, "
+                f"[SYNC] Portfolio on-chain: {len(active_positions)} attive "
+                f"(${total_value:.2f}), {resolved_count} risolte (filtrate), "
+                f"{len(tracked_market_ids)} tracciate, "
                 f"{self._onchain_position_count} non tracciate "
                 f"(${self._onchain_exposure:.2f} extra exposure)"
             )
@@ -716,6 +723,10 @@ class RiskManager:
                     self._consecutive_losses += 1
                     self._strategy_consecutive_losses[t.strategy] = \
                         self._strategy_consecutive_losses.get(t.strategy, 0) + 1
+
+                # v12.0.1: notify meta-labeler
+                if hasattr(self, 'meta_labeler') and self.meta_labeler and t._meta_features:
+                    self.meta_labeler.record_outcome(t._meta_features, won)
 
                 self._save_open_positions()
                 # v11.1: salva trades.json subito — non perdere outcome al restart

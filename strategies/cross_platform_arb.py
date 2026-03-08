@@ -22,6 +22,7 @@ fetching and matching cross-platform probabilities.
 import logging
 import time
 from dataclasses import dataclass, field
+from utils.risk_manager import Trade
 
 logger = logging.getLogger(__name__)
 
@@ -339,6 +340,20 @@ class CrossPlatformArbStrategy:
                     f"edge={opp.edge_pct:.1f}% consensus={opp.consensus_price:.3f} "
                     f"[{opp.platforms_detail}]"
                 )
+                # v12.0.1: register trade in risk manager
+                if risk:
+                    trade = Trade(
+                        timestamp=time.time(),
+                        strategy="cross_platform_arb",
+                        market_id=opp.market_id,
+                        token_id=opp.token_id,
+                        side=f"BUY_{opp.side}",
+                        size=size,
+                        price=opp.polymarket_price,
+                        edge=opp.divergence,
+                        reason=f"xplatform {opp.platforms_detail}",
+                    )
+                    risk.open_trade(trade)
                 return True
             else:
                 logger.warning(f"[XPLATFORM-ARB] Order failed: {opp.question[:50]}")
