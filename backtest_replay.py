@@ -45,89 +45,89 @@ class Trade:
 
 
 def parse_trades_from_logs(log_files: list[Path]) -> list[Trade]:
-    """Estrai trade dai log del bot."""
+    """Estrai trade dai log del bot usando grep per velocita'.
+
+    Formato log reale:
+      APERTO: 2026-02-20 21:42:18,105 | INFO | utils.risk_manager | [weather] APERTO BUY_NO $25.00 @0.9125 edge=0.0771
+      VINTO:  2026-02-22 08:18:09,229 | INFO | utils.risk_manager | [weather] VINTO PnL=$+7.26 | Giorn=...
+      PERSO:  2026-02-20 23:04:31,558 | INFO | utils.risk_manager | [weather] PERSO PnL=$-24.97 | Giorn=...
+    """
+    import subprocess
+
+    log_dir = log_files[0].parent if log_files else LOG_DIR
+    log_pattern = str(log_dir / "bot_*.log")
+
+    # Use grep for speed on large log files
+    open_trades: dict[str, list] = {}
+    outcomes: dict[str, list] = {}
+
+    aperto_re = re.compile(
+        r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+.*?"
+        r"\[(\w+)\] APERTO (BUY_(?:NO|YES)) \$([\d.]+) @([\d.]+) edge=([\d.]+)"
+    )
+    chiuso_re = re.compile(
+        r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+.*?"
+        r"\[(\w+)\] (VINTO|PERSO) PnL=\$([\+\-]?[\d.]+)"
+    )
+
+    # Grep APERTO lines
+    try:
+        result = subprocess.run(
+            ["grep", "-h", "APERTO BUY_", *[str(f) for f in log_files]],
+            capture_output=True, text=True, timeout=30,
+        )
+        for line in result.stdout.split("\n"):
+            m = aperto_re.search(line)
+            if m:
+                ts, strategy, direction, size, price, edge = (
+                    m.group(1), m.group(2), m.group(3),
+                    float(m.group(4)), float(m.group(5)), float(m.group(6)),
+                )
+                t = Trade(
+                    timestamp=ts,
+                    strategy=strategy,
+                    direction=direction,
+                    size=size,
+                    price=price,
+                    edge=edge,
+                    payoff=(1.0 - price) / price if price > 0 else 0,
+                )
+                open_trades.setdefault(strategy, []).append(t)
+    except Exception:
+        pass
+
+    # Grep VINTO/PERSO lines
+    try:
+        result = subprocess.run(
+            ["grep", "-hE", "VINTO PnL=|PERSO PnL=", *[str(f) for f in log_files]],
+            capture_output=True, text=True, timeout=30,
+        )
+        for line in result.stdout.split("\n"):
+            m = chiuso_re.search(line)
+            if m:
+                ts, strategy, result_str, pnl_str = (
+                    m.group(1), m.group(2), m.group(3), m.group(4),
+                )
+                outcome = "WIN" if result_str == "VINTO" else "LOSS"
+                pnl = float(pnl_str)
+                outcomes.setdefault(strategy, []).append((ts, outcome, pnl))
+    except Exception:
+        pass
+
+    # Match outcomes to trades in order (FIFO per strategy)
     trades = []
+    for strategy in set(list(open_trades.keys()) + list(outcomes.keys())):
+        strat_opens = open_trades.get(strategy, [])
+        strat_outcomes = outcomes.get(strategy, [])
 
-    # Pattern per BUY
-    buy_pattern = re.compile(
-        r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\].*?"
-        r"(WEATHER|FAV-LONG|SNIPER|HOLDING).*?"
-        r"BUY.*?"
-        r"(?:city=(\w+))?"
-    )
-
-    # Pattern per WIN/LOSS
-    outcome_pattern = re.compile(
-        r"(WIN|LOSS).*?pnl=\$?([-\d.]+)"
-    )
-
-    # Pattern piu' dettagliato per weather
-    weather_buy = re.compile(
-        r"WEATHER.*BUY_(NO|YES).*?"
-        r"city=(\w+).*?"
-        r"price=([\d.]+).*?"
-        r"(?:edge=([\d.]+))?"
-        r"(?:.*?conf(?:idence)?=([\d.]+))?"
-        r"(?:.*?sources?=(\d+))?"
-        r"(?:.*?horizon=(\d+))?"
-        r"(?:.*?size=\$?([\d.]+))?"
-        r"(?:.*?payoff=([\d.]+))?"
-        r"(?:.*?uncertainty=([\d.]+))?"
-    )
-
-    for log_file in sorted(log_files):
-        try:
-            content = log_file.read_text(errors="replace")
-        except Exception:
-            continue
-
-        for line in content.split("\n"):
-            # Weather trade dettagliato
-            m = weather_buy.search(line)
-            if m:
-                t = Trade(
-                    strategy="weather",
-                    direction=f"BUY_{m.group(1)}",
-                    city=m.group(2) or "",
-                    price=float(m.group(3)) if m.group(3) else 0,
-                    edge=float(m.group(4)) if m.group(4) else 0,
-                    confidence=float(m.group(5)) if m.group(5) else 0,
-                    sources=int(m.group(6)) if m.group(6) else 1,
-                    horizon=int(m.group(7)) if m.group(7) else 0,
-                    size=float(m.group(8)) if m.group(8) else 0,
-                    payoff=float(m.group(9)) if m.group(9) else 0,
-                    uncertainty=float(m.group(10)) if m.group(10) else 0,
-                )
-                trades.append(t)
-                continue
-
-            # Generico per altre strategie
-            m = buy_pattern.search(line)
-            if m:
-                strategy_map = {
-                    "WEATHER": "weather",
-                    "FAV-LONG": "favorite_longshot",
-                    "SNIPER": "resolution_sniper",
-                    "HOLDING": "holding_rewards",
-                }
-                t = Trade(
-                    timestamp=m.group(1),
-                    strategy=strategy_map.get(m.group(2), m.group(2).lower()),
-                    city=m.group(3) or "",
-                )
-                trades.append(t)
-
-        # Match outcomes
-        lines = content.split("\n")
-        for i, line in enumerate(lines):
-            m = outcome_pattern.search(line)
-            if m and trades:
-                # Associa al trade piu' recente senza outcome
-                for t in reversed(trades):
-                    if t.outcome == "":
-                        t.outcome = m.group(1)
-                        t.pnl = float(m.group(2))
-                        break
+        for i, t in enumerate(strat_opens):
+            if i < len(strat_outcomes):
+                _, outcome, pnl = strat_outcomes[i]
+                t.outcome = outcome
+                t.pnl = pnl
+            else:
+                t.outcome = "OPEN"
+            trades.append(t)
 
     return trades
 

@@ -354,11 +354,22 @@ def main():
         print_recommendations(experiments, WEATHER_PARAMS)
         return
 
-    # Load trades — try multiple sources
+    # Load trades — merge all sources (JSON + bot logs)
     log_files = sorted(LOG_DIR.glob("bot_*.log"))
     trades = parse_trades_json()
-    if not trades:
-        trades = parse_trades_from_logs(log_files)
+    log_trades = parse_trades_from_logs(log_files)
+    if log_trades:
+        # Merge: log trades have real outcome data from VINTO/PERSO
+        existing_ts = {(t.timestamp, t.strategy, t.price) for t in trades}
+        added = 0
+        for t in log_trades:
+            key = (t.timestamp, t.strategy, t.price)
+            if key not in existing_ts:
+                trades.append(t)
+                existing_ts.add(key)
+                added += 1
+        if added:
+            print(f"  + {added} trades from bot logs")
 
     # v12.0: Also load on-chain trade data if available
     onchain_file = LOG_DIR / "weather_trades_onchain.json"
