@@ -437,6 +437,21 @@ class MultiStrategyBot:
                 logger.error("Autenticazione fallita!")
                 sys.exit(1)
 
+        # v12.0.1: Reconcile capital = USDC balance + tracked exposure
+        # Senza questo, posizioni importate fanno sembrare available_capital negativo
+        try:
+            usdc_bal = self.api.get_usdc_balance()
+            if usdc_bal >= 0:
+                real_capital = usdc_bal + self.risk.total_exposed
+                if abs(real_capital - self.risk.capital) > 50:
+                    logger.info(
+                        f"[CAPITAL-RECONCILE] {self.risk.capital:.2f} → {real_capital:.2f} "
+                        f"(USDC={usdc_bal:.2f} + exposed={self.risk.total_exposed:.2f})"
+                    )
+                    self.risk.capital = real_capital
+        except Exception as e:
+            logger.debug(f"[CAPITAL-RECONCILE] Skip: {e}")
+
         paper = self.config.paper_trading
         logger.info(f"Bot avviato in modalita' {'PAPER' if paper else 'LIVE'}")
         logger.info(

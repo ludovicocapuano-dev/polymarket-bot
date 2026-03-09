@@ -99,6 +99,9 @@ class CorrelationMonitor:
 
         exposure = 0.0
         for t in self.risk_manager.open_trades:
+            # v12.0.1: skip imported_legacy — posizioni storiche non classificabili
+            if t.strategy == "imported_legacy":
+                continue
             market_theme = self._market_themes.get(t.market_id, "other")
             if market_theme == theme:
                 exposure += t.size
@@ -114,7 +117,8 @@ class CorrelationMonitor:
         if not self.risk_manager:
             return True, "OK (no risk_manager)"
 
-        total_capital = self.risk_manager.config.total_capital
+        # v12.0.1: usa capital riconciliato (non config statico)
+        total_capital = getattr(self.risk_manager, 'capital', self.risk_manager.config.total_capital)
         max_exposure = total_capital * MAX_THEME_EXPOSURE_PCT
 
         current_exposure = self.get_theme_exposure(theme)
