@@ -1,5 +1,5 @@
 #!/bin/bash
-# Daily AutoOptimizer + On-chain data refresh + Quant metrics
+# Daily AutoOptimizer v2.0 — Multi-strategy + auto-apply + Telegram
 # Schedulato via crontab 2x/giorno (6:23 + 20:43)
 
 cd /root/polymarket_toolkit
@@ -11,8 +11,8 @@ echo "=== $(date) ===" >> "$LOG"
 # 1. Refresh on-chain weather trade data
 python3 scripts/refresh_onchain_trades.py >> "$LOG" 2>&1
 
-# 2. Run AutoOptimizer — cattura output per Telegram
-OPT_OUTPUT=$(timeout 120 python3 auto_optimizer.py --strategy weather --max-iter 200 2>&1)
+# 2. Run AutoOptimizer — all strategies with auto-apply
+OPT_OUTPUT=$(timeout 180 python3 auto_optimizer.py --strategy all --max-iter 200 --auto-apply 2>&1)
 echo "$OPT_OUTPUT" >> "$LOG"
 
 # 3. Run Quant Metrics (PSR/DSR/binHR)
@@ -23,40 +23,47 @@ echo "=== DONE $(date) ===" >> "$LOG"
 # 4. Invia risultati su Telegram
 if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
     # Estrai metriche chiave dall'output
-    SCORE=$(echo "$OPT_OUTPUT" | grep -oP 'Score: \+[\d.]+' | head -1)
-    WR=$(echo "$OPT_OUTPUT" | grep -oP 'WR: [\d.]+%' | tail -1)
-    PNL=$(echo "$OPT_OUTPUT" | grep -oP 'PnL: \$\+?[-\d.]+' | tail -1)
-    PF=$(echo "$OPT_OUTPUT" | grep -oP 'Profit Factor: [\d.]+' | tail -1)
-    IMPROVEMENT=$(echo "$OPT_OUTPUT" | grep -oP 'Improvement: \+[\d.]+%' | head -1)
-    BEST_PARAMS=$(echo "$OPT_OUTPUT" | grep -E '^\s+\w+:.*→' | head -5)
-    BASELINE=$(echo "$OPT_OUTPUT" | grep -oP 'Baseline: WR=[\d.]+% PnL=\$\+?[-\d.]+ PF=[\d.]+' | head -1)
-    CLOSED=$(echo "$OPT_OUTPUT" | grep -oP '\d+ closed' | head -1)
+    SUMMARY=$(echo "$OPT_OUTPUT" | grep -A 20 "OPTIMIZATION SUMMARY" | head -20)
+    APPLIED=$(echo "$OPT_OUTPUT" | grep "AUTO-APPLIED" | head -5)
+    IMPROVEMENTS=$(echo "$OPT_OUTPUT" | grep "NEW BEST" | wc -l)
 
-    # Emoji basato su improvement
-    if echo "$OPT_OUTPUT" | grep -q "NEW BEST"; then
+    # Per-strategy best results
+    BEST_LINES=$(echo "$OPT_OUTPUT" | grep -E "^\s+(Score|WR|PnL|Profit Factor|Improvement):" | tail -15)
+
+    # Count strategies
+    N_STRATEGIES=$(echo "$OPT_OUTPUT" | grep -c "AutoOptimizer v2.0")
+
+    # Build message
+    if [ -n "$APPLIED" ]; then
+        EMOJI="🚀"
+        STATUS="PARAMETRI AUTO-APPLICATI"
+    elif [ "$IMPROVEMENTS" -gt 0 ]; then
         EMOJI="📈"
-        STATUS="MIGLIORAMENTO TROVATO"
+        STATUS="${IMPROVEMENTS} miglioramenti trovati"
     else
         EMOJI="📊"
         STATUS="Nessun miglioramento"
     fi
 
-    # Controlla errori
-    if echo "$OPT_OUTPUT" | grep -q "Not enough closed trades"; then
-        MSG="⚠️ <b>AutoOptimizer</b>: dati insufficienti per ottimizzazione"
+    if echo "$OPT_OUTPUT" | grep -q "No trades found"; then
+        MSG="⚠️ <b>AutoOptimizer</b>: nessun trade trovato"
     else
-        MSG="${EMOJI} <b>AutoOptimizer $(date +%H:%M)</b>
+        # Closed trades count per strategy
+        CLOSED_INFO=$(echo "$OPT_OUTPUT" | grep "Closed trades by strategy" -A 10 | grep "^\s" | head -5)
+
+        MSG="${EMOJI} <b>AutoOptimizer v2.0 $(date +%H:%M)</b>
 
 <b>${STATUS}</b>
-${BASELINE:-}
-${CLOSED:-}
+Strategie: ${N_STRATEGIES}
 
-<b>Best:</b>
-${SCORE:-N/A} | ${WR:-N/A} | ${PNL:-N/A} | ${PF:-N/A}
-${IMPROVEMENT:-}
+<b>Trade chiusi:</b>
+<code>${CLOSED_INFO}</code>
 
-${BEST_PARAMS:+<b>Parametri raccomandati:</b>
-<code>${BEST_PARAMS}</code>}"
+${APPLIED:+<b>Auto-applied:</b>
+<code>${APPLIED}</code>
+}
+${SUMMARY:+<b>Summary:</b>
+<code>${SUMMARY}</code>}"
     fi
 
     curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \

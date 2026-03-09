@@ -222,19 +222,19 @@ def apply_filters(trades: list[Trade], params: FilterParams) -> tuple[list[Trade
     return passed, blocked
 
 
-def calc_metrics(trades: list[Trade]) -> dict:
-    """Calcola metriche da una lista di trade."""
-    weather = [t for t in trades if t.strategy == "weather"]
-    wins = [t for t in weather if t.outcome == "WIN"]
-    losses = [t for t in weather if t.outcome == "LOSS"]
+def calc_metrics(trades: list[Trade], strategy: str = "weather") -> dict:
+    """Calcola metriche da una lista di trade per una strategia."""
+    strat = [t for t in trades if t.strategy == strategy]
+    wins = [t for t in strat if t.outcome == "WIN"]
+    losses = [t for t in strat if t.outcome == "LOSS"]
     closed = wins + losses
 
-    total_pnl = sum(t.pnl for t in weather if t.pnl != 0)
+    total_pnl = sum(t.pnl for t in strat if t.pnl != 0)
     gross_wins = sum(t.pnl for t in wins if t.pnl > 0)
     gross_losses = abs(sum(t.pnl for t in losses if t.pnl < 0))
 
     return {
-        "total": len(weather),
+        "total": len(strat),
         "closed": len(closed),
         "wins": len(wins),
         "losses": len(losses),

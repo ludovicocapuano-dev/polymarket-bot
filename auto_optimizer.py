@@ -1,42 +1,46 @@
 #!/usr/bin/env python3
 """
-AutoOptimizer v1.0 — Autonomous strategy parameter optimization.
+AutoOptimizer v2.0 — Autonomous multi-strategy parameter optimization.
 
 Inspired by Karpathy's AutoResearch: an autonomous loop that
 proposes parameter changes, evaluates them via backtest, and
-keeps improvements.
+keeps improvements. Auto-applies when improvement is significant.
 
 Usage:
-    python3 auto_optimizer.py                   # run full optimization
-    python3 auto_optimizer.py --strategy weather  # optimize only weather
-    python3 auto_optimizer.py --max-iter 50      # limit iterations
-    python3 auto_optimizer.py --report           # show best params found
+    python3 auto_optimizer.py                          # optimize all strategies
+    python3 auto_optimizer.py --strategy weather       # optimize only weather
+    python3 auto_optimizer.py --strategy all           # all strategies sequentially
+    python3 auto_optimizer.py --max-iter 200           # limit iterations
+    python3 auto_optimizer.py --report                 # show best params found
+    python3 auto_optimizer.py --auto-apply             # auto-apply if >15% improvement
 
 How it works:
-1. Load historical trades from logs/trades.json
+1. Load historical trades from bot logs + trades.json
 2. Define parameter search space per strategy
 3. For each iteration:
    a. Propose a parameter variation (grid + random perturbation)
    b. Simulate trades with new parameters (backtest_replay)
-   c. Evaluate metric: Sharpe-like ratio = mean_pnl / std_pnl
+   c. Evaluate metric: risk-adjusted return
    d. If better than current best, keep the change
-4. Log all experiments to logs/auto_optimizer.json
-5. Print final recommendations
+4. Log all experiments to logs/auto_optimizer_{strategy}.json
+5. Auto-apply if improvement >15% and >50 closed trades (--auto-apply)
+6. Print final recommendations
 
 Design principles (from AutoResearch):
-- Single metric to optimize (Sharpe-like ratio)
+- Single metric to optimize (risk-adjusted avg PnL)
 - Fixed evaluation budget per experiment (backtest, not live)
 - Human-readable experiment log
-- Conservative: only recommend changes with >10% improvement
+- Conservative: only auto-apply with >15% improvement + >50 closed trades
 """
 
 import argparse
 import json
 import math
+import os
 import random
 import sys
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from pathlib import Path
 
 # Import backtest components
@@ -55,6 +59,7 @@ class Experiment:
     score: float       # optimization target (higher = better)
     improved: bool
     timestamp: str
+    strategy: str = ""
 
 
 @dataclass
@@ -70,26 +75,60 @@ class ParamRange:
 # ── Search spaces per strategy ──
 
 WEATHER_PARAMS = [
+    # Core filters
     ParamRange("min_edge", 0.02, 0.15, 0.01, 0.08),
     ParamRange("min_confidence", 0.30, 0.80, 0.05, 0.55),
-    ParamRange("min_payoff", 0.15, 0.50, 0.05, 0.25),
-    ParamRange("max_price", 0.70, 0.90, 0.05, 0.85),
+    ParamRange("min_payoff", 0.10, 0.50, 0.05, 0.25),
+    ParamRange("max_price", 0.70, 0.95, 0.05, 0.85),
     ParamRange("min_sources_high_price", 1, 3, 1, 2),
-    ParamRange("high_price_threshold", 0.55, 0.75, 0.05, 0.65),
+    ParamRange("high_price_threshold", 0.45, 0.80, 0.05, 0.65),
+    # v2.0: Expanded search space — horizon-specific edges
+    ParamRange("min_edge_same_day", 0.02, 0.10, 0.01, 0.05),
+    ParamRange("min_edge_1d", 0.05, 0.20, 0.01, 0.12),
+    ParamRange("min_edge_2d", 0.10, 0.30, 0.02, 0.20),
+    # v2.0: Sizing params
+    ParamRange("ev_minimum", 0.03, 0.20, 0.02, 0.10),
+    ParamRange("meta_label_threshold", 0.25, 0.60, 0.05, 0.40),
+    # v2.0: City tier caps
+    ParamRange("city_tier2_max_bet", 10, 40, 5, 25),
+    ParamRange("max_weather_bet", 30, 100, 10, 60),
 ]
 
+FAVORITE_LONGSHOT_PARAMS = [
+    ParamRange("min_price", 0.60, 0.80, 0.05, 0.70),
+    ParamRange("max_price", 0.80, 0.95, 0.05, 0.90),
+    ParamRange("base_alpha", 1.05, 1.30, 0.02, 1.12),
+    ParamRange("min_edge", 0.005, 0.03, 0.005, 0.01),
+    ParamRange("min_volume", 25000, 100000, 10000, 50000),
+    ParamRange("max_bet", 20, 75, 5, 40),
+    ParamRange("kelly_fraction", 0.25, 0.75, 0.05, 0.50),
+]
 
-def compute_score(metrics: dict) -> float:
+ABANDONED_POSITION_PARAMS = [
+    ParamRange("min_near_certain_price", 0.85, 0.97, 0.02, 0.94),
+    ParamRange("max_near_certain_price", 0.95, 0.999, 0.01, 0.99),
+    ParamRange("max_volume_24h", 250, 1000, 50, 500),
+    ParamRange("max_hours_to_resolution", 24, 72, 6, 48),
+    ParamRange("min_hours_to_resolution", 0.5, 6, 0.5, 1.0),
+    ParamRange("max_position", 25, 100, 5, 50),
+]
+
+STRATEGY_PARAMS = {
+    "weather": WEATHER_PARAMS,
+    "favorite_longshot": FAVORITE_LONGSHOT_PARAMS,
+    "abandoned_position": ABANDONED_POSITION_PARAMS,
+}
+
+# Auto-apply thresholds
+AUTO_APPLY_MIN_IMPROVEMENT = 15.0   # percent
+AUTO_APPLY_MIN_CLOSED = 50          # trades
+
+
+def compute_score(metrics: dict, strategy: str = "weather") -> float:
     """
     Optimization target: risk-adjusted return.
 
-    Score = PnL / max(1, n_trades) * WR_bonus * PF_bonus
-
-    Components:
-    - PnL: raw profit/loss
-    - WR bonus: multiplicative bonus for high win rate (>70%)
-    - PF bonus: multiplicative bonus for profit factor > 1.5
-    - Trade count penalty: penalize too few trades (overfitting)
+    Score = avg_pnl * WR_bonus * PF_bonus * count_penalty
     """
     pnl = metrics.get("pnl", 0)
     wr = metrics.get("wr", 0)
@@ -102,7 +141,7 @@ def compute_score(metrics: dict) -> float:
     # Base: average PnL per trade
     avg_pnl = pnl / n_closed
 
-    # WR bonus: reward high win rates (especially important for BUY_NO)
+    # WR bonus
     wr_bonus = 1.0
     if wr > 80:
         wr_bonus = 1.3
@@ -111,7 +150,7 @@ def compute_score(metrics: dict) -> float:
     elif wr < 50:
         wr_bonus = 0.7
 
-    # PF bonus: reward high profit factor
+    # PF bonus
     pf_bonus = 1.0
     if pf > 2.0:
         pf_bonus = 1.2
@@ -120,14 +159,14 @@ def compute_score(metrics: dict) -> float:
     elif pf < 1.0:
         pf_bonus = 0.8
 
-    # Trade count: penalize if too restrictive (< 10 trades)
+    # Trade count: penalize if too restrictive
     count_penalty = min(1.0, n_closed / 10.0)
 
     return avg_pnl * wr_bonus * pf_bonus * count_penalty
 
 
-def params_to_filter(params: dict) -> FilterParams:
-    """Convert param dict to FilterParams."""
+def params_to_filter(params: dict, strategy: str = "weather") -> FilterParams:
+    """Convert param dict to FilterParams (weather-specific)."""
     return FilterParams(
         min_edge=params.get("min_edge", 0.08),
         min_confidence=params.get("min_confidence", 0.55),
@@ -139,14 +178,84 @@ def params_to_filter(params: dict) -> FilterParams:
     )
 
 
+def apply_strategy_filters(trades: list[Trade], params: dict,
+                           strategy: str) -> tuple[list[Trade], list[Trade]]:
+    """Apply filters for any strategy (not just weather)."""
+    if strategy == "weather":
+        return apply_filters(trades, params_to_filter(params, strategy))
+
+    # Generic edge/price filter for other strategies
+    passed = []
+    blocked = []
+    for t in trades:
+        if t.strategy != strategy:
+            passed.append(t)
+            continue
+
+        block = False
+
+        # Edge filter
+        min_edge = params.get("min_edge", 0)
+        if min_edge > 0 and t.edge > 0 and t.edge < min_edge:
+            block = True
+
+        # Price range filter (favorite_longshot)
+        min_price = params.get("min_price", 0)
+        max_price = params.get("max_price", 1.0)
+        if min_price > 0 and t.price > 0 and t.price < min_price:
+            block = True
+        if max_price < 1.0 and t.price > 0 and t.price > max_price:
+            block = True
+
+        # Near-certain price (abandoned_position)
+        min_nc = params.get("min_near_certain_price", 0)
+        max_nc = params.get("max_near_certain_price", 1.0)
+        if min_nc > 0 and t.price > 0 and t.price < min_nc:
+            block = True
+        if max_nc < 1.0 and t.price > 0 and t.price > max_nc:
+            block = True
+
+        if block:
+            blocked.append(t)
+        else:
+            passed.append(t)
+
+    return passed, blocked
+
+
+def calc_strategy_metrics(trades: list[Trade], strategy: str) -> dict:
+    """Calculate metrics for any strategy."""
+    strat = [t for t in trades if t.strategy == strategy]
+    wins = [t for t in strat if t.outcome == "WIN"]
+    losses = [t for t in strat if t.outcome == "LOSS"]
+    closed = wins + losses
+
+    total_pnl = sum(t.pnl for t in strat if t.pnl != 0)
+    gross_wins = sum(t.pnl for t in wins if t.pnl > 0)
+    gross_losses = abs(sum(t.pnl for t in losses if t.pnl < 0))
+
+    return {
+        "total": len(strat),
+        "closed": len(closed),
+        "wins": len(wins),
+        "losses": len(losses),
+        "wr": len(wins) / len(closed) * 100 if closed else 0,
+        "pnl": total_pnl,
+        "gross_wins": gross_wins,
+        "gross_losses": gross_losses,
+        "profit_factor": gross_wins / gross_losses if gross_losses > 0 else float("inf"),
+        "avg_pnl": total_pnl / len(closed) if closed else 0,
+    }
+
+
 def propose_variation(param_ranges: list[ParamRange], best_params: dict,
                       iteration: int) -> dict:
     """
     Propose a parameter variation.
 
     Strategy:
-    - First N iterations: grid search (one param at a time)
-    - After: random perturbation of 1-2 params from best known
+    - First N*3 iterations: grid search (one param at a time)
+    - After: random perturbation of 1-3 params from best known
     """
     params = dict(best_params)
     n_params = len(param_ranges)
@@ -160,12 +269,12 @@ def propose_variation(param_ranges: list[ParamRange], best_params: dict,
         new_val = max(p.min_val, min(p.max_val, new_val))
         params[p.name] = round(new_val, 4)
     else:
-        # Random perturbation phase: perturb 1-2 params
-        n_perturb = random.choice([1, 1, 2])
-        chosen = random.sample(param_ranges, n_perturb)
+        # Random perturbation phase: perturb 1-3 params
+        n_perturb = random.choice([1, 1, 2, 2, 3])
+        chosen = random.sample(param_ranges, min(n_perturb, len(param_ranges)))
         for p in chosen:
             # Random walk from best known value
-            delta = random.gauss(0, p.step)
+            delta = random.gauss(0, p.step * 1.5)  # wider search
             base = best_params.get(p.name, p.current)
             new_val = base + delta
             new_val = max(p.min_val, min(p.max_val, new_val))
@@ -180,23 +289,25 @@ def propose_variation(param_ranges: list[ParamRange], best_params: dict,
 
 def run_optimization(trades: list[Trade], param_ranges: list[ParamRange],
                      max_iter: int = 100, strategy: str = "weather") -> list[Experiment]:
-    """
-    AutoResearch-style optimization loop.
-
-    Returns list of all experiments sorted by score.
-    """
+    """AutoResearch-style optimization loop."""
     experiments: list[Experiment] = []
 
     # Initialize with current params
     best_params = {p.name: p.current for p in param_ranges}
-    best_filter = params_to_filter(best_params)
-    passed, blocked = apply_filters(list(trades), best_filter)
-    best_metrics = calc_metrics(passed)
-    best_score = compute_score(best_metrics)
+
+    if strategy == "weather":
+        passed, blocked = apply_filters(list(trades), params_to_filter(best_params))
+        best_metrics = calc_metrics(passed)
+    else:
+        passed, blocked = apply_strategy_filters(list(trades), best_params, strategy)
+        best_metrics = calc_strategy_metrics(passed, strategy)
+
+    best_score = compute_score(best_metrics, strategy)
 
     print(f"\n{'='*70}")
-    print(f"  AutoOptimizer v1.0 — {strategy}")
+    print(f"  AutoOptimizer v2.0 — {strategy}")
     print(f"  Trades: {len(trades)} | Max iterations: {max_iter}")
+    print(f"  Params: {len(param_ranges)} searchable")
     print(f"  Baseline score: {best_score:.4f}")
     print(f"  Baseline: WR={best_metrics['wr']:.1f}% PnL=${best_metrics['pnl']:+.2f} "
           f"PF={best_metrics['profit_factor']:.2f}")
@@ -206,14 +317,16 @@ def run_optimization(trades: list[Trade], param_ranges: list[ParamRange],
     start = time.time()
 
     for i in range(max_iter):
-        # Propose variation
         candidate_params = propose_variation(param_ranges, best_params, i)
 
-        # Evaluate
-        candidate_filter = params_to_filter(candidate_params)
-        passed, blocked = apply_filters(list(trades), candidate_filter)
-        metrics = calc_metrics(passed)
-        score = compute_score(metrics)
+        if strategy == "weather":
+            passed, blocked = apply_filters(list(trades), params_to_filter(candidate_params))
+            metrics = calc_metrics(passed)
+        else:
+            passed, blocked = apply_strategy_filters(list(trades), candidate_params, strategy)
+            metrics = calc_strategy_metrics(passed, strategy)
+
+        score = compute_score(metrics, strategy)
 
         improved = score > best_score
         if improved:
@@ -229,10 +342,10 @@ def run_optimization(trades: list[Trade], param_ranges: list[ParamRange],
             score=score,
             improved=improved,
             timestamp=time.strftime("%Y-%m-%d %H:%M:%S"),
+            strategy=strategy,
         )
         experiments.append(exp)
 
-        # Log progress
         marker = " *** NEW BEST ***" if improved else ""
         if improved or i % 10 == 0:
             print(
@@ -252,18 +365,18 @@ def run_optimization(trades: list[Trade], param_ranges: list[ParamRange],
 
 
 def print_recommendations(experiments: list[Experiment],
-                          param_ranges: list[ParamRange]):
+                          param_ranges: list[ParamRange],
+                          strategy: str = "weather"):
     """Print final optimization recommendations."""
     if not experiments:
         print("No experiments to analyze.")
         return
 
-    # Sort by score
     best = max(experiments, key=lambda e: e.score)
     baseline_params = {p.name: p.current for p in param_ranges}
 
     print(f"\n{'='*70}")
-    print(f"  BEST PARAMETERS FOUND")
+    print(f"  BEST PARAMETERS FOUND — {strategy}")
     print(f"{'='*70}")
     print(f"  Score: {best.score:+.4f}")
     print(f"  WR: {best.metrics['wr']:.1f}%")
@@ -283,20 +396,17 @@ def print_recommendations(experiments: list[Experiment],
     if not changes:
         print("  No parameter changes recommended (current params are optimal).")
 
-    # Safety check: is the improvement > 10%?
-    baseline = next(
-        (e for e in experiments if e.iteration == 0), None
-    )
+    baseline = next((e for e in experiments if e.iteration == 0), None)
+    improvement_pct = 0
     if baseline and baseline.score > 0:
         improvement_pct = (best.score - baseline.score) / abs(baseline.score) * 100
         print(f"\n  Improvement: {improvement_pct:+.1f}% vs baseline")
         if improvement_pct < 10:
             print("  ⚠ Improvement < 10% — may not be statistically significant.")
-            print("    Consider running more iterations or gathering more trade data.")
     elif baseline:
         print(f"\n  Baseline score was {baseline.score:.4f} → {best.score:.4f}")
 
-    # Top 5 experiments
+    # Top 5
     print(f"\n{'='*70}")
     print(f"  TOP 5 EXPERIMENTS")
     print(f"{'='*70}")
@@ -312,6 +422,71 @@ def print_recommendations(experiments: list[Experiment],
             f"trades={exp.metrics['closed']} | {diff_params}"
         )
 
+    return improvement_pct, changes, best
+
+
+def auto_apply_params(strategy: str, changes: list, best: Experiment,
+                      improvement_pct: float):
+    """
+    Auto-apply optimized parameters to the live config.
+
+    Writes to logs/auto_optimizer_applied_{strategy}.json so the bot
+    can pick up new params on next cycle.
+    """
+    n_closed = best.metrics.get("closed", 0)
+
+    if improvement_pct < AUTO_APPLY_MIN_IMPROVEMENT:
+        print(f"\n  ⏭ Skip auto-apply: improvement {improvement_pct:.1f}% < "
+              f"{AUTO_APPLY_MIN_IMPROVEMENT}% threshold")
+        return False
+
+    if n_closed < AUTO_APPLY_MIN_CLOSED:
+        print(f"\n  ⏭ Skip auto-apply: only {n_closed} closed trades < "
+              f"{AUTO_APPLY_MIN_CLOSED} minimum")
+        return False
+
+    if not changes:
+        print("\n  ⏭ Skip auto-apply: no parameter changes.")
+        return False
+
+    # Write applied params
+    applied = {
+        "strategy": strategy,
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "improvement_pct": round(improvement_pct, 2),
+        "closed_trades": n_closed,
+        "score": best.score,
+        "metrics": best.metrics,
+        "params": best.params,
+        "changes": [
+            {"name": name, "old": old, "new": new}
+            for name, old, new in changes
+        ],
+    }
+
+    applied_file = LOG_DIR / f"auto_optimizer_applied_{strategy}.json"
+    # Append to history
+    history = []
+    if applied_file.exists():
+        try:
+            history = json.loads(applied_file.read_text())
+            if not isinstance(history, list):
+                history = [history]
+        except Exception:
+            history = []
+
+    history.append(applied)
+    with open(applied_file, "w") as f:
+        json.dump(history, f, indent=2)
+
+    print(f"\n  ✅ AUTO-APPLIED: {len(changes)} parameter(s) for {strategy}")
+    print(f"     Improvement: {improvement_pct:+.1f}% | Trades: {n_closed}")
+    print(f"     Saved to: {applied_file}")
+    for name, old, new in changes:
+        print(f"     {name}: {old} → {new}")
+
+    return True
+
 
 def save_experiments(experiments: list[Experiment], path: Path):
     """Save experiment log to JSON."""
@@ -322,44 +497,12 @@ def save_experiments(experiments: list[Experiment], path: Path):
     print(f"\n  Experiment log saved to {path}")
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="AutoOptimizer — autonomous strategy parameter optimization"
-    )
-    parser.add_argument(
-        "--strategy", default="weather",
-        choices=["weather"],
-        help="Strategy to optimize (default: weather)"
-    )
-    parser.add_argument(
-        "--max-iter", type=int, default=100,
-        help="Maximum iterations (default: 100)"
-    )
-    parser.add_argument(
-        "--report", action="store_true",
-        help="Show results from previous optimization run"
-    )
-    args = parser.parse_args()
-
-    exp_file = LOG_DIR / "auto_optimizer.json"
-
-    if args.report:
-        if not exp_file.exists():
-            print("No previous optimization results found.")
-            sys.exit(1)
-        data = json.loads(exp_file.read_text())
-        experiments = [
-            Experiment(**d) for d in data
-        ]
-        print_recommendations(experiments, WEATHER_PARAMS)
-        return
-
-    # Load trades — merge all sources (JSON + bot logs)
+def load_trades():
+    """Load and merge trades from all sources."""
     log_files = sorted(LOG_DIR.glob("bot_*.log"))
     trades = parse_trades_json()
     log_trades = parse_trades_from_logs(log_files)
     if log_trades:
-        # Merge: log trades have real outcome data from VINTO/PERSO
         existing_ts = {(t.timestamp, t.strategy, t.price) for t in trades}
         added = 0
         for t in log_trades:
@@ -371,7 +514,7 @@ def main():
         if added:
             print(f"  + {added} trades from bot logs")
 
-    # v12.0: Also load on-chain trade data if available
+    # On-chain weather data
     onchain_file = LOG_DIR / "weather_trades_onchain.json"
     if onchain_file.exists():
         try:
@@ -396,9 +539,7 @@ def main():
                     uncertainty=d.get("uncertainty", 0),
                 )
                 onchain_trades.append(t)
-            # Merge: on-chain trades have real PnL data
             if onchain_trades:
-                # Deduplicate by preferring on-chain (has real outcomes)
                 existing_questions = {t.question for t in trades}
                 for t in onchain_trades:
                     if t.question not in existing_questions:
@@ -407,34 +548,142 @@ def main():
         except Exception as e:
             print(f"  Warning: could not load on-chain trades: {e}")
 
+    return trades
+
+
+def optimize_strategy(trades: list[Trade], strategy: str, max_iter: int,
+                      auto_apply: bool) -> dict:
+    """Run optimization for a single strategy. Returns summary dict."""
+    param_ranges = STRATEGY_PARAMS.get(strategy)
+    if not param_ranges:
+        print(f"  No param ranges defined for {strategy}, skipping.")
+        return {"strategy": strategy, "status": "no_params"}
+
+    strategy_trades = [t for t in trades if t.strategy == strategy]
+    closed = [t for t in strategy_trades if t.outcome in ("WIN", "LOSS")]
+
+    print(f"\nLoaded {len(trades)} trades, {len(strategy_trades)} {strategy} "
+          f"({len(closed)} closed)")
+
+    if len(closed) < 10:
+        print(f"Not enough closed trades ({len(closed)} < 10). Skipping {strategy}.")
+        return {"strategy": strategy, "status": "insufficient_data",
+                "closed": len(closed)}
+
+    # Run optimization with unique seed per strategy
+    random.seed(hash(strategy) + 42)
+    experiments = run_optimization(
+        trades, param_ranges,
+        max_iter=max_iter, strategy=strategy
+    )
+
+    # Save
+    exp_file = LOG_DIR / f"auto_optimizer_{strategy}.json"
+    save_experiments(experiments, exp_file)
+
+    # Report
+    result = print_recommendations(experiments, param_ranges, strategy)
+    improvement_pct, changes, best = result
+
+    # Auto-apply
+    applied = False
+    if auto_apply:
+        applied = auto_apply_params(strategy, changes, best, improvement_pct)
+
+    return {
+        "strategy": strategy,
+        "status": "ok",
+        "closed": len(closed),
+        "improvement_pct": improvement_pct,
+        "applied": applied,
+        "best_score": best.score,
+        "best_metrics": best.metrics,
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="AutoOptimizer v2.0 — multi-strategy parameter optimization"
+    )
+    parser.add_argument(
+        "--strategy", default="all",
+        choices=["weather", "favorite_longshot", "abandoned_position", "all"],
+        help="Strategy to optimize (default: all)"
+    )
+    parser.add_argument(
+        "--max-iter", type=int, default=200,
+        help="Maximum iterations per strategy (default: 200)"
+    )
+    parser.add_argument(
+        "--report", action="store_true",
+        help="Show results from previous optimization run"
+    )
+    parser.add_argument(
+        "--auto-apply", action="store_true",
+        help=f"Auto-apply params if improvement >{AUTO_APPLY_MIN_IMPROVEMENT}%% "
+             f"and >{AUTO_APPLY_MIN_CLOSED} closed trades"
+    )
+    args = parser.parse_args()
+
+    if args.strategy == "all":
+        strategies = list(STRATEGY_PARAMS.keys())
+    else:
+        strategies = [args.strategy]
+
+    if args.report:
+        for strategy in strategies:
+            param_ranges = STRATEGY_PARAMS.get(strategy, [])
+            exp_file = LOG_DIR / f"auto_optimizer_{strategy}.json"
+            # Fallback to old filename
+            if not exp_file.exists():
+                exp_file = LOG_DIR / "auto_optimizer.json"
+            if not exp_file.exists():
+                print(f"No previous results for {strategy}.")
+                continue
+            data = json.loads(exp_file.read_text())
+            experiments = [Experiment(**d) for d in data]
+            print_recommendations(experiments, param_ranges, strategy)
+        return
+
+    # Load all trades once
+    trades = load_trades()
     if not trades:
         print("No trades found. Run the bot first to generate trade data.")
         sys.exit(1)
 
-    strategy_trades = [t for t in trades if t.strategy == args.strategy]
-    closed = [t for t in strategy_trades if t.outcome in ("WIN", "LOSS")]
+    # Show trade distribution
+    strat_counts = {}
+    for t in trades:
+        if t.outcome in ("WIN", "LOSS"):
+            strat_counts[t.strategy] = strat_counts.get(t.strategy, 0) + 1
+    print(f"\nClosed trades by strategy:")
+    for s, c in sorted(strat_counts.items(), key=lambda x: -x[1]):
+        print(f"  {s}: {c}")
 
-    print(f"Loaded {len(trades)} trades, {len(strategy_trades)} {args.strategy} "
-          f"({len(closed)} closed)")
+    # Optimize each strategy
+    results = []
+    for strategy in strategies:
+        result = optimize_strategy(trades, strategy, args.max_iter, args.auto_apply)
+        results.append(result)
 
-    if len(closed) < 10:
-        print(f"Not enough closed trades ({len(closed)} < 10). "
-              f"Need more data for meaningful optimization.")
-        sys.exit(1)
-
-    # Select param ranges
-    param_ranges = WEATHER_PARAMS
-
-    # Run optimization
-    random.seed(42)  # reproducible
-    experiments = run_optimization(
-        trades, param_ranges,
-        max_iter=args.max_iter, strategy=args.strategy
-    )
-
-    # Save and report
-    save_experiments(experiments, exp_file)
-    print_recommendations(experiments, param_ranges)
+    # Summary
+    if len(results) > 1:
+        print(f"\n{'='*70}")
+        print(f"  OPTIMIZATION SUMMARY")
+        print(f"{'='*70}")
+        for r in results:
+            status = r.get("status", "?")
+            if status == "ok":
+                imp = r.get("improvement_pct", 0)
+                applied = "✅ APPLIED" if r.get("applied") else ""
+                print(f"  {r['strategy']:25s} | {r['closed']:3d} closed | "
+                      f"improvement={imp:+.1f}% | score={r['best_score']:.4f} "
+                      f"{applied}")
+            elif status == "insufficient_data":
+                print(f"  {r['strategy']:25s} | {r.get('closed', 0):3d} closed | "
+                      f"⏭ insufficient data")
+            else:
+                print(f"  {r['strategy']:25s} | {status}")
 
 
 if __name__ == "__main__":
