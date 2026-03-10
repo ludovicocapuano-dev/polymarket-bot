@@ -19,6 +19,10 @@ class PolymarketCreds:
     host: str = "https://clob.polymarket.com"
     gamma_host: str = "https://gamma-api.polymarket.com"
     chain_id: int = 137
+    # v12.0.4: Builder Program credentials (gasless + volume rewards)
+    builder_api_key: str = ""
+    builder_api_secret: str = ""
+    builder_api_passphrase: str = ""
 
 
 @dataclass
@@ -74,6 +78,10 @@ class Config:
             api_passphrase=os.getenv("POLYMARKET_API_PASSPHRASE", ""),
             private_key=os.getenv("PRIVATE_KEY", ""),
             funder_address=os.getenv("FUNDER_ADDRESS", ""),
+            # v12.0.4: Builder Program
+            builder_api_key=os.getenv("BUILDER_API_KEY", ""),
+            builder_api_secret=os.getenv("BUILDER_API_SECRET", ""),
+            builder_api_passphrase=os.getenv("BUILDER_API_PASSPHRASE", ""),
         )
         risk = RiskConfig(
             total_capital=float(os.getenv("TOTAL_CAPITAL", "1000")),

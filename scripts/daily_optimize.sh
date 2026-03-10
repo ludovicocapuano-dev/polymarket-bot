@@ -31,7 +31,7 @@ if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
     BEST_LINES=$(echo "$OPT_OUTPUT" | grep -E "^\s+(Score|WR|PnL|Profit Factor|Improvement):" | tail -15)
 
     # Count strategies
-    N_STRATEGIES=$(echo "$OPT_OUTPUT" | grep -c "AutoOptimizer v2.0")
+    N_STRATEGIES=$(echo "$OPT_OUTPUT" | grep -c "AutoOptimizer v2\.")
 
     # Build message
     if [ -n "$APPLIED" ]; then

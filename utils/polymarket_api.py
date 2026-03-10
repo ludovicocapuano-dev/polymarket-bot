@@ -82,12 +82,30 @@ class PolymarketAPI:
                 f"key_tail={priv_key[-4:]} funder={funder} sig_type={sig_type}"
             )
 
+            # v12.0.4: Builder Program — gasless tx + volume rewards
+            builder_config = None
+            if self.creds.builder_api_key:
+                try:
+                    from py_builder_signing_sdk.config import BuilderConfig
+                    from py_builder_signing_sdk.sdk_types import BuilderApiKeyCreds
+                    builder_config = BuilderConfig(
+                        local_builder_creds=BuilderApiKeyCreds(
+                            key=self.creds.builder_api_key.strip(),
+                            secret=self.creds.builder_api_secret.strip(),
+                            passphrase=self.creds.builder_api_passphrase.strip(),
+                        )
+                    )
+                    logger.info("[BUILDER] Builder Program credentials loaded")
+                except Exception as e:
+                    logger.warning(f"[BUILDER] Could not load builder config: {e}")
+
             self.clob = ClobClient(
                 host=self.creds.host,
                 chain_id=self.creds.chain_id,
                 key=priv_key,
                 signature_type=sig_type,
                 funder=funder or None,
+                builder_config=builder_config,
             )
 
             logger.info(
