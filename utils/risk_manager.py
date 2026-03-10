@@ -970,7 +970,7 @@ class RiskManager:
         """Salva lo storico trade su file (e su DB se disponibile)."""
         data = []
         for t in self.trades:
-            data.append({
+            entry = {
                 "time": datetime.fromtimestamp(t.timestamp, tz=timezone.utc).isoformat(),
                 "strategy": t.strategy,
                 "market": t.market_id,
@@ -981,7 +981,17 @@ class RiskManager:
                 "result": t.result,
                 "pnl": t.pnl,
                 "reason": t.reason,
-            })
+            }
+            # v12.0.5: extra fields for self-learning (city blacklist, optimizer)
+            if getattr(t, 'city', ''):
+                entry["city"] = t.city
+            if getattr(t, 'horizon', 0):
+                entry["horizon"] = t.horizon
+            if getattr(t, 'sources', 0):
+                entry["sources"] = t.sources
+            if getattr(t, 'confidence', 0):
+                entry["confidence"] = round(t.confidence, 4)
+            data.append(entry)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as f:
             json.dump(data, f, indent=2)

@@ -70,9 +70,80 @@ MAX_WEATHER_BET = 60.0  # v10.8.4: da $35, proporzionale al capitale ($3.5K)
 # Tier 1: WR >= 75%, volume alto → full budget
 # Tier 2: WR 57-74% → budget ridotto 60%
 # Tier 3: WR < 50% → BLACKLIST (perdono soldi)
-CITY_BLACKLIST = {"london", "paris"}  # 35% WR combinato, 5W/9L
-CITY_TIER2 = {"miami", "buenos aires", "ankara"}  # WR 50-58%, marginali
+CITY_BLACKLIST_DEFAULT = {"london", "paris"}  # 35% WR combinato, fallback statico
+CITY_TIER2_DEFAULT = {"miami", "buenos aires", "ankara"}  # WR 50-58%, fallback
 CITY_TIER2_MAX_BET = 25.0  # cap ridotto per città marginali
+
+# v12.0.5: Dynamic city blacklist — auto-generated from recent trade WR
+_dynamic_city_blacklist: set[str] = set(CITY_BLACKLIST_DEFAULT)
+_dynamic_city_tier2: set[str] = set(CITY_TIER2_DEFAULT)
+_city_blacklist_updated: float = 0.0
+
+
+def refresh_city_blacklist(trades_path: str = "logs/trades.json",
+                           min_trades: int = 5,
+                           blacklist_wr: float = 0.45,
+                           tier2_wr: float = 0.55):
+    """
+    v12.0.5: Auto-generate city blacklist from recent trade WR.
+    Called periodically by the bot. Learns from mistakes.
+    """
+    import json
+    import time as _time
+    global _dynamic_city_blacklist, _dynamic_city_tier2, _city_blacklist_updated
+
+    # Refresh max once per hour
+    if _time.time() - _city_blacklist_updated < 3600:
+        return
+
+    try:
+        with open(trades_path) as f:
+            all_trades = json.load(f)
+    except Exception:
+        return
+
+    # Filter weather trades with city info
+    city_results: dict[str, list[bool]] = {}
+    for t in all_trades:
+        if t.get("strategy") != "weather":
+            continue
+        city = t.get("city", "").lower()
+        result = t.get("result", "")
+        if not city or result not in ("WIN", "LOSS"):
+            continue
+        city_results.setdefault(city, []).append(result == "WIN")
+
+    new_blacklist = set()
+    new_tier2 = set()
+    for city, outcomes in city_results.items():
+        if len(outcomes) < min_trades:
+            # Not enough data — keep default if applicable
+            if city in CITY_BLACKLIST_DEFAULT:
+                new_blacklist.add(city)
+            elif city in CITY_TIER2_DEFAULT:
+                new_tier2.add(city)
+            continue
+        wr = sum(outcomes) / len(outcomes)
+        if wr < blacklist_wr:
+            new_blacklist.add(city)
+            logger.info(f"[CITY-LEARN] {city}: WR {wr:.0%} ({len(outcomes)} trades) → BLACKLIST")
+        elif wr < tier2_wr:
+            new_tier2.add(city)
+            logger.info(f"[CITY-LEARN] {city}: WR {wr:.0%} ({len(outcomes)} trades) → TIER2")
+
+    # If no city data yet, keep defaults
+    if not city_results:
+        _city_blacklist_updated = _time.time()
+        return
+
+    if new_blacklist != _dynamic_city_blacklist or new_tier2 != _dynamic_city_tier2:
+        logger.info(
+            f"[CITY-LEARN] Updated: blacklist={new_blacklist or '{}'}, "
+            f"tier2={new_tier2 or '{}'}"
+        )
+    _dynamic_city_blacklist = new_blacklist
+    _dynamic_city_tier2 = new_tier2
+    _city_blacklist_updated = _time.time()
 
 # ── Pattern per riconoscere mercati weather ──────────────────
 WEATHER_PATTERNS = [
@@ -262,11 +333,11 @@ class WeatherStrategy:
             logger.debug(f"[WEATHER-SKIP] no city: {q[:80]}")
             return None
 
-        # v11.1: Blacklist citta' con WR < 50% (London 33%, Paris 37%)
-        if city.lower() in CITY_BLACKLIST:
+        # v12.0.5: Dynamic city blacklist (learns from trade outcomes)
+        if city.lower() in _dynamic_city_blacklist:
             logger.debug(
                 f"[WEATHER-SKIP] blacklisted city: {city} "
-                f"(WR storico < 50%)"
+                f"(dynamic WR < {int(0.45*100)}%)"
             )
             return None
 
@@ -809,7 +880,7 @@ class WeatherStrategy:
             max_bet = MAX_WEATHER_BET
 
         # City tier cap
-        if opp.city.lower() in CITY_TIER2:
+        if opp.city.lower() in _dynamic_city_tier2:
             max_bet = min(max_bet, CITY_TIER2_MAX_BET)
 
         if size > max_bet:

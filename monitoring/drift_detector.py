@@ -80,11 +80,22 @@ class DriftDetector:
         self._ewma_initialized: bool = False
         self._EWMA_LAMBDA = 0.15
 
-    def record_outcome(self, strategy: str, won: bool, pnl: float = 0.0):
+        # v12.0.5: Per-city drift tracking (weather)
+        self._city_outcomes: dict[str, list[bool]] = defaultdict(list)
+
+    def record_outcome(self, strategy: str, won: bool, pnl: float = 0.0,
+                       city: str = ""):
         """Registra l'esito di un trade + aggiorna CUSUM."""
         self._outcomes[strategy].append(won)
         if pnl != 0.0:
             self._pnls[strategy].append(pnl)
+
+        # v12.0.5: per-city tracking
+        if city:
+            self._city_outcomes[city.lower()].append(won)
+            if len(self._city_outcomes[city.lower()]) > self._max_history:
+                self._city_outcomes[city.lower()] = \
+                    self._city_outcomes[city.lower()][-self._max_history:]
         if len(self._outcomes[strategy]) > self._max_history:
             self._outcomes[strategy] = self._outcomes[strategy][-self._max_history:]
         if len(self._pnls[strategy]) > self._max_history:
@@ -137,6 +148,22 @@ class DriftDetector:
         alert = self._check_microstructure_drift()
         if alert:
             alerts.append(alert)
+
+        # v12.0.5: Per-city drift detection
+        for city, outcomes in self._city_outcomes.items():
+            if len(outcomes) >= 8:
+                recent = outcomes[-10:]
+                wr = sum(recent) / len(recent)
+                if wr < 0.40:
+                    alerts.append(DriftAlert(
+                        alert_type="city_drift",
+                        strategy="weather",
+                        severity="HIGH" if wr < 0.30 else "MEDIUM",
+                        message=(
+                            f"City {city}: WR {wr:.0%} over last "
+                            f"{len(recent)} trades — consider blacklisting"
+                        ),
+                    ))
 
         if alerts:
             for a in alerts:
@@ -329,3 +356,16 @@ class DriftDetector:
             "cusum_score": round(cusum_score, 3),
             "sharpe_score": round(sharpe_score, 3),
         }
+
+    def get_city_stats(self) -> dict[str, dict]:
+        """v12.0.5: Per-city WR stats for self-learning."""
+        stats = {}
+        for city, outcomes in self._city_outcomes.items():
+            if len(outcomes) >= 3:
+                recent = outcomes[-20:]
+                stats[city] = {
+                    "wr": round(sum(recent) / len(recent), 3),
+                    "total": len(outcomes),
+                    "recent": len(recent),
+                }
+        return stats

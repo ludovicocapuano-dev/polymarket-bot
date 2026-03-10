@@ -513,6 +513,14 @@ class MultiStrategyBot:
                 if self._cycle % 100 == 1:
                     self._reload_auto_optimized_params()
 
+                # v12.0.5: refresh dynamic city blacklist (learns from outcomes)
+                if self._cycle % 200 == 1:
+                    try:
+                        from weather import refresh_city_blacklist
+                        refresh_city_blacklist()
+                    except Exception:
+                        pass
+
                 # ── v9.2: Fetch ibrido REST + WebSocket ──
                 # REST full refresh ogni 20 cicli (~60s) o se WS non disponibile
                 # WS aggiorna solo i prezzi tra un refresh e l'altro
@@ -867,7 +875,10 @@ class MultiStrategyBot:
                                 self.attribution.record_exit(
                                     t.token_id, pnl=pnl, won=r["won"]
                                 )
-                                self.drift_detector.record_outcome(t.strategy, r["won"], pnl=pnl)
+                                self.drift_detector.record_outcome(
+                                    t.strategy, r["won"], pnl=pnl,
+                                    city=getattr(t, 'city', ''),
+                                )
                                 logger.info(
                                     f"[PNL] Trade chiuso: "
                                     f"{'VINTO' if r['won'] else 'PERSO'} "
@@ -985,11 +996,32 @@ class MultiStrategyBot:
                         drift_alerts = self.drift_detector.check_drift()
                         for alert in drift_alerts:
                             logger.warning(f"[DRIFT] {alert.message}")
+                        # v12.0.5: Calibration → azione (auto-apply suggestions)
                         suggestions = self.calibration.analyze()
                         for s in suggestions:
                             logger.info(f"[CALIBRATION] {s.reason}")
+                            # Auto-apply min_edge increase for weather
+                            if (s.strategy == "weather" and s.parameter == "min_edge"
+                                    and "+0.01" in s.new_value):
+                                old_edge = self.weather.min_edge
+                                self.weather.min_edge = min(0.15, old_edge + 0.01)
+                                logger.info(
+                                    f"[AUTO-CALIBRATE] weather.min_edge: "
+                                    f"{old_edge:.3f} → {self.weather.min_edge:.3f} "
+                                    f"(Brier-driven)"
+                                )
+                            # Auto-apply min_edge decrease
+                            elif (s.strategy == "weather" and s.parameter == "min_edge"
+                                  and "-0.005" in s.new_value):
+                                old_edge = self.weather.min_edge
+                                self.weather.min_edge = max(0.02, old_edge - 0.005)
+                                logger.info(
+                                    f"[AUTO-CALIBRATE] weather.min_edge: "
+                                    f"{old_edge:.3f} → {self.weather.min_edge:.3f} "
+                                    f"(Brier good)"
+                                )
 
-                        # v11.0: Log IC + health score + Brier decomposition
+                        # v11.0 + v12.0.5: IC + health + auto-halt on weak signal
                         for strat in ["weather", "resolution_sniper", "favorite_longshot"]:
                             health = self.drift_detector.get_strategy_health(strat)
                             if health["samples"] > 0:
@@ -1003,6 +1035,22 @@ class MultiStrategyBot:
                                     f"(rel={brier_d['reliability']:.3f} "
                                     f"res={brier_d['resolution']:.3f})"
                                 )
+                                # v12.0.5: Auto-halt on low IC (signal is noise)
+                                n_completed = len([
+                                    a for a in self.attribution._completed
+                                    if a.strategy == strat
+                                ])
+                                if ic < 0.03 and n_completed >= 50:
+                                    logger.warning(
+                                        f"[SELF-LEARN] {strat}: IC={ic:.3f} < 0.03 "
+                                        f"({n_completed} trades) → HALT 24h"
+                                    )
+                                    self.risk._strategy_halted[strat] = True
+                                    self.risk._strategy_halt_reason[strat] = (
+                                        f"IC={ic:.3f} weak signal ({n_completed} trades)"
+                                    )
+                                    import time as _t
+                                    self.risk._strategy_halt_until[strat] = _t.time() + 86400
                     except Exception as e:
                         logger.warning(f"[v9.0] Errore drift/calibration: {e}")
 
