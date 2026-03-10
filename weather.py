@@ -111,6 +111,9 @@ class WeatherOpportunity:
     expected_value: float = 0.0     # EV per $1 investito
     payoff_ratio: float = 0.0       # profit/loss ratio se win
     meta_features: object = None    # v12.0.1: MetaFeatures for meta-labeling
+    # v12.0.4: extra features for AutoOptimizer
+    days_ahead: int = 0
+    n_sources: int = 0
 
 
 class WeatherStrategy:
@@ -545,6 +548,8 @@ class WeatherStrategy:
             expected_value=expected_value,
             payoff_ratio=payoff_ratio,
             meta_features=mf,
+            days_ahead=days_ahead,
+            n_sources=n_sources,
             reasoning=(
                 f"{city.upper()} {date} | "
                 f"Bucket: {label} ({unit}) | "
@@ -829,6 +834,10 @@ class WeatherStrategy:
             price=price,
             edge=opp.edge,
             reason=opp.reasoning,
+            city=opp.city,
+            horizon=opp.days_ahead,
+            sources=opp.n_sources,
+            confidence=opp.confidence,
         )
         trade._meta_features = opp.meta_features
 

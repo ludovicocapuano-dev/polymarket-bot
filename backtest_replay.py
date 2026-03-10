@@ -61,9 +61,14 @@ def parse_trades_from_logs(log_files: list[Path]) -> list[Trade]:
     open_trades: dict[str, list] = {}
     outcomes: dict[str, list] = {}
 
+    # v12.0.4: extended regex to capture optional city/horizon/sources/conf
     aperto_re = re.compile(
         r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+.*?"
         r"\[(\w+)\] APERTO (BUY_(?:NO|YES)) \$([\d.]+) @([\d.]+) edge=([\d.]+)"
+        r"(?: city=(\w+))?"
+        r"(?: horizon=(\d+))?"
+        r"(?: sources=(\d+))?"
+        r"(?: conf=([\d.]+))?"
     )
     chiuso_re = re.compile(
         r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+.*?"
@@ -91,6 +96,10 @@ def parse_trades_from_logs(log_files: list[Path]) -> list[Trade]:
                     price=price,
                     edge=edge,
                     payoff=(1.0 - price) / price if price > 0 else 0,
+                    city=m.group(7) or "",
+                    horizon=int(m.group(8)) if m.group(8) else 0,
+                    sources=int(m.group(9)) if m.group(9) else 1,
+                    confidence=float(m.group(10)) if m.group(10) else 0.0,
                 )
                 open_trades.setdefault(strategy, []).append(t)
     except Exception:

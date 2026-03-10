@@ -128,7 +128,9 @@ def compute_score(metrics: dict, strategy: str = "weather") -> float:
     """
     Optimization target: risk-adjusted return.
 
-    Score = avg_pnl * WR_bonus * PF_bonus * count_penalty
+    v2.1: sqrt volume penalty (penalizes over-filtering more smoothly),
+    continuous WR/PF bonuses instead of discrete tiers.
+    Score = avg_pnl * wr_factor * pf_factor * volume_penalty
     """
     pnl = metrics.get("pnl", 0)
     wr = metrics.get("wr", 0)
@@ -141,28 +143,21 @@ def compute_score(metrics: dict, strategy: str = "weather") -> float:
     # Base: average PnL per trade
     avg_pnl = pnl / n_closed
 
-    # WR bonus
-    wr_bonus = 1.0
-    if wr > 80:
-        wr_bonus = 1.3
-    elif wr > 70:
-        wr_bonus = 1.1
-    elif wr < 50:
-        wr_bonus = 0.7
+    # Continuous WR factor (centered at 65%, scales 0.7x–1.4x)
+    wr_factor = 0.7 + 0.7 * max(0, min(1, (wr - 40) / 50))
 
-    # PF bonus
-    pf_bonus = 1.0
-    if pf > 2.0:
-        pf_bonus = 1.2
-    elif pf > 1.5:
-        pf_bonus = 1.1
-    elif pf < 1.0:
-        pf_bonus = 0.8
+    # Continuous PF factor (centered at 1.5, scales 0.75x–1.3x)
+    if pf == float("inf"):
+        pf_factor = 1.3
+    else:
+        pf_factor = 0.75 + 0.55 * max(0, min(1, (pf - 0.5) / 2.5))
 
-    # Trade count: penalize if too restrictive
-    count_penalty = min(1.0, n_closed / 10.0)
+    # v2.1: sqrt volume penalty — smoother than linear, penalizes
+    # aggressive filtering that drops to <10 trades
+    # sqrt(n/30) caps at 1.0 when n>=30
+    volume_penalty = min(1.0, math.sqrt(n_closed / 30.0))
 
-    return avg_pnl * wr_bonus * pf_bonus * count_penalty
+    return avg_pnl * wr_factor * pf_factor * volume_penalty
 
 
 def params_to_filter(params: dict, strategy: str = "weather") -> FilterParams:
@@ -287,25 +282,53 @@ def propose_variation(param_ranges: list[ParamRange], best_params: dict,
     return params
 
 
+def split_trades_temporal(trades: list[Trade], train_ratio: float = 0.70
+                          ) -> tuple[list[Trade], list[Trade]]:
+    """
+    v2.1: Split trades temporally (70/30) for out-of-sample validation.
+    Sorts by timestamp, uses first 70% for training, last 30% for testing.
+    """
+    sorted_trades = sorted(trades, key=lambda t: t.timestamp)
+    split_idx = int(len(sorted_trades) * train_ratio)
+    return sorted_trades[:split_idx], sorted_trades[split_idx:]
+
+
+def eval_params(trades: list[Trade], params: dict, strategy: str) -> dict:
+    """Evaluate parameters on a set of trades, return metrics."""
+    if strategy == "weather":
+        passed, blocked = apply_filters(list(trades), params_to_filter(params))
+        return calc_metrics(passed)
+    else:
+        passed, blocked = apply_strategy_filters(list(trades), params, strategy)
+        return calc_strategy_metrics(passed, strategy)
+
+
 def run_optimization(trades: list[Trade], param_ranges: list[ParamRange],
                      max_iter: int = 100, strategy: str = "weather") -> list[Experiment]:
-    """AutoResearch-style optimization loop."""
+    """AutoResearch-style optimization loop with temporal train/test split."""
     experiments: list[Experiment] = []
+
+    # v2.1: temporal train/test split for out-of-sample validation
+    strat_trades = [t for t in trades if t.strategy == strategy]
+    has_test = len(strat_trades) >= 30  # need enough for split
+    if has_test:
+        train_trades, test_trades = split_trades_temporal(trades, 0.70)
+        train_strat = [t for t in train_trades if t.strategy == strategy]
+        test_strat = [t for t in test_trades if t.strategy == strategy]
+        print(f"  Train/Test split: {len(train_strat)}/{len(test_strat)} "
+              f"{strategy} trades (70/30 temporal)")
+    else:
+        train_trades = trades
+        test_trades = []
+        print(f"  No train/test split (<30 trades), using full dataset")
 
     # Initialize with current params
     best_params = {p.name: p.current for p in param_ranges}
-
-    if strategy == "weather":
-        passed, blocked = apply_filters(list(trades), params_to_filter(best_params))
-        best_metrics = calc_metrics(passed)
-    else:
-        passed, blocked = apply_strategy_filters(list(trades), best_params, strategy)
-        best_metrics = calc_strategy_metrics(passed, strategy)
-
+    best_metrics = eval_params(train_trades, best_params, strategy)
     best_score = compute_score(best_metrics, strategy)
 
     print(f"\n{'='*70}")
-    print(f"  AutoOptimizer v2.0 — {strategy}")
+    print(f"  AutoOptimizer v2.1 — {strategy}")
     print(f"  Trades: {len(trades)} | Max iterations: {max_iter}")
     print(f"  Params: {len(param_ranges)} searchable")
     print(f"  Baseline score: {best_score:.4f}")
@@ -318,14 +341,7 @@ def run_optimization(trades: list[Trade], param_ranges: list[ParamRange],
 
     for i in range(max_iter):
         candidate_params = propose_variation(param_ranges, best_params, i)
-
-        if strategy == "weather":
-            passed, blocked = apply_filters(list(trades), params_to_filter(candidate_params))
-            metrics = calc_metrics(passed)
-        else:
-            passed, blocked = apply_strategy_filters(list(trades), candidate_params, strategy)
-            metrics = calc_strategy_metrics(passed, strategy)
-
+        metrics = eval_params(train_trades, candidate_params, strategy)
         score = compute_score(metrics, strategy)
 
         improved = score > best_score
@@ -359,6 +375,19 @@ def run_optimization(trades: list[Trade], param_ranges: list[ParamRange],
     print(f"\n{'='*70}")
     print(f"  COMPLETED: {max_iter} experiments in {elapsed:.1f}s")
     print(f"  Improvements found: {improvements}")
+
+    # v2.1: Out-of-sample validation on test set
+    if has_test and test_trades:
+        test_metrics = eval_params(test_trades, best_params, strategy)
+        test_score = compute_score(test_metrics, strategy)
+        print(f"\n  OUT-OF-SAMPLE (test set):")
+        print(f"    Score: {test_score:+.4f} (train: {best_score:+.4f})")
+        print(f"    WR: {test_metrics['wr']:.1f}% | PnL: ${test_metrics['pnl']:+.2f} | "
+              f"PF: {test_metrics['profit_factor']:.2f} | "
+              f"Trades: {test_metrics['closed']}")
+        if best_score > 0 and test_score < best_score * 0.5:
+            print(f"    ⚠ WARNING: test score <50% of train — possible overfitting!")
+
     print(f"{'='*70}")
 
     return experiments

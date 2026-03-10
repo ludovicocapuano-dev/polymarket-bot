@@ -53,6 +53,11 @@ class Trade:
     reason: str = ""
     sell_failures: int = 0  # v5.9.9: track failed sell attempts
     _meta_features: object = None  # v12.0.1: MetaFeatures for meta-labeling
+    # v12.0.4: extra features for AutoOptimizer
+    city: str = ""
+    horizon: int = 0       # days ahead (0=same-day, 1=+1d, etc.)
+    sources: int = 0       # number of weather sources
+    confidence: float = 0.0
 
 
 class RiskManager:
@@ -698,9 +703,19 @@ class RiskManager:
         self.trades.append(trade)
         self.open_trades.append(trade)
         self._save_open_positions()
+        # v12.0.4: enriched log for AutoOptimizer
+        extra = ""
+        if trade.city:
+            extra += f" city={trade.city}"
+        if trade.horizon > 0:
+            extra += f" horizon={trade.horizon}"
+        if trade.sources > 0:
+            extra += f" sources={trade.sources}"
+        if trade.confidence > 0:
+            extra += f" conf={trade.confidence:.2f}"
         logger.info(
             f"[{trade.strategy}] APERTO {trade.side} ${trade.size:.2f} "
-            f"@{trade.price:.4f} edge={trade.edge:.4f}"
+            f"@{trade.price:.4f} edge={trade.edge:.4f}{extra}"
         )
 
     def close_trade(self, token_id: str, won: bool, pnl: float):

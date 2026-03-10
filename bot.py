@@ -509,6 +509,10 @@ class MultiStrategyBot:
                 self._cycle += 1
                 paper = self.config.paper_trading
 
+                # v12.0.4: reload auto-optimized params every 100 cycles
+                if self._cycle % 100 == 1:
+                    self._reload_auto_optimized_params()
+
                 # ── v9.2: Fetch ibrido REST + WebSocket ──
                 # REST full refresh ogni 20 cicli (~60s) o se WS non disponibile
                 # WS aggiorna solo i prezzi tra un refresh e l'altro
@@ -1787,6 +1791,36 @@ class MultiStrategyBot:
 
         lines.append("[HEALTH] ══════════════════════════")
         logger.info("\n".join(lines))
+
+    def _reload_auto_optimized_params(self):
+        """v12.0.4: Read auto-optimized params from AutoOptimizer JSON."""
+        import json as _json
+        from pathlib import Path as _Path
+        param_file = _Path(__file__).parent / "logs" / "auto_optimizer_applied_weather.json"
+        if not param_file.exists():
+            return
+        try:
+            history = _json.loads(param_file.read_text())
+            if not isinstance(history, list) or not history:
+                return
+            latest = history[-1]
+            params = latest.get("params", {})
+            changed = []
+            if "min_edge" in params and params["min_edge"] != self.weather.min_edge:
+                old = self.weather.min_edge
+                self.weather.min_edge = params["min_edge"]
+                changed.append(f"min_edge: {old} → {params['min_edge']}")
+            if "min_confidence" in params and params["min_confidence"] != self.weather.min_confidence:
+                old = self.weather.min_confidence
+                self.weather.min_confidence = params["min_confidence"]
+                changed.append(f"min_confidence: {old} → {params['min_confidence']}")
+            if changed:
+                logger.info(
+                    f"[AUTO-OPT] Reloaded params from AutoOptimizer: "
+                    + ", ".join(changed)
+                )
+        except Exception as e:
+            logger.debug(f"[AUTO-OPT] Could not reload params: {e}")
 
     async def _weather_fetch_loop(self):
         """v10.8: Fetch asincrono dei weather markets extra (offset 400-1400).
