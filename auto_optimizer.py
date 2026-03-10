@@ -124,13 +124,15 @@ AUTO_APPLY_MIN_IMPROVEMENT = 15.0   # percent
 AUTO_APPLY_MIN_CLOSED = 50          # trades
 
 
-def compute_score(metrics: dict, strategy: str = "weather") -> float:
+def compute_score(metrics: dict, strategy: str = "weather",
+                   params: dict = None, param_ranges: list = None) -> float:
     """
     Optimization target: risk-adjusted return.
 
-    v2.1: sqrt volume penalty (penalizes over-filtering more smoothly),
-    continuous WR/PF bonuses instead of discrete tiers.
-    Score = avg_pnl * wr_factor * pf_factor * volume_penalty
+    v2.2 (Karpathy simplicity criterion): adds simplicity_factor that
+    penalizes params drifting far from defaults. Occam's razor: if two
+    configs score similarly, prefer the one closer to defaults.
+    Score = avg_pnl * wr_factor * pf_factor * volume_penalty * simplicity_factor
     """
     pnl = metrics.get("pnl", 0)
     wr = metrics.get("wr", 0)
@@ -152,12 +154,23 @@ def compute_score(metrics: dict, strategy: str = "weather") -> float:
     else:
         pf_factor = 0.75 + 0.55 * max(0, min(1, (pf - 0.5) / 2.5))
 
-    # v2.1: sqrt volume penalty — smoother than linear, penalizes
-    # aggressive filtering that drops to <10 trades
-    # sqrt(n/30) caps at 1.0 when n>=30
+    # v2.1: sqrt volume penalty
     volume_penalty = min(1.0, math.sqrt(n_closed / 30.0))
 
-    return avg_pnl * wr_factor * pf_factor * volume_penalty
+    # v2.2: Karpathy simplicity criterion — penalize drift from defaults
+    # Each param that deviates >2 steps from default costs 1% per extra step
+    simplicity_factor = 1.0
+    if params and param_ranges:
+        total_drift = 0
+        for p in param_ranges:
+            if p.name in params and p.step > 0:
+                drift_steps = abs(params[p.name] - p.current) / p.step
+                if drift_steps > 2:
+                    total_drift += drift_steps - 2
+        # Cap at 15% penalty max (0.85x)
+        simplicity_factor = max(0.85, 1.0 - total_drift * 0.01)
+
+    return avg_pnl * wr_factor * pf_factor * volume_penalty * simplicity_factor
 
 
 def params_to_filter(params: dict, strategy: str = "weather") -> FilterParams:
@@ -325,10 +338,10 @@ def run_optimization(trades: list[Trade], param_ranges: list[ParamRange],
     # Initialize with current params
     best_params = {p.name: p.current for p in param_ranges}
     best_metrics = eval_params(train_trades, best_params, strategy)
-    best_score = compute_score(best_metrics, strategy)
+    best_score = compute_score(best_metrics, strategy, best_params, param_ranges)
 
     print(f"\n{'='*70}")
-    print(f"  AutoOptimizer v2.1 — {strategy}")
+    print(f"  AutoOptimizer v2.2 — {strategy}")
     print(f"  Trades: {len(trades)} | Max iterations: {max_iter}")
     print(f"  Params: {len(param_ranges)} searchable")
     print(f"  Baseline score: {best_score:.4f}")
@@ -342,7 +355,7 @@ def run_optimization(trades: list[Trade], param_ranges: list[ParamRange],
     for i in range(max_iter):
         candidate_params = propose_variation(param_ranges, best_params, i)
         metrics = eval_params(train_trades, candidate_params, strategy)
-        score = compute_score(metrics, strategy)
+        score = compute_score(metrics, strategy, candidate_params, param_ranges)
 
         improved = score > best_score
         if improved:
@@ -379,7 +392,7 @@ def run_optimization(trades: list[Trade], param_ranges: list[ParamRange],
     # v2.1: Out-of-sample validation on test set
     if has_test and test_trades:
         test_metrics = eval_params(test_trades, best_params, strategy)
-        test_score = compute_score(test_metrics, strategy)
+        test_score = compute_score(test_metrics, strategy, best_params, param_ranges)
         print(f"\n  OUT-OF-SAMPLE (test set):")
         print(f"    Score: {test_score:+.4f} (train: {best_score:+.4f})")
         print(f"    WR: {test_metrics['wr']:.1f}% | PnL: ${test_metrics['pnl']:+.2f} | "
@@ -526,6 +539,33 @@ def save_experiments(experiments: list[Experiment], path: Path):
     print(f"\n  Experiment log saved to {path}")
 
 
+def save_results_tsv(experiments: list[Experiment], strategy: str):
+    """
+    v2.2 (Karpathy): Human-readable TSV log of all experiments.
+    Append-only — accumulates across runs for easy review.
+    """
+    tsv_path = LOG_DIR / f"results_{strategy}.tsv"
+    write_header = not tsv_path.exists()
+    with open(tsv_path, "a") as f:
+        if write_header:
+            f.write("timestamp\titeration\tscore\twr\tpnl\tpf\ttrades\tstatus\tchanges\n")
+        for exp in experiments:
+            m = exp.metrics
+            status = "keep" if exp.improved else "discard"
+            # Show which params differ from defaults
+            changed = {k: v for k, v in exp.params.items()
+                       if any(p.name == k and p.current != v
+                              for p in STRATEGY_PARAMS.get(strategy, []))}
+            changes_str = " ".join(f"{k}={v}" for k, v in changed.items()) or "-"
+            f.write(
+                f"{exp.timestamp}\t{exp.iteration}\t{exp.score:+.4f}\t"
+                f"{m.get('wr', 0):.1f}\t{m.get('pnl', 0):+.2f}\t"
+                f"{m.get('profit_factor', 0):.2f}\t{m.get('closed', 0)}\t"
+                f"{status}\t{changes_str}\n"
+            )
+    print(f"  Results TSV appended to {tsv_path}")
+
+
 def load_trades():
     """Load and merge trades from all sources."""
     log_files = sorted(LOG_DIR.glob("bot_*.log"))
@@ -609,6 +649,7 @@ def optimize_strategy(trades: list[Trade], strategy: str, max_iter: int,
     # Save
     exp_file = LOG_DIR / f"auto_optimizer_{strategy}.json"
     save_experiments(experiments, exp_file)
+    save_results_tsv(experiments, strategy)
 
     # Report
     result = print_recommendations(experiments, param_ranges, strategy)
@@ -652,6 +693,15 @@ def main():
         help=f"Auto-apply params if improvement >{AUTO_APPLY_MIN_IMPROVEMENT}%% "
              f"and >{AUTO_APPLY_MIN_CLOSED} closed trades"
     )
+    parser.add_argument(
+        "--continuous", action="store_true",
+        help="Karpathy mode: loop forever, re-loading trades each round. "
+             "Ctrl+C to stop. Best left running overnight."
+    )
+    parser.add_argument(
+        "--interval", type=int, default=1800,
+        help="Seconds between continuous rounds (default: 1800 = 30min)"
+    )
     args = parser.parse_args()
 
     if args.strategy == "all":
@@ -674,45 +724,65 @@ def main():
             print_recommendations(experiments, param_ranges, strategy)
         return
 
-    # Load all trades once
-    trades = load_trades()
-    if not trades:
-        print("No trades found. Run the bot first to generate trade data.")
-        sys.exit(1)
+    def run_round():
+        """Single optimization round."""
+        trades = load_trades()
+        if not trades:
+            print("No trades found. Run the bot first to generate trade data.")
+            return []
 
-    # Show trade distribution
-    strat_counts = {}
-    for t in trades:
-        if t.outcome in ("WIN", "LOSS"):
-            strat_counts[t.strategy] = strat_counts.get(t.strategy, 0) + 1
-    print(f"\nClosed trades by strategy:")
-    for s, c in sorted(strat_counts.items(), key=lambda x: -x[1]):
-        print(f"  {s}: {c}")
+        strat_counts = {}
+        for t in trades:
+            if t.outcome in ("WIN", "LOSS"):
+                strat_counts[t.strategy] = strat_counts.get(t.strategy, 0) + 1
+        print(f"\nClosed trades by strategy:")
+        for s, c in sorted(strat_counts.items(), key=lambda x: -x[1]):
+            print(f"  {s}: {c}")
 
-    # Optimize each strategy
-    results = []
-    for strategy in strategies:
-        result = optimize_strategy(trades, strategy, args.max_iter, args.auto_apply)
-        results.append(result)
+        results = []
+        for strategy in strategies:
+            result = optimize_strategy(trades, strategy, args.max_iter, args.auto_apply)
+            results.append(result)
 
-    # Summary
-    if len(results) > 1:
+        if len(results) > 1:
+            print(f"\n{'='*70}")
+            print(f"  OPTIMIZATION SUMMARY")
+            print(f"{'='*70}")
+            for r in results:
+                status = r.get("status", "?")
+                if status == "ok":
+                    imp = r.get("improvement_pct", 0)
+                    applied = "✅ APPLIED" if r.get("applied") else ""
+                    print(f"  {r['strategy']:25s} | {r['closed']:3d} closed | "
+                          f"improvement={imp:+.1f}% | score={r['best_score']:.4f} "
+                          f"{applied}")
+                elif status == "insufficient_data":
+                    print(f"  {r['strategy']:25s} | {r.get('closed', 0):3d} closed | "
+                          f"⏭ insufficient data")
+                else:
+                    print(f"  {r['strategy']:25s} | {status}")
+        return results
+
+    # First round
+    run_round()
+
+    # v2.2 (Karpathy): continuous mode — NEVER STOP
+    if args.continuous:
+        round_num = 1
         print(f"\n{'='*70}")
-        print(f"  OPTIMIZATION SUMMARY")
+        print(f"  CONTINUOUS MODE — interval {args.interval}s. Ctrl+C to stop.")
         print(f"{'='*70}")
-        for r in results:
-            status = r.get("status", "?")
-            if status == "ok":
-                imp = r.get("improvement_pct", 0)
-                applied = "✅ APPLIED" if r.get("applied") else ""
-                print(f"  {r['strategy']:25s} | {r['closed']:3d} closed | "
-                      f"improvement={imp:+.1f}% | score={r['best_score']:.4f} "
-                      f"{applied}")
-            elif status == "insufficient_data":
-                print(f"  {r['strategy']:25s} | {r.get('closed', 0):3d} closed | "
-                      f"⏭ insufficient data")
-            else:
-                print(f"  {r['strategy']:25s} | {status}")
+        try:
+            while True:
+                print(f"\n  Sleeping {args.interval}s until next round...")
+                time.sleep(args.interval)
+                round_num += 1
+                print(f"\n{'#'*70}")
+                print(f"  ROUND {round_num} — {time.strftime('%Y-%m-%d %H:%M:%S')}")
+                print(f"{'#'*70}")
+                run_round()
+        except KeyboardInterrupt:
+            print(f"\n  Stopped after {round_num} rounds.")
 
 
 if __name__ == "__main__":
