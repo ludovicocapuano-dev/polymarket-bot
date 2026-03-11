@@ -143,6 +143,19 @@ class PolymarketAPI:
             logger.warning(f"[BALANCE] Errore lettura saldo: {e}")
             return -1.0  # -1 = errore, non bloccare il bot
 
+    def get_token_balance(self, token_id: str) -> float:
+        """v12.1: Ritorna il numero di shares possedute per un token condizionale."""
+        try:
+            params = BalanceAllowanceParams(
+                asset_type=AssetType.CONDITIONAL, token_id=token_id
+            )
+            result = self.clob.get_balance_allowance(params)
+            raw = result.get("balance", "0")
+            # Conditional tokens hanno 6 decimali come USDC
+            return float(raw) / 1e6
+        except Exception:
+            return -1.0  # errore, non bloccare
+
     # ── Fetching mercati ───────────────────────────────────────────
 
     def fetch_markets(

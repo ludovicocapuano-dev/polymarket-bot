@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """
-AutoOptimizer v2.0 — Autonomous multi-strategy parameter optimization.
+AutoOptimizer v3.0 — Self-Evolving parameter optimization.
 
-Inspired by Karpathy's AutoResearch: an autonomous loop that
-proposes parameter changes, evaluates them via backtest, and
-keeps improvements. Auto-applies when improvement is significant.
+v2.0: Karpathy AutoResearch-style loop (propose → evaluate → keep).
+v2.2: Simplicity criterion, results.tsv, train/test split.
+v3.0: Self-evolving — the optimizer itself adapts across runs:
+  - Range auto-expanding: best param at boundary → expand search space
+  - Scoring auto-tuning: overfitting detected → increase simplicity penalty
+  - Param activity tracking: dormant params → wider step (explore less)
+  - Persistent evolution state across runs (logs/auto_optimizer_evolution.json)
 
 Usage:
     python3 auto_optimizer.py                          # optimize all strategies
@@ -14,23 +18,12 @@ Usage:
     python3 auto_optimizer.py --report                 # show best params found
     python3 auto_optimizer.py --auto-apply             # auto-apply if >15% improvement
 
-How it works:
-1. Load historical trades from bot logs + trades.json
-2. Define parameter search space per strategy
-3. For each iteration:
-   a. Propose a parameter variation (grid + random perturbation)
-   b. Simulate trades with new parameters (backtest_replay)
-   c. Evaluate metric: risk-adjusted return
-   d. If better than current best, keep the change
-4. Log all experiments to logs/auto_optimizer_{strategy}.json
-5. Auto-apply if improvement >15% and >50 closed trades (--auto-apply)
-6. Print final recommendations
-
-Design principles (from AutoResearch):
+Design principles:
 - Single metric to optimize (risk-adjusted avg PnL)
 - Fixed evaluation budget per experiment (backtest, not live)
-- Human-readable experiment log
+- Human-readable experiment log (TSV append-only)
 - Conservative: only auto-apply with >15% improvement + >50 closed trades
+- Self-evolving: optimizer adapts its own search space and scoring
 """
 
 import argparse
@@ -70,6 +63,10 @@ class ParamRange:
     max_val: float
     step: float
     current: float
+    # v3.0: auto-evolution tracking
+    times_at_boundary: int = 0   # quante volte il best è al bordo del range
+    times_changed: int = 0       # quante volte il best usa un valore != default
+    times_unchanged: int = 0     # quante volte il best usa il default
 
 
 # ── Search spaces per strategy ──
@@ -125,7 +122,8 @@ AUTO_APPLY_MIN_CLOSED = 50          # trades
 
 
 def compute_score(metrics: dict, strategy: str = "weather",
-                   params: dict = None, param_ranges: list = None) -> float:
+                   params: dict = None, param_ranges: list = None,
+                   simplicity_weight: float = 0.01) -> float:
     """
     Optimization target: risk-adjusted return.
 
@@ -167,8 +165,8 @@ def compute_score(metrics: dict, strategy: str = "weather",
                 drift_steps = abs(params[p.name] - p.current) / p.step
                 if drift_steps > 2:
                     total_drift += drift_steps - 2
-        # Cap at 15% penalty max (0.85x)
-        simplicity_factor = max(0.85, 1.0 - total_drift * 0.01)
+        # v3.0: simplicity_weight è auto-tuned (default 0.01, range 0.005-0.03)
+        simplicity_factor = max(0.85, 1.0 - total_drift * simplicity_weight)
 
     return avg_pnl * wr_factor * pf_factor * volume_penalty * simplicity_factor
 
@@ -316,8 +314,161 @@ def eval_params(trades: list[Trade], params: dict, strategy: str) -> dict:
         return calc_strategy_metrics(passed, strategy)
 
 
+# ── v3.0: Auto-Evolution Engine ──────────────────────────────────────
+
+_EVOLUTION_STATE_FILE = Path("logs/auto_optimizer_evolution.json")
+
+
+def _load_evolution_state() -> dict:
+    """Carica stato evolutivo persistente."""
+    if _EVOLUTION_STATE_FILE.exists():
+        try:
+            return json.loads(_EVOLUTION_STATE_FILE.read_text())
+        except Exception:
+            pass
+    return {"runs": 0, "param_stats": {}, "scoring_state": {}}
+
+
+def _save_evolution_state(state: dict):
+    """Salva stato evolutivo."""
+    _EVOLUTION_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(_EVOLUTION_STATE_FILE, "w") as f:
+        json.dump(state, f, indent=2)
+
+
+def evolve_ranges(param_ranges: list[ParamRange], best_params: dict,
+                  state: dict, strategy: str) -> list[ParamRange]:
+    """
+    v3.0: Range auto-expanding.
+    Se il best param è al bordo del range (entro 1 step), allarga il range
+    nella direzione giusta. Max 3 espansioni per run per evitare esplosione.
+    """
+    stats = state.get("param_stats", {}).get(strategy, {})
+    expansions = 0
+    MAX_EXPANSIONS = 3
+
+    for p in param_ranges:
+        best_val = best_params.get(p.name, p.current)
+        p_stats = stats.get(p.name, {"at_boundary": 0, "changed": 0, "unchanged": 0})
+
+        # Aggiorna statistiche
+        if abs(best_val - p.current) > p.step * 0.5:
+            p_stats["changed"] = p_stats.get("changed", 0) + 1
+        else:
+            p_stats["unchanged"] = p_stats.get("unchanged", 0) + 1
+
+        # Check bordo superiore
+        if best_val >= p.max_val - p.step * 0.5 and expansions < MAX_EXPANSIONS:
+            p_stats["at_boundary"] = p_stats.get("at_boundary", 0) + 1
+            # Espandi solo se al bordo 2+ volte consecutive
+            if p_stats["at_boundary"] >= 2:
+                old_max = p.max_val
+                p.max_val = round(p.max_val + p.step * 3, 4)
+                expansions += 1
+                p_stats["at_boundary"] = 0  # reset
+                print(f"  [EVOLVE] {p.name} max: {old_max} → {p.max_val} "
+                      f"(best={best_val} at upper boundary)")
+
+        # Check bordo inferiore
+        elif best_val <= p.min_val + p.step * 0.5 and expansions < MAX_EXPANSIONS:
+            p_stats["at_boundary"] = p_stats.get("at_boundary", 0) + 1
+            if p_stats["at_boundary"] >= 2:
+                old_min = p.min_val
+                p.min_val = round(max(0, p.min_val - p.step * 3), 4)
+                expansions += 1
+                p_stats["at_boundary"] = 0
+                print(f"  [EVOLVE] {p.name} min: {old_min} → {p.min_val} "
+                      f"(best={best_val} at lower boundary)")
+        else:
+            # Non al bordo → resetta contatore
+            p_stats["at_boundary"] = 0
+
+        stats[p.name] = p_stats
+
+    # Salva stats aggiornate
+    if strategy not in state.get("param_stats", {}):
+        state.setdefault("param_stats", {})[strategy] = {}
+    state["param_stats"][strategy] = stats
+
+    return param_ranges
+
+
+def evolve_scoring(state: dict, train_score: float, test_score: float,
+                   strategy: str) -> dict:
+    """
+    v3.0: Scoring auto-tuning.
+    Monitora il rapporto train/test score per adattare la simplicity penalty:
+    - Se test << train (overfitting): aumenta simplicity penalty
+    - Se test >= train (robusto): rilassa simplicity penalty
+    """
+    scoring = state.get("scoring_state", {}).get(strategy, {
+        "simplicity_weight": 0.01,  # default: 1% per step di drift
+        "overfit_streak": 0,
+        "robust_streak": 0,
+    })
+
+    if train_score > 0 and test_score > 0:
+        ratio = test_score / train_score
+
+        if ratio < 0.5:
+            # Overfitting: test < 50% di train
+            scoring["overfit_streak"] = scoring.get("overfit_streak", 0) + 1
+            scoring["robust_streak"] = 0
+            if scoring["overfit_streak"] >= 2:
+                old_w = scoring["simplicity_weight"]
+                scoring["simplicity_weight"] = min(0.03, old_w + 0.005)
+                print(f"  [EVOLVE] Simplicity penalty ↑: {old_w:.3f} → "
+                      f"{scoring['simplicity_weight']:.3f} "
+                      f"(overfit detected, test/train={ratio:.2f})")
+        elif ratio > 0.8:
+            # Robusto: test > 80% di train
+            scoring["robust_streak"] = scoring.get("robust_streak", 0) + 1
+            scoring["overfit_streak"] = 0
+            if scoring["robust_streak"] >= 3:
+                old_w = scoring["simplicity_weight"]
+                scoring["simplicity_weight"] = max(0.005, old_w - 0.002)
+                print(f"  [EVOLVE] Simplicity penalty ↓: {old_w:.3f} → "
+                      f"{scoring['simplicity_weight']:.3f} "
+                      f"(robust, test/train={ratio:.2f})")
+        else:
+            # Neutro
+            scoring["overfit_streak"] = max(0, scoring.get("overfit_streak", 0) - 1)
+
+    state.setdefault("scoring_state", {})[strategy] = scoring
+    return scoring
+
+
+def prune_dead_params(param_ranges: list[ParamRange], state: dict,
+                      strategy: str) -> list[ParamRange]:
+    """
+    v3.0: Param activity tracking.
+    Se un parametro non viene mai cambiato in 10+ run, riducine la priorità
+    (wider step = esplorato meno spesso). Se sempre al bordo, segnala.
+    """
+    stats = state.get("param_stats", {}).get(strategy, {})
+    active = []
+
+    for p in param_ranges:
+        p_stats = stats.get(p.name, {})
+        changed = p_stats.get("changed", 0)
+        unchanged = p_stats.get("unchanged", 0)
+        total = changed + unchanged
+
+        if total >= 10 and changed == 0:
+            # Mai toccato in 10+ run — raddoppia lo step (esplora meno)
+            old_step = p.step
+            p.step = round(p.step * 2, 4)
+            print(f"  [EVOLVE] {p.name} step: {old_step} → {p.step} "
+                  f"(dormant: 0/{total} changes)")
+
+        active.append(p)
+
+    return active
+
+
 def run_optimization(trades: list[Trade], param_ranges: list[ParamRange],
-                     max_iter: int = 100, strategy: str = "weather") -> list[Experiment]:
+                     max_iter: int = 100, strategy: str = "weather",
+                     simplicity_weight: float = 0.01) -> list[Experiment]:
     """AutoResearch-style optimization loop with temporal train/test split."""
     experiments: list[Experiment] = []
 
@@ -338,7 +489,8 @@ def run_optimization(trades: list[Trade], param_ranges: list[ParamRange],
     # Initialize with current params
     best_params = {p.name: p.current for p in param_ranges}
     best_metrics = eval_params(train_trades, best_params, strategy)
-    best_score = compute_score(best_metrics, strategy, best_params, param_ranges)
+    best_score = compute_score(best_metrics, strategy, best_params, param_ranges,
+                                simplicity_weight=simplicity_weight)
 
     print(f"\n{'='*70}")
     print(f"  AutoOptimizer v2.2 — {strategy}")
@@ -355,7 +507,8 @@ def run_optimization(trades: list[Trade], param_ranges: list[ParamRange],
     for i in range(max_iter):
         candidate_params = propose_variation(param_ranges, best_params, i)
         metrics = eval_params(train_trades, candidate_params, strategy)
-        score = compute_score(metrics, strategy, candidate_params, param_ranges)
+        score = compute_score(metrics, strategy, candidate_params, param_ranges,
+                               simplicity_weight=simplicity_weight)
 
         improved = score > best_score
         if improved:
@@ -392,7 +545,8 @@ def run_optimization(trades: list[Trade], param_ranges: list[ParamRange],
     # v2.1: Out-of-sample validation on test set
     if has_test and test_trades:
         test_metrics = eval_params(test_trades, best_params, strategy)
-        test_score = compute_score(test_metrics, strategy, best_params, param_ranges)
+        test_score = compute_score(test_metrics, strategy, best_params, param_ranges,
+                                    simplicity_weight=simplicity_weight)
         print(f"\n  OUT-OF-SAMPLE (test set):")
         print(f"    Score: {test_score:+.4f} (train: {best_score:+.4f})")
         print(f"    WR: {test_metrics['wr']:.1f}% | PnL: ${test_metrics['pnl']:+.2f} | "
@@ -628,22 +782,43 @@ def optimize_strategy(trades: list[Trade], strategy: str, max_iter: int,
         print(f"  No param ranges defined for {strategy}, skipping.")
         return {"strategy": strategy, "status": "no_params"}
 
+    # v3.0: Carica stato evolutivo e applica evoluzione pre-run
+    evo_state = _load_evolution_state()
+    evo_state["runs"] = evo_state.get("runs", 0) + 1
+
+    # Prune parametri dormienti (step più ampio)
+    param_ranges = prune_dead_params(param_ranges, evo_state, strategy)
+
+    # Evolvi ranges basato su run precedenti
+    prev_applied = _get_last_applied_params(strategy)
+    if prev_applied:
+        param_ranges = evolve_ranges(param_ranges, prev_applied, evo_state, strategy)
+
+    # Adatta simplicity weight da scoring state
+    scoring_state = evo_state.get("scoring_state", {}).get(strategy, {})
+    simplicity_weight = scoring_state.get("simplicity_weight", 0.01)
+
     strategy_trades = [t for t in trades if t.strategy == strategy]
     closed = [t for t in strategy_trades if t.outcome in ("WIN", "LOSS")]
 
     print(f"\nLoaded {len(trades)} trades, {len(strategy_trades)} {strategy} "
           f"({len(closed)} closed)")
+    if simplicity_weight != 0.01:
+        print(f"  [EVOLVE] Simplicity weight: {simplicity_weight:.3f} "
+              f"(run #{evo_state['runs']})")
 
     if len(closed) < 10:
         print(f"Not enough closed trades ({len(closed)} < 10). Skipping {strategy}.")
+        _save_evolution_state(evo_state)
         return {"strategy": strategy, "status": "insufficient_data",
                 "closed": len(closed)}
 
-    # Run optimization with unique seed per strategy
-    random.seed(hash(strategy) + 42)
+    # Run optimization with unique seed per strategy + run number
+    random.seed(hash(strategy) + 42 + evo_state["runs"])
     experiments = run_optimization(
         trades, param_ranges,
-        max_iter=max_iter, strategy=strategy
+        max_iter=max_iter, strategy=strategy,
+        simplicity_weight=simplicity_weight,
     )
 
     # Save
@@ -654,6 +829,22 @@ def optimize_strategy(trades: list[Trade], strategy: str, max_iter: int,
     # Report
     result = print_recommendations(experiments, param_ranges, strategy)
     improvement_pct, changes, best = result
+
+    # v3.0: Post-run evolution — adatta scoring basato su overfitting
+    strat_trades = [t for t in trades if t.strategy == strategy]
+    if len(strat_trades) >= 30:
+        train_trades, test_trades = split_trades_temporal(trades, 0.70)
+        test_metrics = eval_params(test_trades, best.params, strategy)
+        test_score = compute_score(
+            test_metrics, strategy, best.params, param_ranges,
+            simplicity_weight=simplicity_weight
+        )
+        evolve_scoring(evo_state, best.score, test_score, strategy)
+
+    # Aggiorna range evoluti con i nuovi best
+    evolve_ranges(param_ranges, best.params, evo_state, strategy)
+
+    _save_evolution_state(evo_state)
 
     # Auto-apply
     applied = False
@@ -669,6 +860,22 @@ def optimize_strategy(trades: list[Trade], strategy: str, max_iter: int,
         "best_score": best.score,
         "best_metrics": best.metrics,
     }
+
+
+def _get_last_applied_params(strategy: str) -> dict | None:
+    """Legge l'ultimo set di parametri applicati per una strategia."""
+    applied_file = LOG_DIR / f"auto_optimizer_applied_{strategy}.json"
+    if not applied_file.exists():
+        return None
+    try:
+        data = json.loads(applied_file.read_text())
+        if isinstance(data, list) and data:
+            return data[-1].get("params", {})
+        if isinstance(data, dict):
+            return data.get("params", {})
+    except Exception:
+        pass
+    return None
 
 
 def main():

@@ -26,13 +26,17 @@ class TripleBarrier:
 
 
 STRATEGY_BARRIERS: dict[str, TripleBarrier] = {
-    "arb_gabagool":   TripleBarrier(0.03, 0.02, 24),    # TP/SL stretto, exit veloce
-    "high_prob_bond": TripleBarrier(0.06, 0.03, 336),    # TP basso, SL stretto, 14gg
-    "weather":        TripleBarrier(0.25, 0.08, 48),     # v10.6: TP da 12%→25% — hold to resolution su binary markets
-    "arbitrage":      TripleBarrier(0.03, 0.02, 24),     # Come gabagool
-    "data_driven":    TripleBarrier(0.10, 0.08, 72),     # Moderato, 3gg
-    "event_driven":   TripleBarrier(0.12, 0.10, 36),     # Margini ampi, 1.5gg
-    "whale_copy":     TripleBarrier(0.10, 0.08, 48),     # Segui il whale, 2gg
+    "arb_gabagool":      TripleBarrier(0.03, 0.02, 24),    # TP/SL stretto, exit veloce
+    "high_prob_bond":    TripleBarrier(0.06, 0.03, 336),    # TP basso, SL stretto, 14gg
+    "weather":           TripleBarrier(0.25, 0.08, 48),     # v10.6: TP da 12%→25% — hold to resolution
+    "arbitrage":         TripleBarrier(0.03, 0.02, 24),     # Come gabagool
+    "data_driven":       TripleBarrier(0.10, 0.08, 72),     # Moderato, 3gg
+    "event_driven":      TripleBarrier(0.12, 0.10, 36),     # Margini ampi, 1.5gg
+    "whale_copy":        TripleBarrier(0.10, 0.08, 48),     # Segui il whale, 2gg
+    # v12.1: Barriere specifiche per strategie indipendenti
+    "holding_rewards":   TripleBarrier(0.15, 0.25, 720),    # 30gg, SL ampio per yield
+    "favorite_longshot": TripleBarrier(0.10, 0.20, 168),    # 7gg, SL moderato
+    "imported_onchain":  TripleBarrier(0.15, 0.15, 336),    # 14gg, conservativo
 }
 
 DEFAULT_BARRIER = TripleBarrier(0.10, 0.10, 48)
@@ -58,6 +62,7 @@ class Trade:
     horizon: int = 0       # days ahead (0=same-day, 1=+1d, etc.)
     sources: int = 0       # number of weather sources
     confidence: float = 0.0
+    high_water_mark: float = 0.0  # v12.1: trailing stop — best observed bid price
 
 
 class RiskManager:
@@ -152,6 +157,71 @@ class RiskManager:
             untracked = len(active_positions) - len(tracked_market_ids)
             self._onchain_position_count = max(0, untracked)
             self._onchain_exposure = total_value - self.total_exposed
+
+            # v12.1: Import posizioni non tracciate in open_trades per gestione
+            imported = 0
+            MAX_IMPORT_PER_SYNC = 20  # throttle per evitare mass sell-off
+
+            tracked_tokens = {t.token_id for t in self.open_trades}
+
+            for p in active_positions:
+                if imported >= MAX_IMPORT_PER_SYNC:
+                    break
+
+                cond_id = p.get("conditionId", "") or p.get("condition_id", "")
+                token_id = p.get("asset", "") or p.get("tokenId", "") or p.get("token_id", "")
+
+                if not cond_id or not token_id:
+                    continue
+
+                # Skip se già tracciata
+                if cond_id in tracked_market_ids or token_id in tracked_tokens:
+                    continue
+
+                cur_value = float(p.get("currentValue", 0))
+                avg_price = float(p.get("avgPrice", 0))
+                size_shares = float(p.get("size", 0))
+                outcome = p.get("outcome", "YES")
+
+                if cur_value < 2.0:  # skip dust
+                    continue
+                if avg_price <= 0 and size_shares > 0:
+                    avg_price = cur_value / size_shares
+                if avg_price <= 0:
+                    continue
+
+                side = f"BUY_{outcome.upper()}" if outcome else "BUY_YES"
+                title = p.get("title", p.get("proxyTitle", "?"))[:40]
+
+                trade = Trade(
+                    timestamp=time.time() - 7 * 86400,  # assume ~7gg
+                    strategy="imported_onchain",
+                    market_id=cond_id,
+                    token_id=token_id,
+                    side=side,
+                    size=cur_value,
+                    price=avg_price,
+                    edge=0.0,
+                    reason=f"imported (${cur_value:.2f}, {title})",
+                )
+                cur_price = float(p.get("curPrice", 0))
+                trade.high_water_mark = cur_price if cur_price > 0 else avg_price
+
+                self.trades.append(trade)
+                self.open_trades.append(trade)
+                tracked_market_ids.add(cond_id)
+                tracked_tokens.add(token_id)
+                imported += 1
+
+            if imported:
+                self._save_open_positions()
+                logger.info(
+                    f"[SYNC] Importate {imported} posizioni on-chain non tracciate"
+                )
+
+            # Ricalcola dopo import
+            untracked = max(0, untracked - imported)
+            self._onchain_position_count = max(0, untracked)
 
             logger.info(
                 f"[SYNC] Portfolio on-chain: {len(active_positions)} attive "
@@ -873,6 +943,7 @@ class RiskManager:
                     "price": t.price,
                     "edge": t.edge,
                     "reason": t.reason,
+                    "high_water_mark": t.high_water_mark,
                 })
             os.makedirs(os.path.dirname(self._OPEN_POS_FILE), exist_ok=True)
             with open(self._OPEN_POS_FILE, "w") as f:
@@ -895,13 +966,15 @@ class RiskManager:
             if not data:
                 return
             now = time.time()
-            cutoff = now - max_age_hours * 3600
             loaded = 0
             skipped_stale = 0
             for d in data:
                 ts = d.get("timestamp", 0)
-                # Scarta posizioni troppo vecchie
-                if ts < cutoff:
+                # v12.1: cutoff per strategia (2x max_holding) invece di globale
+                strategy = d.get("strategy", "")
+                barrier = STRATEGY_BARRIERS.get(strategy, DEFAULT_BARRIER)
+                strategy_cutoff = now - barrier.max_holding_hours * 2 * 3600
+                if ts < strategy_cutoff:
                     skipped_stale += 1
                     continue
 
@@ -933,6 +1006,7 @@ class RiskManager:
                     edge=d["edge"],
                     result="OPEN",
                     reason=reason,
+                    high_water_mark=d.get("high_water_mark", 0.0),
                 )
                 # Evita duplicati (se gia' presente in open_trades)
                 already = any(
@@ -955,9 +1029,16 @@ class RiskManager:
             logger.warning(f"[PERSISTENCE] Errore caricamento posizioni: {e}")
 
     def purge_stale_positions(self, max_age_hours: float = 48.0) -> int:
-        """Rimuovi posizioni aperte piu' vecchie di max_age_hours."""
-        cutoff = time.time() - max_age_hours * 3600
-        stale = [t for t in self.open_trades if t.timestamp < cutoff]
+        """Rimuovi posizioni aperte piu' vecchie del loro max_holding_hours.
+        v12.1: cutoff per strategia (2x max_holding) invece di globale 48h."""
+        now = time.time()
+        stale = []
+        for t in self.open_trades:
+            barrier = STRATEGY_BARRIERS.get(t.strategy, DEFAULT_BARRIER)
+            cutoff_hours = barrier.max_holding_hours * 2  # grace period generoso
+            age_hours = (now - t.timestamp) / 3600
+            if age_hours > cutoff_hours:
+                stale.append(t)
         for t in stale:
             self.open_trades.remove(t)
             t.result = "STALE"

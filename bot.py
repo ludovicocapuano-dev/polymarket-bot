@@ -910,6 +910,33 @@ class MultiStrategyBot:
                 if self._cycle % 100 == 0:
                     self.risk.purge_stale_positions(max_age_hours=48.0)
 
+                    # v12.1: Cleanup posizioni fantasma (0 shares on-chain)
+                    if not self.config.paper_trading and self.risk.open_trades:
+                        try:
+                            phantom_removed = 0
+                            # Check max 20 posizioni per ciclo per non sovraccaricare
+                            to_check = list(self.risk.open_trades)[:20]
+                            for t in to_check:
+                                bal = await asyncio.to_thread(
+                                    self.api.get_token_balance, t.token_id
+                                )
+                                if bal == 0:
+                                    self.risk.close_trade(
+                                        t.token_id, won=False, pnl=0.0
+                                    )
+                                    phantom_removed += 1
+                                    logger.info(
+                                        f"[PHANTOM-CLEANUP] Rimossa: "
+                                        f"{t.strategy} '{t.reason[:40]}'"
+                                    )
+                            if phantom_removed:
+                                logger.info(
+                                    f"[PHANTOM-CLEANUP] {phantom_removed} "
+                                    f"posizioni fantasma rimosse"
+                                )
+                        except Exception as e:
+                            logger.debug(f"[PHANTOM-CLEANUP] Errore: {e}")
+
                     # v10.4: Position health check (ogni 100 cicli)
                     if not self.config.paper_trading and self.risk.open_trades:
                         try:
@@ -1462,17 +1489,50 @@ class MultiStrategyBot:
             else:
                 pnl_pct = 0.0
 
-            # v8.0: Bid sanity check — se bid < 50% dell'entry, l'order book
-            # è probabilmente vuoto/stale. Non triggerare stop loss su dati fantasma.
+            # v12.1: Trailing stop — aggiorna high-water mark
+            if current_bid > trade.high_water_mark:
+                trade.high_water_mark = current_bid
+
+            # v8.0+v12.1: Bid sanity check con depth verification.
+            # Se bid < 50% entry MA il book ha profondità reale → crash genuino.
             if trade.price > 0:
                 bid_ratio = current_bid / trade.price
                 if bid_ratio < 0.50:
-                    logger.debug(
-                        f"[POSITION-MGR] Bid sospetto: {trade.strategy} "
-                        f"entry@{trade.price:.4f} bid@{current_bid:.4f} "
-                        f"(ratio={bid_ratio:.1%}) — SKIP (order book vuoto?)"
+                    n_bids = len(bids)
+                    total_bid_depth = sum(
+                        float(b.get("size", 0)) for b in bids[:5]
                     )
-                    held += 1
+                    if n_bids >= 3 and total_bid_depth >= 5.0:
+                        logger.info(
+                            f"[POSITION-MGR] Crash confermato "
+                            f"(depth={n_bids} bids, ${total_bid_depth:.0f}): "
+                            f"{trade.strategy} entry@{trade.price:.4f} "
+                            f"bid@{current_bid:.4f} — ALLOW EXIT"
+                        )
+                        # Fall through al check_barrier
+                    else:
+                        logger.debug(
+                            f"[POSITION-MGR] Bid sospetto (thin book): "
+                            f"{trade.strategy} entry@{trade.price:.4f} "
+                            f"bid@{current_bid:.4f} "
+                            f"(ratio={bid_ratio:.1%}, {n_bids} bids, "
+                            f"${total_bid_depth:.0f} depth) — HOLD"
+                        )
+                        held += 1
+                        continue
+
+            # v12.1: Trailing stop — se posizione era +15% e torna a break-even
+            if trade.price > 0 and trade.high_water_mark > 0:
+                hwm_return = (trade.high_water_mark - trade.price) / trade.price
+                if hwm_return >= 0.15 and current_bid <= trade.price * 1.01:
+                    logger.info(
+                        f"[TRAILING-STOP] {trade.strategy} "
+                        f"HWM@{trade.high_water_mark:.4f} (+{hwm_return:.1%}) "
+                        f"→ bid@{current_bid:.4f} <= entry@{trade.price:.4f} "
+                        f"— BREAK-EVEN EXIT"
+                    )
+                    to_sell.append((trade, current_bid, age_hours, pnl_pct,
+                                    0, "STOP_LOSS"))
                     continue
 
             # v7.2: Triple-barrier check per strategia
@@ -1535,13 +1595,37 @@ class MultiStrategyBot:
         closed = 0
         for trade, current_bid, age_hours, pnl_pct, _prio, signal in to_sell[:max_sells]:
             try:
+                # v12.1: Pre-sell balance check — verifica shares on-chain
+                token_balance = await asyncio.to_thread(
+                    self.api.get_token_balance, trade.token_id
+                )
+                if token_balance == 0:
+                    # Nessuna share: posizione fantasma, rimuovila dal tracking
+                    self.risk.close_trade(
+                        trade.token_id, won=False, pnl=0.0
+                    )
+                    logger.info(
+                        f"[POSITION-MGR] Rimossa posizione fantasma "
+                        f"(0 shares on-chain): {trade.strategy} "
+                        f"'{trade.reason[:40]}'"
+                    )
+                    closed += 1
+                    continue
+                elif token_balance < 0:
+                    # Errore query balance, skip (riprova prossimo ciclo)
+                    logger.debug(
+                        f"[POSITION-MGR] Balance check fallito per "
+                        f"{trade.token_id[:16]}, skip"
+                    )
+                    continue
+
                 # v7.4: Recupera shares REALI dal CLOB per evitare over-sell
                 fill_info = self.api.get_last_fill(trade.token_id, side="BUY")
                 if fill_info and fill_info["fill_size"] > 0:
-                    shares = fill_info["fill_size"]
+                    shares = min(fill_info["fill_size"], token_balance)
                     real_entry = fill_info["fill_price"]
                 else:
-                    shares = trade.size / trade.price if trade.price > 0 else 0
+                    shares = token_balance  # usa balance on-chain
                     real_entry = trade.price
 
                 if shares < 1:
@@ -1595,6 +1679,10 @@ class MultiStrategyBot:
 
         if closed > 0:
             logger.info(f"[POSITION-MGR] Chiuse {closed}/{len(to_sell)} posizioni")
+
+        # v12.1: Persisti high-water mark aggiornati
+        if self.risk.open_trades:
+            self.risk._save_open_positions()
 
     async def _calc_unrealized_pnl(self) -> tuple[float, int, int]:
         """
