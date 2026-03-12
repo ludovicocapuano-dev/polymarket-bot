@@ -1,28 +1,30 @@
 """
-Strategia Market Making — Spread Capture su Polymarket v1.0
-============================================================
-Piazza ordini BUY e SELL su entrambi i lati (YES e NO),
+Strategia Market Making v2.0 — Spread Capture su Polymarket
+=============================================================
+Piazza ordini limit BUY su YES e BUY su NO (equivalente a vendere YES),
 guadagnando dallo spread tra bid e ask.
 
-ROI documentato: $200-800/giorno per market maker attivi.
+Con Builder Program: gasless + volume rewards.
 
-Logica:
-1. Trova mercati con spread 3-15% e volume 24h sufficiente
-2. Preferisci mercati long-dated (>30 giorni) con bassa volatilita'
-3. Piazza ordini su entrambi i lati al mid-price +/- target_spread/2
-4. Monitora inventory imbalance e aggiusta prezzi se sbilanciato
+Logica v2.0:
+1. Trova mercati con spread 3-12% e volume 24h >= $5K
+2. Preferisci mercati long-dated (>7 giorni) con bassa volatilita'
+3. Piazza limit BUY YES a (best_bid + 1c) e limit BUY NO a (1 - best_ask + 1c)
+4. Se entrambi fillano: profitto = spread - 2*tick
+5. Gestione inventory: se sbilanciato, quoto solo il lato opposto
+6. Cancel stale orders dopo 60s se non fillati
 
 Safety:
-- Non operare su mercati con eventi imminenti (<24h)
-- Max 3 mercati contemporanei
-- Cancel-and-replace se mid-price si muove > 2%
-- Inventory limit: max $200 per lato per mercato
+- Non operare su mercati con eventi imminenti (<1 giorno)
+- Max 5 mercati contemporanei
+- Max $200 inventory per lato per mercato (scalato da auto-compound)
+- Order size fisso $25 (scalato da auto-compound)
+- Stale order cleanup: cancella unfilled dopo 60s
 """
 
 import logging
-import random
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from utils.polymarket_api import Market, PolymarketAPI
 from utils.risk_manager import RiskManager, Trade
@@ -31,352 +33,442 @@ logger = logging.getLogger(__name__)
 
 STRATEGY_NAME = "market_making"
 
-# ── Parametri strategia ──────────────────────────────────────
-MIN_SPREAD = 0.03       # spread minimo per operare (3%)
-MAX_SPREAD = 0.15       # non quotare su mercati troppo wide
-TARGET_SPREAD = 0.04    # spread target dei nostri ordini
-MIN_VOLUME_24H = 5000   # volume minimo 24h per liquidita'
-MAX_INVENTORY_IMBALANCE = 0.30  # max 30% sbilancio YES vs NO
-MAX_CONCURRENT_MARKETS = 3      # max mercati contemporanei
-MAX_INVENTORY_PER_SIDE = 200.0  # max $200 per lato per mercato
-MID_PRICE_DRIFT_THRESHOLD = 0.02  # cancel-and-replace se mid si muove > 2%
-MIN_DAYS_TO_EXPIRY = 1   # no mercati con eventi < 24h
-PREFERRED_MIN_DAYS = 30   # preferisci mercati long-dated
+# ── Parametri strategia (scalati da auto-compound) ──────────────
+MIN_SPREAD = 0.03             # spread minimo per operare (3%)
+MAX_SPREAD = 0.12             # non quotare su mercati troppo wide (12%)
+MIN_VOLUME_24H = 5000         # volume minimo 24h ($5K)
+MIN_LIQUIDITY = 1000          # liquidita' minima
+MAX_CONCURRENT_MARKETS = 5    # max mercati contemporanei
+MAX_INVENTORY_PER_SIDE = 200  # max $ per lato per mercato (auto-compound scala)
+ORDER_SIZE = 25               # size singolo ordine in $ (auto-compound scala)
+MIN_DAYS_TO_EXPIRY = 1        # no mercati con eventi < 1 giorno
+ORDER_TTL = 60                # cancella ordini non fillati dopo 60s
+COOLDOWN_AFTER_FILL = 30      # secondi di cooldown dopo un fill
+TICK = 0.01                   # tick size Polymarket
 
 
 @dataclass
 class MarketMakingOpportunity:
     """Un'opportunita' di market making identificata."""
     market: Market
-    best_bid: float
-    best_ask: float
+    yes_token: str
+    no_token: str
+    best_bid: float          # migliore bid su YES
+    best_ask: float          # migliore ask su YES
     spread: float
     mid_price: float
-    expected_profit: float
     days_to_expiry: float
     volume_24h: float
+    book_depth_bid: float    # $ depth top 5 bids
+    book_depth_ask: float    # $ depth top 5 asks
 
     @property
     def edge(self) -> float:
-        return self.expected_profit
+        return self.spread / 2
+
+
+@dataclass
+class ActiveQuote:
+    """Traccia un ordine attivo (bid o ask) nel book."""
+    market_id: str
+    token_id: str
+    side: str               # "BUY_YES" o "BUY_NO"
+    order_id: str
+    price: float
+    size: float
+    placed_at: float        # timestamp
+    filled: bool = False
 
 
 class MarketMakingStrategy:
     """
-    Strategia di market making: cattura lo spread piazzando ordini
-    su entrambi i lati del book.
+    Market Making v2.0: two-sided quoting via BUY YES + BUY NO.
 
-    Guadagna dalla differenza tra prezzo di acquisto e vendita,
-    mantenendo un inventory bilanciato tra YES e NO.
+    Su Polymarket, vendere YES equivale a comprare NO.
+    Piazzando limit BUY su entrambi i token (YES e NO) catturiamo lo spread
+    quando entrambi vengono fillati (YES_price + NO_price < $1.00).
     """
 
     def __init__(
         self,
         api: PolymarketAPI,
         risk: RiskManager,
-        min_spread: float = MIN_SPREAD,
-        max_spread: float = MAX_SPREAD,
-        target_spread: float = TARGET_SPREAD,
     ):
         self.api = api
         self.risk = risk
-        self.min_spread = min_spread
-        self.max_spread = max_spread
-        self.target_spread = target_spread
         self._trades_executed = 0
-        self._active_markets: dict[str, float] = {}  # market_id -> last_mid_price
+        self._pnl_total = 0.0
         # Traccia inventory per lato: market_id -> {"yes": $, "no": $}
         self._inventory: dict[str, dict[str, float]] = {}
-        self._recently_traded: dict[str, float] = {}
+        # Ordini attivi: order_id -> ActiveQuote
+        self._active_orders: dict[str, ActiveQuote] = {}
+        # Cooldown per mercato: market_id -> timestamp
+        self._market_cooldown: dict[str, float] = {}
+        # PnL per mercato: market_id -> float
+        self._market_pnl: dict[str, float] = {}
 
-    async def scan(self, shared_markets: list[Market] | None = None) -> list[MarketMakingOpportunity]:
+    def scan(self, shared_markets: list[Market] | None = None) -> list[MarketMakingOpportunity]:
         """
         Scansiona mercati per opportunita' di market making.
-
-        Filtri:
-        1. Volume 24h >= MIN_VOLUME_24H
-        2. Spread >= MIN_SPREAD e <= MAX_SPREAD
-        3. Preferisci mercati long-dated (>30 giorni)
-        4. No eventi imminenti (<24h)
+        Sincrono — viene chiamato dal bot nel main loop.
         """
-        markets = shared_markets or self.api.fetch_markets(limit=200)
+        markets = shared_markets or []
         if not markets:
-            logger.info("[MM] Scan: 0 mercati disponibili")
             return []
 
         now = time.time()
 
-        # Pulisci _recently_traded: rimuovi entry piu' vecchie di 30 min
-        stale = [k for k, t in self._recently_traded.items() if now - t > 1800]
-        for k in stale:
-            del self._recently_traded[k]
+        # Cleanup cooldown scaduti
+        expired = [k for k, t in self._market_cooldown.items() if now - t > COOLDOWN_AFTER_FILL]
+        for k in expired:
+            del self._market_cooldown[k]
 
         opps: list[MarketMakingOpportunity] = []
 
         for m in markets:
-            # Cooldown: non ri-analizzare lo stesso mercato troppo presto
-            if m.id in self._recently_traded:
-                if now - self._recently_traded[m.id] < 120:
-                    continue
+            # Cooldown attivo
+            if m.id in self._market_cooldown:
+                continue
 
             # Filtro volume 24h
             if m.volume < MIN_VOLUME_24H:
                 continue
 
-            # Skip mercati con liquidita' troppo bassa
-            if m.liquidity < 500:
+            # Liquidita'
+            if m.liquidity < MIN_LIQUIDITY:
                 continue
 
-            # Calcola giorni alla scadenza (se disponibile)
+            # Token YES e NO
+            yes_token = m.tokens.get("yes", "")
+            no_token = m.tokens.get("no", "")
+            if not yes_token or not no_token:
+                continue
+
+            # Days to expiry
             end_date = getattr(m, "end_date_iso", None) or getattr(m, "end_date", None)
             days_to_expiry = self._estimate_days_to_expiry(end_date)
-
-            # No mercati con eventi imminenti (<24h) — rischio di movimento brusco
             if days_to_expiry is not None and days_to_expiry < MIN_DAYS_TO_EXPIRY:
                 continue
 
-            # Fetch prezzi bid/ask dal CLOB per YES
-            yes_token = m.tokens.get("yes", "")
-            if not yes_token:
+            # Inventory check — skip se gia' al limite
+            inv = self._inventory.get(m.id, {"yes": 0.0, "no": 0.0})
+            if inv["yes"] >= MAX_INVENTORY_PER_SIDE and inv["no"] >= MAX_INVENTORY_PER_SIDE:
                 continue
 
-            bid, ask = self._get_bid_ask(yes_token)
-            if bid <= 0 or ask <= 0 or ask <= bid:
+            # Fetch order book per YES
+            book = self.api.get_order_book(yes_token)
+            bids = book.get("bids", [])
+            asks = book.get("asks", [])
+            if not bids or not asks:
                 continue
 
-            spread = ask - bid
-            mid_price = (bid + ask) / 2
+            best_bid = float(bids[0].get("price", 0))
+            best_ask = float(asks[0].get("price", 1))
+            if best_bid <= 0 or best_ask <= best_bid:
+                continue
+
+            spread = best_ask - best_bid
+            mid_price = (best_bid + best_ask) / 2
 
             # Filtro spread
-            if spread < self.min_spread or spread > self.max_spread:
+            if spread < MIN_SPREAD or spread > MAX_SPREAD:
                 continue
 
-            # Stima profitto atteso = target_spread * volume_estimate
-            # Volume estimate basato sul volume 24h e fill rate atteso (~30%)
-            daily_volume_per_market = m.volume
-            fill_rate = 0.30  # stima conservativa
-            volume_estimate = daily_volume_per_market * fill_rate
-            expected_profit = self.target_spread * volume_estimate
+            # Book depth (top 5)
+            bid_depth = sum(float(b.get("size", 0)) * float(b.get("price", 0)) for b in bids[:5])
+            ask_depth = sum(float(a.get("size", 0)) * float(a.get("price", 0)) for a in asks[:5])
 
-            # Bonus per mercati long-dated (piu' stabili, meno rischio di gap)
-            long_dated_bonus = 1.0
-            if days_to_expiry is not None and days_to_expiry >= PREFERRED_MIN_DAYS:
-                long_dated_bonus = 1.2
-
-            expected_profit *= long_dated_bonus
+            # Minimo depth per evitare mercati illiquidi
+            if bid_depth < 50 or ask_depth < 50:
+                continue
 
             opps.append(MarketMakingOpportunity(
                 market=m,
-                best_bid=bid,
-                best_ask=ask,
+                yes_token=yes_token,
+                no_token=no_token,
+                best_bid=best_bid,
+                best_ask=best_ask,
                 spread=spread,
                 mid_price=mid_price,
-                expected_profit=expected_profit,
                 days_to_expiry=days_to_expiry if days_to_expiry is not None else 999.0,
                 volume_24h=m.volume,
+                book_depth_bid=bid_depth,
+                book_depth_ask=ask_depth,
             ))
 
-        # Ordina per expected_profit (decrescente), preferendo long-dated
-        opps.sort(key=lambda o: o.expected_profit, reverse=True)
+        # Ordina per spread (piu' largo = piu' profitto) ponderato per volume
+        opps.sort(key=lambda o: o.spread * min(o.volume_24h, 100000), reverse=True)
 
-        # Limita ai mercati migliori (non piu' di MAX_CONCURRENT_MARKETS)
-        opps = opps[:MAX_CONCURRENT_MARKETS * 2]  # Extra per fallback
+        # Limita
+        opps = opps[:MAX_CONCURRENT_MARKETS * 2]
 
         if opps:
             logger.info(
-                f"[MM] Scan {len(markets)} mercati → {len(opps)} opportunita' MM "
-                f"migliore: spread={opps[0].spread:.4f} mid={opps[0].mid_price:.4f} "
-                f"exp_profit=${opps[0].expected_profit:.2f} "
-                f"days={opps[0].days_to_expiry:.0f}"
-            )
-        else:
-            logger.info(
-                f"[MM] Scan {len(markets)} mercati → 0 opportunita' MM"
+                f"[MM] Scan {len(markets)} → {len(opps)} opp MM. "
+                f"Best: spread={opps[0].spread:.2%} vol=${opps[0].volume_24h:,.0f} "
+                f"'{opps[0].market.question[:40]}'"
             )
 
         return opps
 
-    async def execute(self, opp: MarketMakingOpportunity, paper: bool = True) -> bool:
+    def execute(self, opp: MarketMakingOpportunity, api: PolymarketAPI,
+                risk: RiskManager, live: bool = False) -> bool:
         """
-        Esegui market making: piazza ordini BUY e SELL su entrambi i lati.
+        Esegui market making: piazza limit BUY YES e limit BUY NO.
 
-        - BUY YES a (mid_price - target_spread/2)
-        - SELL YES a (mid_price + target_spread/2)
-        - Monitora inventory imbalance e aggiusta prezzi
+        YES side: BUY YES @ best_bid + 1c (migliora il bid di 1 tick)
+        NO side:  BUY NO @ (1 - best_ask) + 1c (equivale a vendere YES a best_ask - 1c)
+
+        Se entrambi vengono fillati: profit = spread - 2*TICK per share.
         """
         market_id = opp.market.id
 
         # Limita mercati contemporanei
-        active_count = len(self._active_markets)
-        if active_count >= MAX_CONCURRENT_MARKETS and market_id not in self._active_markets:
-            logger.info(
-                f"[MM] Max {MAX_CONCURRENT_MARKETS} mercati attivi raggiunto, "
-                f"skip '{opp.market.question[:35]}'"
-            )
+        active_mkts = set()
+        for q in self._active_orders.values():
+            active_mkts.add(q.market_id)
+        if len(active_mkts) >= MAX_CONCURRENT_MARKETS and market_id not in active_mkts:
             return False
 
-        # Check inventory imbalance
+        # Inventory check
         inv = self._inventory.get(market_id, {"yes": 0.0, "no": 0.0})
-        total_inv = inv["yes"] + inv["no"]
-        if total_inv > 0:
-            imbalance = abs(inv["yes"] - inv["no"]) / total_inv
-            if imbalance > MAX_INVENTORY_IMBALANCE:
-                # Aggiusta: quota solo il lato meno esposto
-                logger.info(
-                    f"[MM] Imbalance {imbalance:.2f} su {market_id[:16]} "
-                    f"YES=${inv['yes']:.2f} NO=${inv['no']:.2f} — aggiusto prezzi"
-                )
 
-        # Check se mid-price si e' mosso troppo (cancel-and-replace)
-        if market_id in self._active_markets:
-            last_mid = self._active_markets[market_id]
-            drift = abs(opp.mid_price - last_mid) / last_mid if last_mid > 0 else 0
-            if drift > MID_PRICE_DRIFT_THRESHOLD:
-                logger.info(
-                    f"[MM] Mid-price drift {drift:.4f} > {MID_PRICE_DRIFT_THRESHOLD} "
-                    f"su '{opp.market.question[:35]}' — cancel-and-replace"
-                )
-
-        # Check inventory limit per lato
-        if inv["yes"] >= MAX_INVENTORY_PER_SIDE or inv["no"] >= MAX_INVENTORY_PER_SIDE:
-            logger.info(
-                f"[MM] Inventory limit raggiunto su {market_id[:16]} "
-                f"YES=${inv['yes']:.2f} NO=${inv['no']:.2f}"
-            )
+        # Calcola size
+        size_dollars = min(ORDER_SIZE, MAX_INVENTORY_PER_SIDE - max(inv["yes"], inv["no"]))
+        if size_dollars < 5:
             return False
 
-        # Calcola prezzi ordini
-        buy_price = opp.mid_price - self.target_spread / 2
-        sell_price = opp.mid_price + self.target_spread / 2
-
-        # Clamp prezzi tra 0.01 e 0.99
-        buy_price = max(0.01, min(0.99, buy_price))
-        sell_price = max(0.01, min(0.99, sell_price))
-
-        # Size basata su Kelly e risk manager
-        size = self.risk.kelly_size(
-            win_prob=0.50 + self.target_spread / 2,  # Leggero edge dallo spread
-            price=buy_price,
-            strategy=STRATEGY_NAME,
-            is_maker=True,
-        )
-
-        if size == 0:
-            logger.info(
-                f"[MM] kelly_size=0 '{opp.market.question[:35]}' "
-                f"buy@{buy_price:.4f} sell@{sell_price:.4f}"
-            )
-            return False
-
-        # Cap size per lato
-        remaining_yes = MAX_INVENTORY_PER_SIDE - inv["yes"]
-        remaining_no = MAX_INVENTORY_PER_SIDE - inv["no"]
-        size = min(size, remaining_yes, remaining_no)
-
-        if size <= 0:
-            return False
-
-        allowed, reason = self.risk.can_trade(STRATEGY_NAME, size)
+        # Risk check
+        allowed, reason = risk.can_trade(STRATEGY_NAME, size_dollars)
         if not allowed:
-            logger.info(f"[MM] Trade bloccato: {reason}")
+            logger.debug(f"[MM] Bloccato: {reason}")
             return False
 
-        yes_token = opp.market.tokens["yes"]
+        # Prezzi ordini
+        # BUY YES: migliora il best bid di 1 tick
+        buy_yes_price = round(opp.best_bid + TICK, 2)
+        # BUY NO: equivale a SELL YES a (1 - no_price)
+        # Se best_ask = 0.55, vogliamo vendere YES a 0.54 (1 tick sotto ask)
+        # Quindi BUY NO a 1 - 0.54 = 0.46 → round(1 - (best_ask - TICK), 2)
+        buy_no_price = round(1.0 - (opp.best_ask - TICK), 2)
 
-        trade = Trade(
-            timestamp=time.time(),
-            strategy=STRATEGY_NAME,
-            market_id=market_id,
-            token_id=yes_token,
-            side="BUY_YES",
-            size=size,
-            price=buy_price,
-            edge=self.target_spread,
-            reason=(
-                f"[MM] BUY@{buy_price:.4f} SELL@{sell_price:.4f} "
-                f"spread={opp.spread:.4f} mid={opp.mid_price:.4f} "
-                f"'{opp.market.question[:30]}'"
-            ),
-        )
+        # Sanity: entrambi i prezzi devono essere 0.01-0.99
+        buy_yes_price = max(0.01, min(0.99, buy_yes_price))
+        buy_no_price = max(0.01, min(0.99, buy_no_price))
 
-        if paper:
-            logger.info(
-                f"[PAPER] MM: BUY YES@{buy_price:.4f} + SELL YES@{sell_price:.4f} "
-                f"spread={opp.spread:.4f} size=${size:.2f} "
-                f"'{opp.market.question[:35]}'"
-            )
-            self.risk.open_trade(trade)
+        # Profitto atteso per share = 1.0 - buy_yes - buy_no
+        profit_per_dollar = 1.0 - buy_yes_price - buy_no_price
+        if profit_per_dollar < 0.01:
+            # Spread troppo stretto, non profittevole
+            return False
 
-            # Simulazione: fill rate ~30%, profitto dallo spread
-            fill_rate = 0.25 + random.random() * 0.15  # 25-40%
-            if random.random() < fill_rate:
-                # Entrambi i lati fillati → profitto dallo spread
-                pnl = size * self.target_spread * 0.8  # 80% del target (slippage)
-                self.risk.close_trade(yes_token, won=True, pnl=pnl)
+        # Shares da comprare
+        yes_shares = size_dollars / buy_yes_price
+        no_shares = size_dollars / buy_no_price
+
+        if not live:
+            # Paper mode: simula
+            import random
+            fill_prob = 0.35
+            if random.random() < fill_prob:
+                pnl = size_dollars * profit_per_dollar
+                self._pnl_total += pnl
+                self._trades_executed += 1
                 logger.info(
-                    f"[PAPER] MM FILLED: spread profit ${pnl:.2f} "
-                    f"'{opp.market.question[:30]}'"
+                    f"[MM-PAPER] FILLED spread=${profit_per_dollar:.3f} "
+                    f"pnl=${pnl:.2f} total=${self._pnl_total:.2f} "
+                    f"'{opp.market.question[:35]}'"
                 )
-            elif random.random() < 0.5:
-                # Solo un lato fillato → posizione direzionale, piccola perdita/guadagno
-                pnl = size * (random.random() * 0.04 - 0.02)  # -2% a +2%
-                won = pnl > 0
-                self.risk.close_trade(yes_token, won=won, pnl=pnl)
-            else:
-                # Nessun fill — chiudi senza PnL
-                self.risk.close_trade(yes_token, won=False, pnl=0.0)
-        else:
-            # Live: piazza ordini limit su entrambi i lati
-            buy_ok = self.api.smart_buy(
-                yes_token, size,
-                target_price=buy_price,
-                timeout_sec=10.0,
-                fallback_market=False,  # Solo limit, no market
+                # Registra nel risk manager
+                trade = Trade(
+                    timestamp=time.time(), strategy=STRATEGY_NAME,
+                    market_id=market_id, token_id=opp.yes_token,
+                    side="BUY_YES", size=size_dollars,
+                    price=buy_yes_price, edge=profit_per_dollar,
+                    reason=f"MM spread={opp.spread:.3f} '{opp.market.question[:30]}'",
+                )
+                risk.open_trade(trade)
+                risk.close_trade(opp.yes_token, won=True, pnl=pnl)
+            return True
+
+        # ── LIVE MODE: piazza ordini limit su entrambi i lati ──
+
+        # Solo quote il lato dove non siamo al limite
+        place_yes = inv["yes"] < MAX_INVENTORY_PER_SIDE
+        place_no = inv["no"] < MAX_INVENTORY_PER_SIDE
+
+        placed = 0
+
+        if place_yes:
+            try:
+                result = api.buy_limit(opp.yes_token, buy_yes_price, yes_shares)
+                if result:
+                    order_id = ""
+                    if isinstance(result, dict):
+                        order_id = result.get("orderID", "") or result.get("id", "")
+                    if order_id:
+                        self._active_orders[order_id] = ActiveQuote(
+                            market_id=market_id, token_id=opp.yes_token,
+                            side="BUY_YES", order_id=order_id,
+                            price=buy_yes_price, size=size_dollars,
+                            placed_at=time.time(),
+                        )
+                    placed += 1
+                    logger.info(
+                        f"[MM] BUY YES {yes_shares:.1f}@${buy_yes_price:.2f} "
+                        f"(${size_dollars:.0f}) '{opp.market.question[:35]}'"
+                    )
+            except Exception as e:
+                logger.warning(f"[MM] Errore BUY YES: {e}")
+
+        if place_no:
+            try:
+                result = api.buy_limit(opp.no_token, buy_no_price, no_shares)
+                if result:
+                    order_id = ""
+                    if isinstance(result, dict):
+                        order_id = result.get("orderID", "") or result.get("id", "")
+                    if order_id:
+                        self._active_orders[order_id] = ActiveQuote(
+                            market_id=market_id, token_id=opp.no_token,
+                            side="BUY_NO", order_id=order_id,
+                            price=buy_no_price, size=size_dollars,
+                            placed_at=time.time(),
+                        )
+                    placed += 1
+                    logger.info(
+                        f"[MM] BUY NO {no_shares:.1f}@${buy_no_price:.2f} "
+                        f"(${size_dollars:.0f}) '{opp.market.question[:35]}'"
+                    )
+            except Exception as e:
+                logger.warning(f"[MM] Errore BUY NO: {e}")
+
+        if placed > 0:
+            # Registra trade nel risk manager
+            trade = Trade(
+                timestamp=time.time(), strategy=STRATEGY_NAME,
+                market_id=market_id, token_id=opp.yes_token,
+                side="BUY_YES", size=size_dollars * placed,
+                price=buy_yes_price, edge=profit_per_dollar,
+                reason=f"MM spread={opp.spread:.3f} profit/share=${profit_per_dollar:.3f} "
+                       f"'{opp.market.question[:30]}'",
             )
-            if buy_ok:
-                self.risk.open_trade(trade)
-                logger.info(
-                    f"[LIVE] MM BUY piazzato: YES@{buy_price:.4f} "
-                    f"size=${size:.2f} '{opp.market.question[:30]}'"
-                )
+            risk.open_trade(trade)
+            self._trades_executed += 1
 
-        # Aggiorna tracking
-        self._active_markets[market_id] = opp.mid_price
-        if market_id not in self._inventory:
-            self._inventory[market_id] = {"yes": 0.0, "no": 0.0}
-        self._inventory[market_id]["yes"] += size
-        self._recently_traded[market_id] = time.time()
-        self._trades_executed += 1
+            # Update inventory
+            if market_id not in self._inventory:
+                self._inventory[market_id] = {"yes": 0.0, "no": 0.0}
+            if place_yes:
+                self._inventory[market_id]["yes"] += size_dollars
+            if place_no:
+                self._inventory[market_id]["no"] += size_dollars
 
-        return True
+        return placed > 0
 
-    def _get_bid_ask(self, token_id: str) -> tuple[float, float]:
-        """Fetch best bid e ask dal CLOB per un token."""
-        if not self.api.clob:
-            return 0.0, 0.0
+    def cleanup_stale_orders(self, api: PolymarketAPI):
+        """Cancella ordini non fillati dopo ORDER_TTL secondi."""
+        now = time.time()
+        to_cancel = []
+
+        for oid, quote in list(self._active_orders.items()):
+            if not quote.filled and now - quote.placed_at > ORDER_TTL:
+                to_cancel.append(oid)
+
+        cancelled = 0
+        for oid in to_cancel:
+            try:
+                if api.cancel_order(oid):
+                    cancelled += 1
+                    quote = self._active_orders.pop(oid, None)
+                    if quote:
+                        # Rimuovi dall'inventory se non fillato
+                        inv = self._inventory.get(quote.market_id, {"yes": 0.0, "no": 0.0})
+                        side_key = "yes" if quote.side == "BUY_YES" else "no"
+                        inv[side_key] = max(0, inv[side_key] - quote.size)
+            except Exception as e:
+                logger.debug(f"[MM] Cancel error {oid[:16]}: {e}")
+
+        if cancelled:
+            logger.info(f"[MM] Cancellati {cancelled} ordini stale (>{ORDER_TTL}s)")
+
+    def check_fills(self, api: PolymarketAPI, risk: RiskManager):
+        """
+        Verifica se ordini attivi sono stati fillati.
+        Se entrambi i lati di un mercato sono fillati → profit.
+        """
+        if not self._active_orders:
+            return
 
         try:
-            sell_data = self.api.clob.get_price(token_id, "SELL")
-            buy_data = self.api.clob.get_price(token_id, "BUY")
+            open_orders = api.get_open_orders()
+            open_ids = {
+                o.get("orderID", "") or o.get("id", "")
+                for o in open_orders
+            }
+        except Exception:
+            return
 
-            bid = float(sell_data) if sell_data else 0.0
-            ask = float(buy_data) if buy_data else 0.0
+        filled_markets: dict[str, list[ActiveQuote]] = {}
 
-            return bid, ask
-        except Exception as e:
-            logger.debug(f"[MM] Errore fetch bid/ask {token_id[:16]}: {e}")
-            return 0.0, 0.0
+        for oid, quote in list(self._active_orders.items()):
+            if quote.filled:
+                continue
+            # Se non e' piu' negli ordini aperti → fillato (o cancellato)
+            if oid not in open_ids:
+                quote.filled = True
+                filled_markets.setdefault(quote.market_id, []).append(quote)
+                logger.info(
+                    f"[MM] FILL: {quote.side} ${quote.size:.0f}@{quote.price:.2f} "
+                    f"mkt={quote.market_id[:16]}"
+                )
+
+        # Check per profitto: se ENTRAMBI i lati di un mercato sono fillati
+        for mkt_id, fills in filled_markets.items():
+            yes_fills = [f for f in fills if f.side == "BUY_YES"]
+            no_fills = [f for f in fills if f.side == "BUY_NO"]
+
+            if yes_fills and no_fills:
+                # Entrambi i lati fillati → spread profit
+                yes_cost = sum(f.size for f in yes_fills)
+                no_cost = sum(f.size for f in no_fills)
+                total_invested = yes_cost + no_cost
+                # Per ogni $1 di shares (YES + NO che risolvono a $1), il profitto e':
+                # shares * $1 - total_cost
+                min_shares_value = min(yes_cost / yes_fills[0].price,
+                                       no_cost / no_fills[0].price)
+                pnl = min_shares_value * (1.0 - yes_fills[0].price - no_fills[0].price)
+                pnl = max(0, pnl)  # Non dovrebbe essere negativo per spread capture
+
+                self._pnl_total += pnl
+                self._market_pnl[mkt_id] = self._market_pnl.get(mkt_id, 0) + pnl
+
+                # Chiudi trade nel risk manager
+                for f in yes_fills + no_fills:
+                    risk.close_trade(f.token_id, won=pnl > 0, pnl=pnl / len(yes_fills + no_fills))
+
+                # Cooldown
+                self._market_cooldown[mkt_id] = time.time()
+
+                # Reset inventory
+                self._inventory[mkt_id] = {"yes": 0.0, "no": 0.0}
+
+                logger.info(
+                    f"[MM] PROFIT! ${pnl:.2f} su {mkt_id[:16]} "
+                    f"(invested=${total_invested:.0f}, total_pnl=${self._pnl_total:.2f})"
+                )
+
+                # Cleanup filled orders
+                for f in yes_fills + no_fills:
+                    self._active_orders.pop(f.order_id, None)
 
     def _estimate_days_to_expiry(self, end_date) -> float | None:
         """Stima i giorni alla scadenza del mercato."""
         if not end_date:
             return None
-
         try:
             from datetime import datetime, timezone
-
             if isinstance(end_date, str):
-                # Prova vari formati ISO
                 for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d"):
                     try:
                         dt = datetime.strptime(end_date, fmt).replace(tzinfo=timezone.utc)
@@ -389,17 +481,17 @@ class MarketMakingStrategy:
                 dt = datetime.fromtimestamp(end_date, tz=timezone.utc)
             else:
                 return None
-
             now = datetime.now(timezone.utc)
-            delta = (dt - now).total_seconds()
-            return delta / 86400.0  # converti in giorni
+            return (dt - now).total_seconds() / 86400.0
         except Exception:
             return None
 
     @property
     def stats(self) -> dict:
         return {
-            "trades_executed": self._trades_executed,
-            "active_markets": len(self._active_markets),
-            "inventory": dict(self._inventory),
+            "trades": self._trades_executed,
+            "pnl": self._pnl_total,
+            "active_orders": len(self._active_orders),
+            "markets": len(self._inventory),
+            "inventory": {k: v for k, v in self._inventory.items() if v["yes"] > 0 or v["no"] > 0},
         }

@@ -276,9 +276,10 @@ class MultiStrategyBot:
         )
         self.risk.set_strategy_budget("high_prob_bond", config.capital_for("high_prob_bond"))
 
-        # v7.0: market_making DISABILITATO (necessita $2K+ budget)
-        # self.mm = MarketMakingStrategy(self.api, self.risk)
-        # self.risk.set_strategy_budget("market_making", config.capital_for("market_making"))
+        # v12.3: Market Making riattivato con v2.0 two-sided quoting
+        from strategies.market_making import MarketMakingStrategy
+        self.mm = MarketMakingStrategy(self.api, self.risk)
+        self.risk.set_strategy_budget("market_making", 500.0)  # budget indipendente
 
         self.whale = WhaleCopyStrategy(
             self.api, self.risk,
@@ -651,6 +652,20 @@ class MultiStrategyBot:
                                 self.favorite_longshot.execute(opp, self.api, self.risk, live=not paper)
                     except Exception as e:
                         logger.error(f"[FAV-LONG] Errore: {e}", exc_info=True)
+
+                # ── 0.8.5. Market Making v2.0 (ogni 3 cicli ~90s) ──
+                if self._cycle % 3 == 0:
+                    try:
+                        mm_opps = self.mm.scan(shared_markets)
+                        if _can_trade and mm_opps:
+                            for opp in mm_opps[:3]:
+                                self.mm.execute(opp, self.api, self.risk, live=not paper)
+                        # Check fills e cleanup stale orders (live only)
+                        if not paper:
+                            self.mm.check_fills(self.api, self.risk)
+                            self.mm.cleanup_stale_orders(self.api)
+                    except Exception as e:
+                        logger.error(f"[MM] Errore: {e}", exc_info=True)
 
                 # ── 0.9. BTC Latency Arb v3.0 (Multi-Mode) ──
                 try:
@@ -1152,6 +1167,13 @@ class MultiStrategyBot:
                         self._check_auto_revert()
                     except Exception as e:
                         logger.debug(f"[AUTO-REVERT] Errore: {e}")
+
+                # ── v12.3: Auto-Compound (ogni 200 cicli ~100 min) ──
+                if self._cycle % 200 == 0 and self._cycle > 0 and not self.config.paper_trading:
+                    try:
+                        self._auto_compound()
+                    except Exception as e:
+                        logger.debug(f"[AUTO-COMPOUND] Errore: {e}")
 
                 # ── v12.2: Darwinian Reweight (ogni 1000 cicli ~8h) ──
                 if self._cycle % 1000 == 0 and self._cycle > 0:
@@ -2044,6 +2066,96 @@ class MultiStrategyBot:
             logger.info(
                 f"[DARWINIAN] Reweight: {', '.join(changes)}"
             )
+
+    def _auto_compound(self):
+        """
+        v12.3: Auto-Compound — ricalcola capitale reale e scala budget/bet proporzionalmente.
+        Legge USDC balance + valore posizioni aperte, aggiorna total_capital e tutti i budget.
+        """
+        import json as _json
+        from pathlib import Path as _Path
+
+        # Capitale reale = USDC disponibile + valore mark-to-market posizioni
+        usdc = self._usdc_balance
+        if usdc <= 0:
+            return
+
+        # Stima valore posizioni aperte (approssimazione: size * current_price)
+        positions_value = 0.0
+        for t in self.risk.open_trades:
+            positions_value += t.size  # Conservativo: usa invested amount
+
+        real_capital = usdc + positions_value
+
+        # Floor: mai scendere sotto reserve_floor (20%)
+        min_capital = self.config.risk.total_capital * 0.5  # mai sotto 50% del capitale iniziale
+        real_capital = max(real_capital, min_capital)
+
+        old_capital = self.config.risk.total_capital
+        if abs(real_capital - old_capital) < 50:
+            return  # Variazione minima, skip
+
+        # Aggiorna capitale nel config e risk manager
+        self.config.risk.total_capital = real_capital
+        self.risk.capital = real_capital
+        self.risk.config.total_capital = real_capital
+
+        # Riscala budget per strategia
+        for strat in ["weather", "resolution_sniper", "arb_gabagool", "arbitrage",
+                       "data_driven", "event_driven", "high_prob_bond", "whale_copy"]:
+            base = self.config.capital_for(strat)
+            # Applica peso darwiniano se presente
+            dw = self._darwinian_weights.get(strat, 1.0)
+            self.risk.set_strategy_budget(strat, base * dw)
+
+        # Scala max bet proporzionalmente (ratio vs baseline $7K)
+        ratio = real_capital / 7000.0
+        import weather as _weather_mod
+        _weather_mod.MAX_WEATHER_BET = round(min(200, max(30, 80 * ratio)), 0)
+        _weather_mod.CITY_TIER2_MAX_BET = round(min(80, max(15, 35 * ratio)), 0)
+
+        try:
+            from strategies import favorite_longshot as _fl_mod
+            _fl_mod.MAX_BET = round(min(120, max(20, 50 * ratio)), 0)
+        except Exception:
+            pass
+
+        # Scala market making max inventory
+        try:
+            from strategies import market_making as _mm_mod
+            _mm_mod.MAX_INVENTORY_PER_SIDE = round(min(500, max(50, 200 * ratio)), 0)
+            _mm_mod.ORDER_SIZE = round(min(60, max(10, 25 * ratio)), 0)
+        except Exception:
+            pass
+
+        # Log
+        logger.info(
+            f"[AUTO-COMPOUND] Capitale: ${old_capital:.0f} → ${real_capital:.0f} "
+            f"(USDC=${usdc:.0f} + pos=${positions_value:.0f}) "
+            f"ratio={ratio:.2f}x | weather_max=${_weather_mod.MAX_WEATHER_BET}"
+        )
+
+        # Salva snapshot
+        compound_file = _Path(__file__).parent / "logs" / "auto_compound.json"
+        try:
+            import time as _t
+            entry = {
+                "timestamp": _t.time(),
+                "old_capital": old_capital,
+                "new_capital": real_capital,
+                "usdc": usdc,
+                "positions_value": positions_value,
+                "ratio": ratio,
+            }
+            history = []
+            if compound_file.exists():
+                history = _json.loads(compound_file.read_text())
+            history.append(entry)
+            history = history[-100:]  # keep last 100
+            with open(compound_file, "w") as f:
+                _json.dump(history, f, indent=2)
+        except Exception:
+            pass
 
     def _check_auto_revert(self):
         """
