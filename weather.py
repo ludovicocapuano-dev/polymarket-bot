@@ -64,7 +64,7 @@ def _market_efficiency(market: Market) -> float:
     return spread_score * 0.4 + liq_score * 0.3 + vol_score * 0.3
 
 STRATEGY_NAME = "weather"
-MAX_WEATHER_BET = 60.0  # v10.8.4: da $35, proporzionale al capitale ($3.5K)
+MAX_WEATHER_BET = 80.0  # v12.1: proporzionale al capitale ($7K)
 
 # v11.1: City performance tiers basati su dati reali (275 trade, 17 giorni)
 # Tier 1: WR >= 75%, volume alto → full budget
@@ -72,7 +72,7 @@ MAX_WEATHER_BET = 60.0  # v10.8.4: da $35, proporzionale al capitale ($3.5K)
 # Tier 3: WR < 50% → BLACKLIST (perdono soldi)
 CITY_BLACKLIST_DEFAULT = {"london", "paris"}  # 35% WR combinato, fallback statico
 CITY_TIER2_DEFAULT = {"miami", "buenos aires", "ankara"}  # WR 50-58%, fallback
-CITY_TIER2_MAX_BET = 25.0  # cap ridotto per città marginali
+CITY_TIER2_MAX_BET = 35.0  # v12.1: cap ridotto per città marginali
 
 # v12.0.5: Dynamic city blacklist — auto-generated from recent trade WR
 _dynamic_city_blacklist: set[str] = set(CITY_BLACKLIST_DEFAULT)

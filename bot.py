@@ -359,6 +359,7 @@ class MultiStrategyBot:
         self._weather_extra_cache: list = []  # v10.8: cache async weather markets
         self._weather_extra_last: float = 0.0
         self._weather_priority_scan: bool = False  # v10.8.5: latency hunter flag
+        self._darwinian_weights: dict[str, float] = {}  # v12.2: Darwinian budget weighting
 
         # ── v9.0: Layer 2 — Signal Validator + Devil's Advocate ──
         self.devils_advocate = DevilsAdvocate(risk_manager=self.risk)
@@ -1145,6 +1146,19 @@ class MultiStrategyBot:
                                 )
                     except Exception as e:
                         logger.warning(f"[v10.2] Errore portfolio VaR: {e}")
+
+                    # v12.2: Auto-Revert — check optimizer params after 72h
+                    try:
+                        self._check_auto_revert()
+                    except Exception as e:
+                        logger.debug(f"[AUTO-REVERT] Errore: {e}")
+
+                # ── v12.2: Darwinian Reweight (ogni 1000 cicli ~8h) ──
+                if self._cycle % 1000 == 0 and self._cycle > 0:
+                    try:
+                        self._darwinian_reweight()
+                    except Exception as e:
+                        logger.debug(f"[DARWINIAN] Errore: {e}")
 
                 # Salva trade periodicamente
                 if self._cycle % 10 == 0:
@@ -1957,6 +1971,183 @@ class MultiStrategyBot:
                 )
         except Exception as e:
             logger.debug(f"[AUTO-OPT] Could not reload params: {e}")
+
+    def _darwinian_reweight(self):
+        """
+        v12.2: Darwinian Weighting (ispirato da atlas-gic).
+        Ribilancia budget tra strategie basato su performance recente.
+        Top performer → budget *1.05, bottom → *0.95.
+        Pesi clamped tra 0.5x e 2.0x del budget base.
+        """
+        import json as _json
+        from pathlib import Path as _Path
+
+        ACTIVE_STRATEGIES = ["weather", "resolution_sniper"]
+        WEIGHT_FILE = _Path(__file__).parent / "logs" / "darwinian_weights.json"
+
+        # Carica pesi precedenti o inizializza a 1.0
+        weights = {}
+        if WEIGHT_FILE.exists():
+            try:
+                weights = _json.loads(WEIGHT_FILE.read_text())
+            except Exception:
+                pass
+        for s in ACTIVE_STRATEGIES:
+            if s not in weights:
+                weights[s] = 1.0
+
+        # Calcola WR recente per strategia (ultimi 50 trade chiusi)
+        perf = {}
+        for s in ACTIVE_STRATEGIES:
+            strat_trades = [
+                t for t in self.risk.trades
+                if t.strategy == s and t.result in ("WIN", "LOSS")
+            ][-50:]
+            if len(strat_trades) >= 5:
+                wins = sum(1 for t in strat_trades if t.result == "WIN")
+                perf[s] = wins / len(strat_trades)
+
+        if len(perf) < 2:
+            return  # serve almeno 2 strategie con dati
+
+        # Ranking: top quartile *1.05, bottom quartile *0.95
+        sorted_strats = sorted(perf.keys(), key=lambda s: perf[s], reverse=True)
+        top = sorted_strats[:max(1, len(sorted_strats) // 4 + 1)]
+        bottom = sorted_strats[-max(1, len(sorted_strats) // 4 + 1):]
+
+        changes = []
+        for s in ACTIVE_STRATEGIES:
+            old_w = weights[s]
+            if s in top:
+                weights[s] = min(2.0, old_w * 1.05)
+            elif s in bottom:
+                weights[s] = max(0.5, old_w * 0.95)
+            if abs(weights[s] - old_w) > 0.001:
+                changes.append(f"{s}: {old_w:.2f}→{weights[s]:.2f} (WR={perf.get(s,0):.0%})")
+
+        # Applica pesi ai budget
+        for s in ACTIVE_STRATEGIES:
+            base_budget = self.config.capital_for(s)
+            new_budget = base_budget * weights[s]
+            self.risk.set_strategy_budget(s, new_budget)
+
+        self._darwinian_weights = weights
+
+        # Salva
+        try:
+            with open(WEIGHT_FILE, "w") as f:
+                _json.dump(weights, f, indent=2)
+        except Exception:
+            pass
+
+        if changes:
+            logger.info(
+                f"[DARWINIAN] Reweight: {', '.join(changes)}"
+            )
+
+    def _check_auto_revert(self):
+        """
+        v12.2: Auto-Revert (ispirato da atlas-gic keep/revert).
+        Se l'AutoOptimizer ha applicato parametri e dopo 72h il PnL
+        è peggiorato, reverta ai parametri precedenti.
+        """
+        import json as _json
+        from pathlib import Path as _Path
+
+        applied_file = _Path(__file__).parent / "logs" / "auto_optimizer_applied_weather.json"
+        if not applied_file.exists():
+            return
+
+        try:
+            history = _json.loads(applied_file.read_text())
+            if not isinstance(history, list) or len(history) < 2:
+                return  # serve almeno 1 apply per valutare
+
+            latest = history[-1]
+            applied_ts = latest.get("timestamp", "")
+            if not applied_ts:
+                return
+
+            # Parse timestamp
+            from datetime import datetime as _dt
+            applied_dt = _dt.strptime(applied_ts, "%Y-%m-%d %H:%M:%S")
+            hours_since = (
+                _dt.now() - applied_dt
+            ).total_seconds() / 3600
+
+            if hours_since < 72:
+                return  # troppo presto per giudicare
+
+            # Già valutato? Check flag
+            if latest.get("_revert_checked"):
+                return
+
+            # Calcola WR post-apply (trade dopo l'apply timestamp)
+            applied_epoch = applied_dt.timestamp()
+            post_trades = [
+                t for t in self.risk.trades
+                if t.strategy == "weather"
+                and t.result in ("WIN", "LOSS")
+                and t.timestamp > applied_epoch
+            ]
+
+            if len(post_trades) < 10:
+                return  # non abbastanza dati
+
+            post_wins = sum(1 for t in post_trades if t.result == "WIN")
+            post_wr = post_wins / len(post_trades)
+
+            # WR pre-apply (dalla metrica salvata nell'apply)
+            pre_wr = latest.get("metrics", {}).get("wr", 65) / 100
+
+            # Se WR post è >15 punti peggiore → revert
+            if post_wr < pre_wr - 0.15:
+                # Revert ai parametri precedenti
+                if len(history) >= 2:
+                    prev_params = history[-2].get("params", {})
+                else:
+                    prev_params = {}
+
+                if prev_params:
+                    # Scrivi revert come nuovo entry
+                    revert_entry = {
+                        "strategy": "weather",
+                        "timestamp": _dt.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "improvement_pct": 0,
+                        "closed_trades": len(post_trades),
+                        "score": 0,
+                        "metrics": latest.get("metrics", {}),
+                        "params": prev_params,
+                        "changes": [],
+                        "_reverted_from": applied_ts,
+                        "_reason": f"post_wr={post_wr:.1%} vs pre_wr={pre_wr:.1%} "
+                                   f"({len(post_trades)} trades in {hours_since:.0f}h)",
+                    }
+                    history.append(revert_entry)
+                    logger.warning(
+                        f"[AUTO-REVERT] Weather params reverted! "
+                        f"Post-apply WR={post_wr:.1%} vs expected={pre_wr:.1%} "
+                        f"({len(post_trades)} trades in {hours_since:.0f}h)"
+                    )
+                else:
+                    logger.info(
+                        f"[AUTO-REVERT] Would revert but no previous params. "
+                        f"Post WR={post_wr:.1%} vs {pre_wr:.1%}"
+                    )
+            else:
+                logger.info(
+                    f"[AUTO-REVERT] Keep! Post-apply WR={post_wr:.1%} "
+                    f"vs expected={pre_wr:.1%} ({len(post_trades)} trades, "
+                    f"{hours_since:.0f}h) — params validated"
+                )
+
+            # Segna come valutato
+            latest["_revert_checked"] = True
+            with open(applied_file, "w") as f:
+                _json.dump(history, f, indent=2)
+
+        except Exception as e:
+            logger.debug(f"[AUTO-REVERT] Error: {e}")
 
     async def _weather_fetch_loop(self):
         """v10.8: Fetch asincrono dei weather markets extra (offset 400-1400).

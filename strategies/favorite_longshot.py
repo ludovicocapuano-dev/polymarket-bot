@@ -124,7 +124,7 @@ class FavoriteLongshotStrategy:
     MIN_LIQUIDITY = 1_000
     MIN_EDGE = 0.01        # 1% minimum edge after spread + efficiency
     BANKROLL = 1000.0      # dedicated bankroll for this strategy
-    MAX_BET = 40.0
+    MAX_BET = 50.0  # v12.1: proporzionale a $7K capitale
     MIN_BET = 10.0
     MAX_POSITIONS = 10
     SCAN_INTERVAL = 1800
