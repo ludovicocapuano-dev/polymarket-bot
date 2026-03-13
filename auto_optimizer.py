@@ -42,6 +42,15 @@ from backtest_replay import (
     apply_filters, calc_metrics, LOG_DIR,
 )
 
+# v3.1: VectorBt-accelerated backtesting (5-10x faster)
+try:
+    from utils.vectorbt_backtester import (
+        fast_evaluate, trades_to_dataframe,
+    )
+    _USE_VECTORBT = True
+except ImportError:
+    _USE_VECTORBT = False
+
 
 @dataclass
 class Experiment:
@@ -304,8 +313,19 @@ def split_trades_temporal(trades: list[Trade], train_ratio: float = 0.70
     return sorted_trades[:split_idx], sorted_trades[split_idx:]
 
 
-def eval_params(trades: list[Trade], params: dict, strategy: str) -> dict:
-    """Evaluate parameters on a set of trades, return metrics."""
+def eval_params(trades: list[Trade], params: dict, strategy: str,
+                trades_df=None) -> dict:
+    """Evaluate parameters on a set of trades, return metrics.
+
+    If trades_df (pandas DataFrame) is provided and vectorbt is available,
+    uses the vectorized fast path (5-10x faster). Otherwise falls back to
+    the original per-trade Python loop.
+    """
+    # v3.1: vectorized fast path
+    if _USE_VECTORBT and trades_df is not None:
+        return fast_evaluate(params, trades_df, strategy)
+
+    # Original loop-based path (fallback)
     if strategy == "weather":
         passed, blocked = apply_filters(list(trades), params_to_filter(params))
         return calc_metrics(passed)
@@ -486,16 +506,25 @@ def run_optimization(trades: list[Trade], param_ranges: list[ParamRange],
         test_trades = []
         print(f"  No train/test split (<30 trades), using full dataset")
 
+    # v3.1: Pre-build vectorized DataFrame for fast evaluation
+    train_df = None
+    if _USE_VECTORBT:
+        train_df = trades_to_dataframe(train_trades)
+        print(f"  [VECTORBT] Accelerated backtesting enabled "
+              f"({len(train_df)} rows pre-indexed)")
+
     # Initialize with current params
     best_params = {p.name: p.current for p in param_ranges}
-    best_metrics = eval_params(train_trades, best_params, strategy)
+    best_metrics = eval_params(train_trades, best_params, strategy,
+                               trades_df=train_df)
     best_score = compute_score(best_metrics, strategy, best_params, param_ranges,
                                 simplicity_weight=simplicity_weight)
 
     print(f"\n{'='*70}")
-    print(f"  AutoOptimizer v2.2 — {strategy}")
+    print(f"  AutoOptimizer v3.1 — {strategy}")
     print(f"  Trades: {len(trades)} | Max iterations: {max_iter}")
     print(f"  Params: {len(param_ranges)} searchable")
+    print(f"  Engine: {'vectorbt (vectorized)' if train_df is not None else 'loop (fallback)'}")
     print(f"  Baseline score: {best_score:.4f}")
     print(f"  Baseline: WR={best_metrics['wr']:.1f}% PnL=${best_metrics['pnl']:+.2f} "
           f"PF={best_metrics['profit_factor']:.2f}")
@@ -506,7 +535,8 @@ def run_optimization(trades: list[Trade], param_ranges: list[ParamRange],
 
     for i in range(max_iter):
         candidate_params = propose_variation(param_ranges, best_params, i)
-        metrics = eval_params(train_trades, candidate_params, strategy)
+        metrics = eval_params(train_trades, candidate_params, strategy,
+                              trades_df=train_df)
         score = compute_score(metrics, strategy, candidate_params, param_ranges,
                                simplicity_weight=simplicity_weight)
 
@@ -544,7 +574,9 @@ def run_optimization(trades: list[Trade], param_ranges: list[ParamRange],
 
     # v2.1: Out-of-sample validation on test set
     if has_test and test_trades:
-        test_metrics = eval_params(test_trades, best_params, strategy)
+        test_df = trades_to_dataframe(test_trades) if _USE_VECTORBT else None
+        test_metrics = eval_params(test_trades, best_params, strategy,
+                                   trades_df=test_df)
         test_score = compute_score(test_metrics, strategy, best_params, param_ranges,
                                     simplicity_weight=simplicity_weight)
         print(f"\n  OUT-OF-SAMPLE (test set):")
@@ -834,7 +866,9 @@ def optimize_strategy(trades: list[Trade], strategy: str, max_iter: int,
     strat_trades = [t for t in trades if t.strategy == strategy]
     if len(strat_trades) >= 30:
         train_trades, test_trades = split_trades_temporal(trades, 0.70)
-        test_metrics = eval_params(test_trades, best.params, strategy)
+        test_df = trades_to_dataframe(test_trades) if _USE_VECTORBT else None
+        test_metrics = eval_params(test_trades, best.params, strategy,
+                                   trades_df=test_df)
         test_score = compute_score(
             test_metrics, strategy, best.params, param_ranges,
             simplicity_weight=simplicity_weight

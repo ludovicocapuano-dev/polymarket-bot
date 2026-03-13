@@ -71,6 +71,7 @@ from monitoring.quant_metrics import evaluate_all_strategies
 from monitoring.hrp import HRPAllocator
 from monitoring.kyle_lambda import KyleLambdaEstimator
 from utils.kalman_forecast import WeatherKalmanFilter
+from utils.advanced_risk import run_advanced_risk_analysis
 
 try:
     from finbert_feed import FinBERTFeed
@@ -1181,6 +1182,25 @@ class MultiStrategyBot:
                         self._darwinian_reweight()
                     except Exception as e:
                         logger.debug(f"[DARWINIAN] Errore: {e}")
+
+                # ── v12.4: Advanced Risk Analytics (ogni 1000 cicli ~8h) ──
+                # GARCH model selection, CVaR allocation, PyFolio tearsheet
+                # Logs recommendations only — does NOT auto-apply changes
+                if self._cycle % 1000 == 0 and self._cycle > 0:
+                    try:
+                        adv_report = run_advanced_risk_analysis(self.risk)
+                        if adv_report.get("allocation"):
+                            alloc = adv_report["allocation"]
+                            for method in ["CVaR", "MVO", "HRP"]:
+                                if method in alloc and not alloc[method].get("fallback"):
+                                    weights = alloc[method].get("weights", {})
+                                    top = sorted(weights.items(), key=lambda x: -x[1])[:3]
+                                    top_str = ", ".join(f"{k}={v:.0%}" for k, v in top)
+                                    logger.info(
+                                        f"[ADVANCED_RISK] {method} recommends: {top_str}"
+                                    )
+                    except Exception as e:
+                        logger.debug(f"[ADVANCED_RISK] Errore: {e}")
 
                 # ── v12.4.1: Hyperspace Sync (ogni 500 cicli ~4h) ──
                 if self._cycle % 500 == 250 and self._cycle > 0:
