@@ -1182,6 +1182,55 @@ class MultiStrategyBot:
                     except Exception as e:
                         logger.debug(f"[DARWINIAN] Errore: {e}")
 
+                # ── v12.4.1: Hyperspace Sync (ogni 500 cicli ~4h) ──
+                if self._cycle % 500 == 250 and self._cycle > 0:
+                    try:
+                        from hyperspace_optimizer import sync as hyperspace_sync
+                        hs_result = hyperspace_sync("weather", auto_adopt=False)
+                        if hs_result.get("adopted"):
+                            adopted = hs_result["adopted"]
+                            logger.info(
+                                f"[HYPERSPACE] Peer {adopted['peer_id']} ha params "
+                                f"{adopted['improvement']:+.1f}% migliori — flagged per review"
+                            )
+                        elif hs_result.get("published"):
+                            logger.debug(
+                                f"[HYPERSPACE] Sync completato — "
+                                f"score={hs_result.get('published_score', 0):.4f}"
+                            )
+                    except Exception as e:
+                        logger.debug(f"[HYPERSPACE] Errore sync: {e}")
+
+                # ── v12.4: Market Intelligence (ogni 500 cicli ~4h) ──
+                if self._cycle % 500 == 0 and self._cycle > 0:
+                    try:
+                        from scripts.market_intelligence import run_market_intelligence, save_report
+                        market_dicts = [
+                            {"question": m.question, "title": m.question}
+                            for m in shared_markets
+                        ]
+                        active_titles = [
+                            t.market_title for t in self.risk.open_trades
+                            if hasattr(t, "market_title") and t.market_title
+                        ]
+                        intel_report = run_market_intelligence(
+                            markets=market_dicts,
+                            active_titles=active_titles,
+                            risk_manager=self.risk,
+                        )
+                        if intel_report.get("n_clusters", 0) > 0:
+                            logger.info(
+                                f"[INTEL] {intel_report['n_clusters']} correlation clusters "
+                                f"({intel_report['weather_markets']} weather markets)"
+                            )
+                        if intel_report.get("n_uncovered", 0) > 0:
+                            logger.info(
+                                f"[INTEL] {intel_report['n_uncovered']} uncovered opportunities"
+                            )
+                        save_report(intel_report)
+                    except Exception as e:
+                        logger.debug(f"[INTEL] Errore market intelligence: {e}")
+
                 # Salva trade periodicamente
                 if self._cycle % 10 == 0:
                     self.risk.save_trades()

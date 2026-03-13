@@ -28,6 +28,7 @@ from utils.polymarket_api import Market, PolymarketAPI
 from utils.risk_manager import RiskManager, Trade
 from utils.uma_monitor import UmaMonitor, ResolutionProposal
 from utils.perplexity_feed import PerplexityFeed
+from utils.hyperspace_llm import HyperspaceLLM
 
 logger = logging.getLogger(__name__)
 
@@ -65,10 +66,16 @@ class ResolutionSniperStrategy:
         self.api = api
         self.risk = risk
         self.uma = uma_monitor
-        self.perplexity = perplexity
+        # Wrap Perplexity con Hyperspace: local LLM first, Perplexity fallback
+        self._raw_perplexity = perplexity
+        self.perplexity = HyperspaceLLM(perplexity=perplexity)
         self.min_edge = min_edge
         self._trades_executed = 0
         self._recently_traded: dict[str, float] = {}
+        logger.info(
+            f"[SNIPER] Hyperspace LLM wrapper attivo — "
+            f"local first, Perplexity fallback"
+        )
 
     async def scan(
         self, shared_markets: list[Market] | None = None
@@ -518,9 +525,14 @@ class ResolutionSniperStrategy:
 
     @property
     def stats(self) -> dict:
-        return {
+        base = {
             "trades_executed": self._trades_executed,
             "uma_proposals": self.uma.active_proposals if self.uma else 0,
-            "perplexity_enabled": bool(self.perplexity and self.perplexity.enabled),
+            "perplexity_enabled": bool(self._raw_perplexity and self._raw_perplexity.enabled),
             "perplexity_cost": self.perplexity.total_cost if self.perplexity else 0,
+            "hyperspace_enabled": True,
         }
+        # Aggiungi stats Hyperspace (local vs fallback)
+        if isinstance(self.perplexity, HyperspaceLLM):
+            base["hyperspace"] = self.perplexity.stats
+        return base

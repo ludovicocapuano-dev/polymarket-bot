@@ -18,6 +18,10 @@ echo "$OPT_OUTPUT" >> "$LOG"
 # 3. Run Quant Metrics (PSR/DSR/binHR)
 python3 scripts/run_quant_metrics.py >> "$LOG" 2>&1
 
+# 4. Hyperspace Sync — pubblica risultati e cerca scoperte peer
+echo "--- Hyperspace Sync ---" >> "$LOG"
+timeout 60 python3 scripts/hyperspace_bridge.py --strategy weather >> "$LOG" 2>&1
+
 echo "=== DONE $(date) ===" >> "$LOG"
 
 # 4. Invia risultati su Telegram

@@ -14,6 +14,7 @@ echo "=== $(date) ===" >> "$LOG"
 # Repos da monitorare
 REPOS=(
     "karpathy/autoresearch"
+    "hyperspaceai/agi"
     "polymarket/polymarket-cli"
     "polymarket/py-clob-client"
     "polymarket/py-builder-signing-sdk"
