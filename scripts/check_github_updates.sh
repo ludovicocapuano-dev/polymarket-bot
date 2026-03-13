@@ -15,6 +15,7 @@ echo "=== $(date) ===" >> "$LOG"
 REPOS=(
     "karpathy/autoresearch"
     "hyperspaceai/agi"
+    "greyhaven-ai/autocontext"
     "polymarket/polymarket-cli"
     "polymarket/py-clob-client"
     "polymarket/py-builder-signing-sdk"
