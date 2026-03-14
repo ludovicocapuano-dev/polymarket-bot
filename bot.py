@@ -66,6 +66,7 @@ from strategies.favorite_longshot import FavoriteLongshotStrategy
 from strategies.btc_latency import BTCLatencyStrategy
 from strategies.abandoned_position import AbandonedPositionStrategy
 from strategies.cross_platform_arb import CrossPlatformArbStrategy
+from strategies.econ_release_sniper import EconReleaseSniper
 from utils.uma_monitor import UmaMonitor
 from monitoring.quant_metrics import evaluate_all_strategies
 from monitoring.hrp import HRPAllocator
@@ -307,6 +308,13 @@ class MultiStrategyBot:
 
         # ── v10.8.4: NegRisk Sum Arbitrage Scanner ──
         self.negrisk_arb = NegRiskArbScanner()
+
+        # ── v12.5: Economic Data Release Sniper ──
+        self.econ_sniper = EconReleaseSniper(self.api, self.risk)
+        self.econ_sniper.fetch_schedule()
+        nxt = self.econ_sniper.next_release()
+        if nxt:
+            logger.info(f"[ECON-SNIPER] Next release: {nxt.name} on {nxt.date.strftime('%Y-%m-%d %H:%M UTC')}")
 
         # ── v10.8.4: Holding Rewards (4% APY) + Favorite-Longshot Bias ──
         self.holding_rewards = HoldingRewardsStrategy()
@@ -653,6 +661,16 @@ class MultiStrategyBot:
                                 self.favorite_longshot.execute(opp, self.api, self.risk, live=not paper)
                     except Exception as e:
                         logger.error(f"[FAV-LONG] Errore: {e}", exc_info=True)
+
+                # ── 0.8.6. Economic Data Release Sniper (ogni ciclo) ──
+                try:
+                    econ_opps = self.econ_sniper.scan(shared_markets)
+                    if _can_trade and econ_opps:
+                        for opp in econ_opps[:5]:
+                            self.econ_sniper.execute_opportunity(opp, live=not paper)
+                except Exception as e:
+                    if "release" not in str(e).lower():
+                        logger.error(f"[ECON-SNIPER] Errore: {e}", exc_info=True)
 
                 # ── 0.8.5. Market Making v2.0 (ogni 3 cicli ~90s) ──
                 if self._cycle % 3 == 0:
