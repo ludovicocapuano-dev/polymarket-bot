@@ -35,7 +35,7 @@ STRATEGY_BARRIERS: dict[str, TripleBarrier] = {
     "whale_copy":        TripleBarrier(0.10, 0.08, 48),     # Segui il whale, 2gg
     # v12.1: Barriere specifiche per strategie indipendenti
     "holding_rewards":   TripleBarrier(0.15, 0.25, 720),    # 30gg, SL ampio per yield
-    "favorite_longshot": TripleBarrier(0.10, 0.20, 168),    # 7gg, SL moderato
+    "favorite_longshot": TripleBarrier(0.15, 0.35, 336),    # v12.5.2: TP 15%, SL 35%, 14gg — longshot ha bisogno di tempo e spazio
     "imported_onchain":  TripleBarrier(0.15, 0.15, 336),    # 14gg, conservativo
 }
 

@@ -117,16 +117,16 @@ class FavoriteLongshotOpportunity:
 class FavoriteLongshotStrategy:
     """Exploits the favorite-longshot bias with Snowberg-Wolfers model."""
 
-    MIN_PRICE = 0.70
+    MIN_PRICE = 0.75       # v12.5.2: alzato da 0.70 — sotto 0.75 l'edge è troppo basso
     MAX_PRICE = 0.90
-    BASE_ALPHA = 1.12      # baseline bias parameter
-    MIN_VOLUME = 50_000
-    MIN_LIQUIDITY = 1_000
-    MIN_EDGE = 0.01        # 1% minimum edge after spread + efficiency
+    BASE_ALPHA = 1.18      # v12.5.2: alzato da 1.12 — servono alpha più forti per edge reale
+    MIN_VOLUME = 100_000   # v12.5.2: alzato da 50K — mercati piccoli = più rumore
+    MIN_LIQUIDITY = 2_000  # v12.5.2: alzato da 1K
+    MIN_EDGE = 0.04        # v12.5.2: alzato da 0.01 — edge < 4% non copre il rischio
     BANKROLL = 1000.0      # dedicated bankroll for this strategy
-    MAX_BET = 50.0  # v12.1: proporzionale a $7K capitale
+    MAX_BET = 35.0         # v12.5.2: ridotto da $50 — meno size finché WR non migliora
     MIN_BET = 10.0
-    MAX_POSITIONS = 10
+    MAX_POSITIONS = 5      # v12.5.2: ridotto da 10 — concentra su migliori opportunità
     SCAN_INTERVAL = 1800
     COOLDOWN_PER_MARKET = 86400
 
