@@ -466,16 +466,15 @@ class MultiStrategyBot:
         paper = self.config.paper_trading
         logger.info(f"Bot avviato in modalita' {'PAPER' if paper else 'LIVE'}")
         logger.info(
-            f"Allocazione v10.8: WEATHER={self.config.allocation.weather}% "
+            f"Allocazione: WEATHER={self.config.allocation.weather}% "
             f"SNIPER={self.config.allocation.resolution_sniper}% "
-            f"BOND={self.config.allocation.high_prob_bond}% "
-            f"EVENT={self.config.allocation.event_driven}% "
-            f"WHALE={self.config.allocation.whale_copy}%"
+            f"| Indipendenti: fav_longshot($35) negrisk($150) hold_rewards($35) "
+            f"market_making($25) econ_sniper($100)"
         )
 
-        # v10.8: Notify startup via Telegram
+        # v12.5.2: Notify startup via Telegram — include independent strategies
         active_strats = [
-            name for name, pct in [
+            f"{name} ({pct}%)" for name, pct in [
                 ("weather", self.config.allocation.weather),
                 ("resolution_sniper", self.config.allocation.resolution_sniper),
                 ("event_driven", self.config.allocation.event_driven),
@@ -483,10 +482,26 @@ class MultiStrategyBot:
                 ("whale_copy", self.config.allocation.whale_copy),
             ] if pct > 0
         ]
+        # Independent strategies (no % allocation, own budget)
+        independent_strats = []
+        if hasattr(self, 'favorite_longshot'):
+            independent_strats.append("favorite_longshot ($35/trade)")
+        if hasattr(self, 'negrisk_arb'):
+            independent_strats.append("negrisk_arb ($150 max)")
+        if hasattr(self, 'holding_rewards'):
+            independent_strats.append("holding_rewards ($35/mkt)")
+        if hasattr(self, 'mm'):
+            independent_strats.append("market_making ($25/ordine)")
+        if hasattr(self, 'econ_sniper'):
+            nxt = self.econ_sniper.next_release()
+            econ_label = f"econ_sniper (next: {nxt.name} {nxt.date.strftime('%d/%m')})" if nxt else "econ_sniper"
+            independent_strats.append(econ_label)
+
+        all_strats = active_strats + [f"{s} (indip.)" for s in independent_strats]
         await self.telegram.notify_startup(
             mode="PAPER" if paper else "LIVE",
             capital=self.config.risk.total_capital,
-            strategies=[f"{s} ({getattr(self.config.allocation, s)}%)" for s in active_strats],
+            strategies=all_strats,
         )
 
         self._running = True
