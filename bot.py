@@ -67,6 +67,7 @@ from strategies.btc_latency import BTCLatencyStrategy
 from strategies.abandoned_position import AbandonedPositionStrategy
 from strategies.cross_platform_arb import CrossPlatformArbStrategy
 from strategies.econ_release_sniper import EconReleaseSniper
+from strategies.crowd_sport import CrowdSportStrategy
 from utils.uma_monitor import UmaMonitor
 from monitoring.quant_metrics import evaluate_all_strategies
 from monitoring.hrp import HRPAllocator
@@ -324,6 +325,10 @@ class MultiStrategyBot:
         if nxt:
             logger.info(f"[ECON-SNIPER] Next release: {nxt.name} on {nxt.date.strftime('%Y-%m-%d %H:%M UTC')}")
 
+        # ── v12.6: Crowd Sport Prediction (Delphi Multi-Agent Simulation) ──
+        self.crowd_sport = CrowdSportStrategy(api=self.api, risk=self.risk)
+        logger.info("[CROWD-SPORT] Strategy initialized (Delphi 10-group, 3-round)")
+
         # ── v10.8.4: Holding Rewards (4% APY) + Favorite-Longshot Bias ──
         self.holding_rewards = HoldingRewardsStrategy()
         self.favorite_longshot = FavoriteLongshotStrategy()
@@ -477,7 +482,7 @@ class MultiStrategyBot:
             f"Allocazione: WEATHER={self.config.allocation.weather}% "
             f"SNIPER={self.config.allocation.resolution_sniper}% "
             f"| Indipendenti: fav_longshot($35) negrisk($150) hold_rewards($35) "
-            f"market_making($25) econ_sniper($100)"
+            f"market_making($25) econ_sniper($100) crowd_sport($50)"
         )
 
         # v12.5.2: Notify startup via Telegram — include independent strategies
@@ -500,6 +505,8 @@ class MultiStrategyBot:
             independent_strats.append("holding_rewards ($35/mkt)")
         if hasattr(self, 'mm'):
             independent_strats.append("market_making ($25/ordine)")
+        if hasattr(self, 'crowd_sport'):
+            independent_strats.append("crowd_sport ($50/trade, Delphi)")
         if hasattr(self, 'econ_sniper'):
             nxt = self.econ_sniper.next_release()
             econ_label = f"econ_sniper (next: {nxt.name} {nxt.date.strftime('%d/%m')})" if nxt else "econ_sniper"
@@ -694,6 +701,16 @@ class MultiStrategyBot:
                 except Exception as e:
                     if "release" not in str(e).lower():
                         logger.error(f"[ECON-SNIPER] Errore: {e}", exc_info=True)
+
+                # ── 0.8.7. Crowd Sport Prediction — Delphi (ogni 50 cicli ~25min) ──
+                if self._cycle % 50 == 7:  # offset to avoid overlap with other scans
+                    try:
+                        crowd_signals = self.crowd_sport.scan(shared_markets)
+                        if _can_trade and crowd_signals:
+                            for sig in crowd_signals[:3]:
+                                self.crowd_sport.execute(sig, self.api, self.risk, live=not paper)
+                    except Exception as e:
+                        logger.error(f"[CROWD-SPORT] Errore: {e}", exc_info=True)
 
                 # ── 0.8.5. Market Making v2.0 (ogni 3 cicli ~90s) ──
                 if self._cycle % 3 == 0:
@@ -2137,6 +2154,13 @@ class MultiStrategyBot:
                 "order_size": "ORDER_SIZE",
                 "max_inventory_per_side": "MAX_INVENTORY_PER_SIDE",
                 "max_concurrent_markets": "MAX_CONCURRENT_MARKETS",
+            }),
+            "crowd_sport": (self.crowd_sport, {
+                "min_edge": "MIN_EDGE",
+                "max_bet": "MAX_BET",
+                "kelly_fraction": "KELLY_FRACTION",
+                "min_volume": "MIN_VOLUME",
+                "max_markets_per_scan": "MAX_MARKETS_PER_SCAN",
             }),
         }
 

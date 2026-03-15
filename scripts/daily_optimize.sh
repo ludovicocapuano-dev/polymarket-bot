@@ -29,6 +29,10 @@ python3 scripts/run_quant_metrics.py >> "$LOG" 2>&1
 echo "--- Hyperspace Sync ---" >> "$LOG"
 timeout 60 python3 scripts/hyperspace_bridge.py --strategy weather >> "$LOG" 2>&1
 
+# 5. Crowd Sport Scan — Delphi multi-agent prediction (top 5 markets)
+echo "--- Crowd Sport Delphi Scan ---" >> "$LOG"
+timeout 600 python3 scripts/mirofish_sport_bridge.py --limit 5 >> "$LOG" 2>&1
+
 echo "=== DONE $(date) ===" >> "$LOG"
 
 # 4. Invia risultati su Telegram
