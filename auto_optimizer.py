@@ -164,54 +164,299 @@ AUTO_APPLY_MIN_IMPROVEMENT = 15.0   # percent
 AUTO_APPLY_MIN_CLOSED = 50          # trades
 
 
+# ── v4.0: Self-Evolving Scoring Genome ──────────────────────────────
+#
+# The scoring function is defined by a "genome" — a dict of coefficients.
+# The meta-optimizer mutates these coefficients, tests which formula
+# produces parameters that perform better on the test set, and keeps the
+# best genome. This is genetic programming applied to the optimizer itself.
+
+@dataclass
+class ScoringGenome:
+    """Genome that defines how compute_score() works."""
+    # WR factor: wr_factor = wr_base + wr_scale * clamp((wr - wr_center) / wr_range)
+    wr_base: float = 0.70
+    wr_scale: float = 0.70
+    wr_center: float = 40.0
+    wr_range: float = 50.0
+    # PF factor: pf_factor = pf_base + pf_scale * clamp((pf - pf_center) / pf_range)
+    pf_base: float = 0.75
+    pf_scale: float = 0.55
+    pf_center: float = 0.50
+    pf_range: float = 2.50
+    # Volume penalty: min(1, (n_closed / vol_norm) ^ vol_exp)
+    vol_norm: float = 30.0
+    vol_exp: float = 0.50  # sqrt
+    # Combination: avg_pnl^pnl_exp * wr_factor^wr_exp * pf_factor^pf_exp
+    pnl_exp: float = 1.0
+    wr_exp: float = 1.0
+    pf_exp: float = 1.0
+    # Simplicity
+    simplicity_floor: float = 0.85
+    drift_tolerance: float = 2.0  # steps before penalty kicks in
+
+    def to_dict(self) -> dict:
+        return {k: v for k, v in self.__dict__.items()}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ScoringGenome":
+        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
+
+    def mutate(self, mutation_rate: float = 0.3) -> "ScoringGenome":
+        """Create a mutated copy of this genome."""
+        d = self.to_dict()
+        fields = list(d.keys())
+        n_mutate = max(1, int(len(fields) * mutation_rate))
+        chosen = random.sample(fields, n_mutate)
+        for field_name in chosen:
+            val = d[field_name]
+            # Mutate by ±10-30%
+            delta = val * random.gauss(0, 0.15)
+            new_val = val + delta
+            # Clamp to reasonable ranges
+            if field_name.endswith("_exp"):
+                new_val = max(0.3, min(2.0, new_val))
+            elif field_name.endswith("_base") or field_name.endswith("_scale"):
+                new_val = max(0.1, min(2.0, new_val))
+            elif field_name == "vol_norm":
+                new_val = max(5, min(100, new_val))
+            elif field_name == "simplicity_floor":
+                new_val = max(0.5, min(0.95, new_val))
+            elif field_name == "drift_tolerance":
+                new_val = max(0.5, min(5.0, new_val))
+            else:
+                new_val = max(1, min(200, new_val))
+            d[field_name] = round(new_val, 4)
+        return ScoringGenome.from_dict(d)
+
+    def crossover(self, other: "ScoringGenome") -> "ScoringGenome":
+        """Single-point crossover with another genome."""
+        d1 = self.to_dict()
+        d2 = other.to_dict()
+        keys = list(d1.keys())
+        crossover_point = random.randint(1, len(keys) - 1)
+        child = {}
+        for i, k in enumerate(keys):
+            child[k] = d1[k] if i < crossover_point else d2[k]
+        return ScoringGenome.from_dict(child)
+
+
+# Global genome (loaded from disk or default)
+_GENOME_FILE = Path("logs/scoring_genome.json")
+_GENOME_HISTORY_FILE = Path("logs/scoring_genome_history.json")
+
+
+def _load_genome() -> ScoringGenome:
+    """Load the current best genome from disk."""
+    if _GENOME_FILE.exists():
+        try:
+            d = json.loads(_GENOME_FILE.read_text())
+            return ScoringGenome.from_dict(d.get("genome", {}))
+        except Exception:
+            pass
+    return ScoringGenome()  # default
+
+
+def _save_genome(genome: ScoringGenome, meta_score: float, generation: int):
+    """Save the best genome to disk."""
+    state = {
+        "genome": genome.to_dict(),
+        "meta_score": meta_score,
+        "generation": generation,
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    _GENOME_FILE.write_text(json.dumps(state, indent=2))
+    # Append to history
+    history = []
+    if _GENOME_HISTORY_FILE.exists():
+        try:
+            history = json.loads(_GENOME_HISTORY_FILE.read_text())
+        except Exception:
+            pass
+    history.append(state)
+    # Keep last 100
+    history = history[-100:]
+    _GENOME_HISTORY_FILE.write_text(json.dumps(history, indent=2))
+
+
+_active_genome = _load_genome()
+
+
 def compute_score(metrics: dict, strategy: str = "weather",
                    params: dict = None, param_ranges: list = None,
                    simplicity_weight: float = 0.01) -> float:
     """
-    Optimization target: risk-adjusted return.
+    v4.0: Self-evolving scoring function.
 
-    v2.2 (Karpathy simplicity criterion): adds simplicity_factor that
-    penalizes params drifting far from defaults. Occam's razor: if two
-    configs score similarly, prefer the one closer to defaults.
-    Score = avg_pnl * wr_factor * pf_factor * volume_penalty * simplicity_factor
+    The formula is defined by _active_genome — a set of coefficients
+    that are themselves optimized by the meta-optimizer.
     """
     pnl = metrics.get("pnl", 0)
     wr = metrics.get("wr", 0)
     pf = metrics.get("profit_factor", 0)
     n_closed = metrics.get("closed", 0)
+    g = _active_genome
 
     if n_closed < 5:
-        return -999.0  # not enough data
+        return -999.0
 
-    # Base: average PnL per trade
     avg_pnl = pnl / n_closed
 
-    # Continuous WR factor (centered at 65%, scales 0.7x–1.4x)
-    wr_factor = 0.7 + 0.7 * max(0, min(1, (wr - 40) / 50))
+    # WR factor (genome-defined)
+    wr_factor = g.wr_base + g.wr_scale * max(0, min(1, (wr - g.wr_center) / g.wr_range))
 
-    # Continuous PF factor (centered at 1.5, scales 0.75x–1.3x)
+    # PF factor (genome-defined)
     if pf == float("inf"):
-        pf_factor = 1.3
+        pf_factor = g.pf_base + g.pf_scale
     else:
-        pf_factor = 0.75 + 0.55 * max(0, min(1, (pf - 0.5) / 2.5))
+        pf_factor = g.pf_base + g.pf_scale * max(0, min(1, (pf - g.pf_center) / g.pf_range))
 
-    # v2.1: sqrt volume penalty
-    volume_penalty = min(1.0, math.sqrt(n_closed / 30.0))
+    # Volume penalty (genome-defined)
+    volume_penalty = min(1.0, (n_closed / g.vol_norm) ** g.vol_exp)
 
-    # v2.2: Karpathy simplicity criterion — penalize drift from defaults
-    # Each param that deviates >2 steps from default costs 1% per extra step
+    # Simplicity (genome-defined tolerance)
     simplicity_factor = 1.0
     if params and param_ranges:
         total_drift = 0
         for p in param_ranges:
             if p.name in params and p.step > 0:
                 drift_steps = abs(params[p.name] - p.current) / p.step
-                if drift_steps > 2:
-                    total_drift += drift_steps - 2
-        # v3.0: simplicity_weight è auto-tuned (default 0.01, range 0.005-0.03)
-        simplicity_factor = max(0.85, 1.0 - total_drift * simplicity_weight)
+                if drift_steps > g.drift_tolerance:
+                    total_drift += drift_steps - g.drift_tolerance
+        simplicity_factor = max(g.simplicity_floor, 1.0 - total_drift * simplicity_weight)
 
-    return avg_pnl * wr_factor * pf_factor * volume_penalty * simplicity_factor
+    # Combination (genome-defined exponents)
+    if avg_pnl <= 0:
+        return avg_pnl * wr_factor * pf_factor * volume_penalty * simplicity_factor
+
+    return (avg_pnl ** g.pnl_exp) * (wr_factor ** g.wr_exp) * (pf_factor ** g.pf_exp) * volume_penalty * simplicity_factor
+
+
+def meta_optimize_scoring(trades: list, strategy: str = "weather",
+                          param_ranges: list = None,
+                          population_size: int = 10,
+                          generations: int = 5) -> ScoringGenome:
+    """
+    v4.0: Meta-optimizer — evolves the scoring function itself.
+
+    1. Creates a population of genome variants (mutations of current best)
+    2. For each genome, runs a full optimization pass on train data
+    3. Evaluates the resulting params on test data
+    4. The genome whose params perform best on test data wins
+    5. Winner becomes the new _active_genome
+
+    This is called once per day (from daily_optimize.sh or cron).
+    """
+    global _active_genome
+
+    if not param_ranges:
+        param_ranges = STRATEGY_PARAMS.get(strategy, [])
+    if not param_ranges:
+        return _active_genome
+
+    train, test = split_trades_temporal(trades)
+    if len(train) < 20 or len(test) < 10:
+        print(f"  [META-OPT] Not enough data: train={len(train)}, test={len(test)}")
+        return _active_genome
+
+    # Build vectorbt DataFrame if available
+    train_df, test_df = None, None
+    if _USE_VECTORBT:
+        train_df = trades_to_dataframe(train)
+        test_df = trades_to_dataframe(test)
+
+    # Load genome history for diversity
+    history_genomes = []
+    if _GENOME_HISTORY_FILE.exists():
+        try:
+            hist = json.loads(_GENOME_HISTORY_FILE.read_text())
+            history_genomes = [ScoringGenome.from_dict(h["genome"]) for h in hist[-20:]]
+        except Exception:
+            pass
+
+    best_genome = _active_genome
+    best_meta_score = -999.0
+    generation_num = 0
+
+    if _GENOME_FILE.exists():
+        try:
+            d = json.loads(_GENOME_FILE.read_text())
+            generation_num = d.get("generation", 0)
+        except Exception:
+            pass
+
+    print(f"  [META-OPT] Starting genome evolution gen={generation_num+1} "
+          f"pop={population_size} gens={generations} train={len(train)} test={len(test)}")
+
+    for gen in range(generations):
+        # Create population
+        population = [_active_genome]  # elitism: always include current best
+        for _ in range(population_size - 1):
+            if history_genomes and random.random() < 0.2:
+                # 20% chance: crossover with a historical genome
+                parent2 = random.choice(history_genomes)
+                child = _active_genome.crossover(parent2).mutate(0.15)
+            else:
+                # 80% chance: mutate current best
+                child = _active_genome.mutate(0.3)
+            population.append(child)
+
+        # Evaluate each genome
+        for genome in population:
+            # Temporarily set the active genome
+            old_genome = _active_genome
+            _active_genome = genome
+
+            # Run a mini-optimization with this scoring function
+            best_params = {p.name: p.current for p in param_ranges}
+            best_train_score = -999.0
+
+            for i in range(50):  # 50 iterations per genome (fast eval)
+                candidate = propose_variation(param_ranges, best_params, i)
+                metrics = eval_params(train, candidate, strategy, train_df)
+                score = compute_score(metrics, strategy, candidate, param_ranges)
+                if score > best_train_score:
+                    best_train_score = score
+                    best_params = candidate
+
+            # Evaluate best params on TEST set
+            test_metrics = eval_params(test, best_params, strategy, test_df)
+            # Meta-score = actual test PnL (not the scoring function output)
+            # This grounds the meta-optimization in real performance
+            test_pnl = test_metrics.get("pnl", 0)
+            test_wr = test_metrics.get("wr", 0)
+            test_pf = test_metrics.get("profit_factor", 0)
+            n_test = test_metrics.get("closed", 0)
+
+            if n_test >= 5:
+                # Meta-score: real PnL * WR * PF (not genome-defined!)
+                meta_score = (test_pnl / n_test) * (test_wr / 100) * min(test_pf, 5.0)
+            else:
+                meta_score = -999.0
+
+            if meta_score > best_meta_score:
+                best_meta_score = meta_score
+                best_genome = genome
+
+            # Restore
+            _active_genome = old_genome
+
+        # Adopt the best genome for next generation
+        _active_genome = best_genome
+
+    generation_num += 1
+    _save_genome(best_genome, best_meta_score, generation_num)
+    _active_genome = best_genome
+
+    print(f"  [META-OPT] Gen {generation_num} complete — "
+          f"meta_score={best_meta_score:.4f} "
+          f"genome: pnl_exp={best_genome.pnl_exp:.2f} "
+          f"wr_exp={best_genome.wr_exp:.2f} "
+          f"pf_exp={best_genome.pf_exp:.2f} "
+          f"wr_center={best_genome.wr_center:.1f} "
+          f"vol_norm={best_genome.vol_norm:.0f}")
+
+    return best_genome
 
 
 def params_to_filter(params: dict, strategy: str = "weather") -> FilterParams:
@@ -894,6 +1139,8 @@ def optimize_strategy(trades: list[Trade], strategy: str, max_iter: int,
 
     # Report
     result = print_recommendations(experiments, param_ranges, strategy)
+    if result is None:
+        return {"strategy": strategy, "status": "no_experiments", "closed": 0}
     improvement_pct, changes, best = result
 
     # v3.0: Post-run evolution — adatta scoring basato su overfitting
@@ -969,6 +1216,11 @@ def main():
              f"and >{AUTO_APPLY_MIN_CLOSED} closed trades"
     )
     parser.add_argument(
+        "--meta-evolve", action="store_true",
+        help="v4.0: Evolve the scoring function itself via genetic programming. "
+             "Mutates the genome that defines compute_score()."
+    )
+    parser.add_argument(
         "--continuous", action="store_true",
         help="Karpathy mode: loop forever, re-loading trades each round. "
              "Ctrl+C to stop. Best left running overnight."
@@ -1037,6 +1289,25 @@ def main():
                 else:
                     print(f"  {r['strategy']:25s} | {status}")
         return results
+
+    # v4.0: Meta-evolve the scoring genome before optimization
+    if args.meta_evolve:
+        trades = load_trades()
+        if trades:
+            for strategy in strategies:
+                strat_trades = [t for t in trades if t.strategy == strategy and t.outcome in ("WIN", "LOSS")]
+                if len(strat_trades) >= 30:
+                    print(f"\n{'='*70}")
+                    print(f"  META-OPTIMIZER: Evolving scoring genome for {strategy}")
+                    print(f"  ({len(strat_trades)} trades available)")
+                    print(f"{'='*70}")
+                    param_ranges = STRATEGY_PARAMS.get(strategy, [])
+                    meta_optimize_scoring(
+                        strat_trades, strategy, param_ranges,
+                        population_size=12, generations=5,
+                    )
+                else:
+                    print(f"  [META-OPT] {strategy}: {len(strat_trades)} trades < 30 minimum, skipping")
 
     # First round
     run_round()

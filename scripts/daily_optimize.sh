@@ -11,7 +11,14 @@ echo "=== $(date) ===" >> "$LOG"
 # 1. Refresh on-chain weather trade data
 python3 scripts/refresh_onchain_trades.py >> "$LOG" 2>&1
 
-# 2. Run AutoOptimizer — all strategies with auto-apply
+# 2. Meta-evolve scoring genome (1x/day, before optimization)
+HOUR=$(date +%H)
+if [ "$HOUR" = "00" ] || [ "$HOUR" = "06" ]; then
+    echo "--- Meta-Optimizer: evolving scoring genome ---" >> "$LOG"
+    timeout 120 python3 auto_optimizer.py --strategy all --meta-evolve --max-iter 0 >> "$LOG" 2>&1
+fi
+
+# 3. Run AutoOptimizer — all strategies with auto-apply
 OPT_OUTPUT=$(timeout 180 python3 auto_optimizer.py --strategy all --max-iter 200 --auto-apply 2>&1)
 echo "$OPT_OUTPUT" >> "$LOG"
 
