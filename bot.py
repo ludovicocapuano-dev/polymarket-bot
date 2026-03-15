@@ -2067,34 +2067,98 @@ class MultiStrategyBot:
         logger.info("\n".join(lines))
 
     def _reload_auto_optimized_params(self):
-        """v12.0.4: Read auto-optimized params from AutoOptimizer JSON."""
+        """v12.5.2: Reload auto-optimized params for ALL strategies."""
         import json as _json
         from pathlib import Path as _Path
-        param_file = _Path(__file__).parent / "logs" / "auto_optimizer_applied_weather.json"
-        if not param_file.exists():
-            return
-        try:
-            history = _json.loads(param_file.read_text())
-            if not isinstance(history, list) or not history:
-                return
-            latest = history[-1]
-            params = latest.get("params", {})
-            changed = []
-            if "min_edge" in params and params["min_edge"] != self.weather.min_edge:
-                old = self.weather.min_edge
-                self.weather.min_edge = params["min_edge"]
-                changed.append(f"min_edge: {old} → {params['min_edge']}")
-            if "min_confidence" in params and params["min_confidence"] != self.weather.min_confidence:
-                old = self.weather.min_confidence
-                self.weather.min_confidence = params["min_confidence"]
-                changed.append(f"min_confidence: {old} → {params['min_confidence']}")
-            if changed:
-                logger.info(
-                    f"[AUTO-OPT] Reloaded params from AutoOptimizer: "
-                    + ", ".join(changed)
-                )
-        except Exception as e:
-            logger.debug(f"[AUTO-OPT] Could not reload params: {e}")
+
+        # Strategy → (object, param→attr mapping)
+        strategy_map = {
+            "weather": (self.weather, {
+                "min_edge": "min_edge",
+                "min_confidence": "min_confidence",
+                "min_payoff": "min_payoff",
+                "max_price": "max_price",
+                "min_sources_high_price": "min_sources_high_price",
+                "high_price_threshold": "high_price_threshold",
+                "min_edge_same_day": "min_edge_same_day",
+                "min_edge_1d": "min_edge_1d",
+                "min_edge_2d": "min_edge_2d",
+                "ev_minimum": "ev_minimum",
+                "meta_label_threshold": "meta_label_threshold",
+                "city_tier2_max_bet": "city_tier2_max_bet",
+                "max_weather_bet": "max_weather_bet",
+            }),
+            "favorite_longshot": (self.favorite_longshot, {
+                "min_price": "MIN_PRICE",
+                "max_price": "MAX_PRICE",
+                "base_alpha": "BASE_ALPHA",
+                "min_edge": "MIN_EDGE",
+                "min_volume": "MIN_VOLUME",
+                "max_bet": "MAX_BET",
+            }),
+            "abandoned_position": (self.abandoned, {
+                "min_near_certain_price": "MIN_NEAR_CERTAIN_PRICE",
+                "max_near_certain_price": "MAX_NEAR_CERTAIN_PRICE",
+                "max_volume_24h": "MAX_VOLUME_24H",
+                "max_hours_to_resolution": "MAX_HOURS_TO_RESOLUTION",
+                "min_hours_to_resolution": "MIN_HOURS_TO_RESOLUTION",
+                "max_position": "MAX_POSITION",
+            }),
+            "negrisk_arb": (self.negrisk_arb, {
+                "min_deviation": "MIN_DEVIATION",
+                "max_arb_size": "MAX_ARB_SIZE",
+                "min_liquidity": "MIN_LIQUIDITY",
+                "cooldown_minutes": "COOLDOWN_MINUTES",
+            }),
+            "holding_rewards": (self.holding_rewards, {
+                "max_bet_per_market": "MAX_BET_PER_MARKET",
+                "min_holding_days": "MIN_HOLDING_DAYS",
+                "max_positions": "MAX_POSITIONS",
+            }),
+            "econ_sniper": (self.econ_sniper, {
+                "nfp_surprise_threshold": "NFP_SURPRISE_THRESHOLD",
+                "unemployment_surprise_threshold": "UNEMPLOYMENT_SURPRISE_THRESHOLD",
+                "cpi_surprise_threshold": "CPI_SURPRISE_THRESHOLD",
+                "max_bet": "MAX_BET",
+            }),
+            "market_making": (self.mm, {
+                "min_spread": "MIN_SPREAD",
+                "max_spread": "MAX_SPREAD",
+                "order_size": "ORDER_SIZE",
+                "max_inventory_per_side": "MAX_INVENTORY_PER_SIDE",
+                "max_concurrent_markets": "MAX_CONCURRENT_MARKETS",
+            }),
+        }
+
+        for strat_name, (strat_obj, param_map) in strategy_map.items():
+            param_file = _Path(__file__).parent / "logs" / f"auto_optimizer_applied_{strat_name}.json"
+            if not param_file.exists():
+                continue
+            try:
+                history = _json.loads(param_file.read_text())
+                if not isinstance(history, list) or not history:
+                    continue
+                latest = history[-1]
+                # Skip if score is negative (optimizer found nothing good)
+                if latest.get("score", 0) < 0:
+                    continue
+                params = latest.get("params", {})
+                changed = []
+                for opt_key, attr_name in param_map.items():
+                    if opt_key not in params:
+                        continue
+                    current = getattr(strat_obj, attr_name, None)
+                    new_val = params[opt_key]
+                    if current is not None and current != new_val:
+                        setattr(strat_obj, attr_name, new_val)
+                        changed.append(f"{attr_name}: {current} → {new_val}")
+                if changed:
+                    logger.info(
+                        f"[AUTO-OPT] {strat_name}: reloaded {len(changed)} params — "
+                        + ", ".join(changed[:5])
+                    )
+            except Exception as e:
+                logger.debug(f"[AUTO-OPT] {strat_name} reload error: {e}")
 
     def _darwinian_reweight(self):
         """

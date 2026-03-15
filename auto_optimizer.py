@@ -119,10 +119,44 @@ ABANDONED_POSITION_PARAMS = [
     ParamRange("max_position", 25, 100, 5, 50),
 ]
 
+NEGRISK_ARB_PARAMS = [
+    ParamRange("min_deviation", 0.01, 0.05, 0.005, 0.02),
+    ParamRange("max_arb_size", 50, 200, 25, 100),
+    ParamRange("min_liquidity", 500, 5000, 500, 1000),
+    ParamRange("cooldown_minutes", 10, 60, 10, 30),
+]
+
+HOLDING_REWARDS_PARAMS = [
+    ParamRange("max_bet_per_market", 10, 50, 5, 20),
+    ParamRange("min_holding_days", 7, 60, 7, 30),
+    ParamRange("min_apy", 0.02, 0.08, 0.01, 0.04),
+    ParamRange("max_positions", 5, 20, 5, 13),
+]
+
+ECON_SNIPER_PARAMS = [
+    ParamRange("nfp_surprise_threshold", 25000, 100000, 25000, 50000),
+    ParamRange("unemployment_surprise_threshold", 0.1, 0.3, 0.05, 0.2),
+    ParamRange("cpi_surprise_threshold", 0.05, 0.2, 0.05, 0.1),
+    ParamRange("max_bet", 50, 200, 25, 100),
+    ParamRange("poll_interval_ms", 50, 200, 50, 100),
+]
+
+MARKET_MAKING_PARAMS = [
+    ParamRange("min_spread", 0.02, 0.06, 0.01, 0.03),
+    ParamRange("max_spread", 0.08, 0.15, 0.01, 0.12),
+    ParamRange("order_size", 10, 50, 5, 25),
+    ParamRange("max_inventory_per_side", 100, 300, 50, 200),
+    ParamRange("max_concurrent_markets", 3, 8, 1, 5),
+]
+
 STRATEGY_PARAMS = {
     "weather": WEATHER_PARAMS,
     "favorite_longshot": FAVORITE_LONGSHOT_PARAMS,
     "abandoned_position": ABANDONED_POSITION_PARAMS,
+    "negrisk_arb": NEGRISK_ARB_PARAMS,
+    "holding_rewards": HOLDING_REWARDS_PARAMS,
+    "econ_sniper": ECON_SNIPER_PARAMS,
+    "market_making": MARKET_MAKING_PARAMS,
 }
 
 # Auto-apply thresholds
