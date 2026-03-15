@@ -73,6 +73,7 @@ from monitoring.hrp import HRPAllocator
 from monitoring.kyle_lambda import KyleLambdaEstimator
 from utils.kalman_forecast import WeatherKalmanFilter
 from utils.advanced_risk import run_advanced_risk_analysis
+from utils.horizon_client import HorizonClient
 
 try:
     from finbert_feed import FinBERTFeed
@@ -305,6 +306,13 @@ class MultiStrategyBot:
             min_edge=0.03,  # 3% — fee-free markets
         )
         self.risk.set_strategy_budget("resolution_sniper", config.capital_for("resolution_sniper"))
+
+        # ── v12.5.3: Horizon SDK — enhanced execution + cross-exchange arb ──
+        self.horizon = HorizonClient()
+        if self.horizon.connect():
+            logger.info(f"[HORIZON] Connected — {self.horizon.status()}")
+        else:
+            logger.info("[HORIZON] Running without Horizon (native execution)")
 
         # ── v10.8.4: NegRisk Sum Arbitrage Scanner ──
         self.negrisk_arb = NegRiskArbScanner()
