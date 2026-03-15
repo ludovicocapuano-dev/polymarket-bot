@@ -718,14 +718,11 @@ class MultiStrategyBot:
                 except Exception as e:
                     logger.warning(f"[BTC-LATENCY] Errore: {e}", exc_info=True)
 
-                # ── 0.10. Abandoned Position Arb (v12.0, near risk-free) ──
-                try:
-                    aband_opps = self.abandoned_position.scan(shared_markets)
-                    if _can_trade and aband_opps:
-                        for opp in aband_opps[:3]:
-                            self.abandoned_position.execute(opp, self.api, self.risk, live=not paper)
-                except Exception as e:
-                    logger.warning(f"[ABANDONED-POS] Errore: {e}", exc_info=True)
+                # ── 0.10. Abandoned Position Arb — DISABILITATO v12.5.3 ──
+                # Motivo: 0% WR, -$742 PnL, posizioni accumulate senza chiudersi
+                # I mercati "near-certain" a 95-99c spesso NON risolvono come atteso
+                # if _can_trade and aband_opps: ...
+                pass
 
                 # ── 0.11. Cross-Platform Arb (v12.0, ogni 10 cicli) ──
                 if self._cycle % 10 == 3:
