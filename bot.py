@@ -1804,6 +1804,11 @@ class MultiStrategyBot:
                         f"Buy@{trade.price:.4f} Sell@{sell_price:.4f} "
                         f"PnL=${pnl:+.2f} ({pnl_pct:+.1%}) ({age_hours:.0f}h)"
                     )
+                    # v12.5.2: Telegram notification for ALL strategy exits
+                    asyncio.ensure_future(self.telegram.notify_resolution(
+                        market_name=f"[{signal}] {trade.reason[:40]}",
+                        won=(pnl > 0), pnl=pnl, strategy=trade.strategy,
+                    ))
                     closed += 1
                 else:
                     logger.warning(
