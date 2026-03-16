@@ -64,7 +64,7 @@ def _market_efficiency(market: Market) -> float:
     return spread_score * 0.4 + liq_score * 0.3 + vol_score * 0.3
 
 STRATEGY_NAME = "weather"
-MAX_WEATHER_BET = 80.0  # v12.1: proporzionale al capitale ($7K)
+MAX_WEATHER_BET = 40.0  # v12.6.2: ridotto da $80 — capitale sceso a $3.2K, dimezzare esposizione
 
 # v11.1: City performance tiers basati su dati reali (275 trade, 17 giorni)
 # Tier 1: WR >= 75%, volume alto → full budget
@@ -430,11 +430,11 @@ class WeatherStrategy:
         # l'incertezza. Serve solo una soglia di edge minima crescente.
         days_ahead = self._days_until(date)
         if days_ahead == 0:
-            effective_min_edge = 0.05   # same-day: forecast MAE ~1F
+            effective_min_edge = 0.08   # v12.6.2: alzato da 0.05 — serve più edge per coprire loss
         elif days_ahead == 1:
-            effective_min_edge = 0.12   # +1 giorno: MAE ~2.5F
+            effective_min_edge = 0.15   # v12.6.2: alzato da 0.12 — +1d più rischioso
         else:
-            effective_min_edge = 0.20   # +2 giorni+: MAE ~3.5F
+            effective_min_edge = 0.25   # v12.6.2: alzato da 0.20 — +2d quasi non tradabile
 
         # Market efficiency: mercati efficienti (alta liquidita', spread
         # stretto) hanno bisogno di edge piu' alta per giustificare il trade.
@@ -873,11 +873,11 @@ class WeatherStrategy:
         # Tier 2 cities: cap $25 (Miami 58%, Buenos Aires 57%, Ankara 50%)
         days_ahead = self._days_until(opp.date)
         if opp.side == "YES":
-            max_bet = 15.0
+            max_bet = 10.0  # v12.6.2: ridotto da $15 — BUY_YES troppo rischioso
         elif days_ahead >= 2:
-            max_bet = 30.0  # +2d: forecast meno affidabile
+            max_bet = 20.0  # v12.6.2: ridotto da $30 — +2d troppo incerto
         else:
-            max_bet = MAX_WEATHER_BET
+            max_bet = MAX_WEATHER_BET  # same-day/+1d BUY_NO: nostro punto forte
 
         # City tier cap
         if opp.city.lower() in _dynamic_city_tier2:
