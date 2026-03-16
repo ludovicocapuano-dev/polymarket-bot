@@ -76,6 +76,7 @@ from utils.kalman_forecast import WeatherKalmanFilter
 from utils.advanced_risk import run_advanced_risk_analysis
 from utils.horizon_client import HorizonClient
 from utils.unusual_whales import UnusualWhalesClient
+from utils.uw_polymarket_matcher import UWPolymarketMatcher
 
 try:
     from finbert_feed import FinBERTFeed
@@ -320,6 +321,10 @@ class MultiStrategyBot:
         self.unusual_whales = UnusualWhalesClient()
         if self.unusual_whales.api_key:
             logger.info("[UW] Unusual Whales client initialized")
+
+        # ── v12.7: UW-Polymarket Matcher — connect UW signals to tradeable markets ──
+        self.uw_matcher = UWPolymarketMatcher()
+        logger.info("[UW-MATCH] Matcher initialized")
 
         # ── v10.8.4: NegRisk Sum Arbitrage Scanner ──
         self.negrisk_arb = NegRiskArbScanner()
@@ -1274,6 +1279,28 @@ class MultiStrategyBot:
                                     f"[UW] {s.source}: {s.direction} {s.ticker} "
                                     f"strength={s.strength:.2f} | {s.detail[:50]}"
                                 )
+
+                            # ── v12.7: Match UW signals to Polymarket markets ──
+                            try:
+                                actionable = self.uw_matcher.get_actionable(
+                                    uw_signals, min_edge=0.05
+                                )
+                                for opp in actionable[:5]:
+                                    logger.info(
+                                        f"[UW-MATCH] {opp.signal_source}: "
+                                        f"{opp.signal_ticker} → {opp.suggested_side} "
+                                        f"on '{opp.market_question[:60]}' "
+                                        f"edge={opp.edge_estimate:.1%} "
+                                        f"conf={opp.confidence:.2f}"
+                                    )
+                                if actionable:
+                                    logger.info(
+                                        f"[UW-MATCH] {len(actionable)} actionable "
+                                        f"opportunities found (edge>=5%)"
+                                    )
+                            except Exception as e:
+                                logger.debug(f"[UW-MATCH] Matcher error: {e}")
+
                     except Exception as e:
                         logger.debug(f"[UW] Scan error: {e}")
 

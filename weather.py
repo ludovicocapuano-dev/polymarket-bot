@@ -377,6 +377,37 @@ class WeatherStrategy:
         # bucket_probability_in_unit gestisce la conversione F->C internamente
         forecast_prob = forecast.bucket_probability_in_unit(low, high, unit)
 
+        # v12.7: Forecast sigma filter — skip trades with high forecast uncertainty.
+        # When sigma > 3°F (1.67°C), our probability estimate is too unreliable
+        # to trade profitably. The edge calculation assumes our P(YES) is accurate,
+        # but high sigma means our estimate could be off by a lot.
+        forecast_sigma = forecast.uncertainty_in_unit(unit)
+        sigma_f = forecast_sigma if unit == "F" else forecast_sigma * 1.8  # normalize to F for threshold
+        if sigma_f > 3.0:
+            logger.debug(
+                f"[WEATHER-SKIP] high sigma: {city} {label} "
+                f"sigma={forecast_sigma:.1f}°{unit} ({sigma_f:.1f}°F) > 3.0°F threshold"
+            )
+            return None
+
+        # v12.7: Multi-source disagreement filter — skip if sources disagree by >2°F.
+        # When WU says 72°F and OpenMeteo says 68°F, we can't trust the consensus.
+        # The bin probability estimate is unreliable.
+        if hasattr(forecast, 'sources') and len(forecast.sources) >= 2:
+            source_temps_unit = []
+            for src in forecast.sources:
+                t = c_to_f(src.temp) if unit == "F" else src.temp
+                source_temps_unit.append(t)
+            source_spread = max(source_temps_unit) - min(source_temps_unit)
+            source_spread_f = source_spread if unit == "F" else source_spread * 1.8
+            if source_spread_f > 2.0:
+                logger.debug(
+                    f"[WEATHER-SKIP] source disagreement: {city} {label} "
+                    f"spread={source_spread:.1f}°{unit} ({source_spread_f:.1f}°F) > 2.0°F — "
+                    f"sources: {[f'{s.provider}={t:.1f}' for s, t in zip(forecast.sources, source_temps_unit)]}"
+                )
+                return None
+
         # v5.0: Boost same-day con osservazioni Wethr.net
         # Se e' oggi e abbiamo la temperatura corrente, affiniamo la stima
         days_ahead = self._days_until(date)
@@ -418,11 +449,42 @@ class WeatherStrategy:
 
         # Fee deduction: non-crypto markets use ~0.005 fee rate
         fee = 0.0  # weather markets sono fee-free su Polymarket
-        edge_yes = forecast_prob - price_yes - fee
-        edge_no = (1.0 - forecast_prob) - price_no - fee
+
+        # v12.7: Uncertainty-adjusted edge — accounts for forecast sigma.
+        # Raw edge = forecast_prob - market_price. But our forecast_prob has
+        # uncertainty. If sigma is large, the true probability could be much
+        # closer to market price than we think.
+        #
+        # We compute a "conservative probability" by shrinking our estimate
+        # toward the market price proportionally to our uncertainty.
+        # sigma_penalty = sigma^2 / (bucket_width^2 + sigma^2)
+        # This is the fraction of our edge that might be noise.
+        #
+        # Intuition: if bucket is 2°F wide and sigma is 3°F, we're very
+        # uncertain about whether temp falls in this bin. penalty ≈ 0.69.
+        # If bucket is 10°F wide and sigma is 1°F, we're quite sure. penalty ≈ 0.01.
+        bucket_width = high - low
+        # Clamp bucket_width for open-ended ranges (Below X, Above X)
+        effective_bw = min(bucket_width, 20.0)  # cap at 20 degrees for edge calc
+        if effective_bw <= 0:
+            effective_bw = 1.0
+        sigma_penalty = forecast_sigma ** 2 / (effective_bw ** 2 + forecast_sigma ** 2)
+        # Shrink our probability estimate toward market's implied prob
+        adj_forecast_prob = forecast_prob + sigma_penalty * (price_yes - forecast_prob)
+
+        edge_yes = adj_forecast_prob - price_yes - fee
+        edge_no = (1.0 - adj_forecast_prob) - price_no - fee
 
         best_side = "YES" if edge_yes > edge_no else "NO"
         best_edge = max(edge_yes, edge_no)
+
+        if best_edge > 0:
+            logger.debug(
+                f"[WEATHER-EDGE] {city} {label}: raw_P={forecast_prob:.3f} "
+                f"adj_P={adj_forecast_prob:.3f} sigma={forecast_sigma:.1f}°{unit} "
+                f"bw={effective_bw:.0f} penalty={sigma_penalty:.3f} "
+                f"edge={best_edge:.4f} side={best_side}"
+            )
 
         # ── MIN_EDGE: horizon-based + market efficiency adjustment ──
         # L'incertezza del forecast cresce con l'orizzonte. Non serve una
@@ -566,11 +628,11 @@ class WeatherStrategy:
         if buy_price < 0.08:
             return None
 
-        # v10.6: Expected Value per $1 investito — la metrica che conta davvero.
-        # Dati: trade a prezzo basso (payoff alto) = 100% WR, +$17.79.
-        # Trade a prezzo alto (payoff basso) = 50% WR, -$33.02.
+        # v12.7: Expected Value per $1 investito — usa adj_forecast_prob
+        # (uncertainty-adjusted) per stima conservativa del win rate reale.
+        # Raw forecast_prob è overconfident quando sigma è alto.
         # EV = win_prob * payoff_ratio - (1 - win_prob) * 1.0
-        win_prob = forecast_prob if best_side == "YES" else (1.0 - forecast_prob)
+        win_prob = adj_forecast_prob if best_side == "YES" else (1.0 - adj_forecast_prob)
         expected_value = win_prob * payoff_ratio - (1.0 - win_prob)
 
         # v10.8.4: EV minimo alzato da 0.05 a 0.10 — dati mostrano che
@@ -625,9 +687,11 @@ class WeatherStrategy:
                 f"{city.upper()} {date} | "
                 f"Bucket: {label} ({unit}) | "
                 f"Forecast: {forecast.temp_in_unit(unit):.1f}°{unit} "
-                f"±{forecast.uncertainty_in_unit(unit):.1f} | "
-                f"P_consensus={forecast_prob:.3f} vs Mkt={price_yes:.3f} | "
-                f"Edge={best_edge:.3f} {best_side} | "
+                f"±{forecast_sigma:.1f} | "
+                f"P_raw={forecast_prob:.3f} P_adj={adj_forecast_prob:.3f} "
+                f"vs Mkt={price_yes:.3f} | "
+                f"Edge={best_edge:.3f} {best_side} "
+                f"(σ_penalty={sigma_penalty:.3f}) | "
                 f"EV={expected_value:+.3f}/$ payoff={payoff_ratio:.1f}x | "
                 f"Sources: {forecast.source if hasattr(forecast, 'source') else 'single'} "
                 f"({len(forecast.ensemble_temps)}ens)"
@@ -856,6 +920,23 @@ class WeatherStrategy:
                 f"[META-LABEL] {opp.city}: P(profit)={meta_prob:.3f} "
                 f"-> size=${size:.2f}"
             )
+
+        # v12.7: High-price sizing penalty — when buying at >$0.85, the
+        # risk/reward is extremely asymmetric AGAINST us: risk $0.85+ to make $0.15-.
+        # A single loss wipes out 5-6 wins. Scale down size proportionally.
+        # At price $0.90: penalty = 0.60 (risk $0.90 to make $0.10, need 90% WR)
+        # At price $0.80: penalty = 0.85 (moderate risk)
+        # At price $0.70: penalty = 1.00 (no penalty, acceptable ratio)
+        if price > 0.70:
+            # Linear ramp: 1.0 at $0.70, 0.50 at $0.95
+            high_price_penalty = max(0.50, 1.0 - (price - 0.70) * 2.0)
+            if high_price_penalty < 1.0:
+                old_size = size
+                size *= high_price_penalty
+                logger.debug(
+                    f"[WEATHER] high-price penalty: price={price:.3f} "
+                    f"penalty={high_price_penalty:.2f} size ${old_size:.2f}→${size:.2f}"
+                )
 
         # v10.6: Size boost per trade ad alto EV con payoff favorevole.
         # Trade con payoff_ratio > 1.0 (win > stake) hanno rischio asimmetrico
