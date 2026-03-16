@@ -75,6 +75,7 @@ from monitoring.kyle_lambda import KyleLambdaEstimator
 from utils.kalman_forecast import WeatherKalmanFilter
 from utils.advanced_risk import run_advanced_risk_analysis
 from utils.horizon_client import HorizonClient
+from utils.unusual_whales import UnusualWhalesClient
 
 try:
     from finbert_feed import FinBERTFeed
@@ -314,6 +315,11 @@ class MultiStrategyBot:
             logger.info(f"[HORIZON] Connected — {self.horizon.status()}")
         else:
             logger.info("[HORIZON] Running without Horizon (native execution)")
+
+        # ── v12.6: Unusual Whales — congress + darkpool + insider signals ──
+        self.unusual_whales = UnusualWhalesClient()
+        if self.unusual_whales.api_key:
+            logger.info("[UW] Unusual Whales client initialized")
 
         # ── v10.8.4: NegRisk Sum Arbitrage Scanner ──
         self.negrisk_arb = NegRiskArbScanner()
@@ -1257,6 +1263,19 @@ class MultiStrategyBot:
                                     )
                     except Exception as e:
                         logger.debug(f"[ADVANCED_RISK] Errore: {e}")
+
+                # ── v12.6: Unusual Whales scan (ogni 200 cicli ~100 min) ──
+                if self._cycle % 200 == 100 and self._cycle > 0:
+                    try:
+                        uw_signals = self.unusual_whales.scan_all()
+                        if uw_signals:
+                            for s in uw_signals[:5]:
+                                logger.info(
+                                    f"[UW] {s.source}: {s.direction} {s.ticker} "
+                                    f"strength={s.strength:.2f} | {s.detail[:50]}"
+                                )
+                    except Exception as e:
+                        logger.debug(f"[UW] Scan error: {e}")
 
                 # ── v12.4.1: Hyperspace Sync (ogni 500 cicli ~4h) ──
                 if self._cycle % 500 == 250 and self._cycle > 0:
