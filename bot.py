@@ -68,6 +68,7 @@ from strategies.abandoned_position import AbandonedPositionStrategy
 from strategies.cross_platform_arb import CrossPlatformArbStrategy
 from strategies.econ_release_sniper import EconReleaseSniper
 from strategies.crowd_sport import CrowdSportStrategy
+from strategies.crowd_prediction import CrowdPredictionStrategy
 from utils.uma_monitor import UmaMonitor
 from monitoring.quant_metrics import evaluate_all_strategies
 from monitoring.hrp import HRPAllocator
@@ -341,6 +342,17 @@ class MultiStrategyBot:
         self.risk.set_strategy_budget("crowd_sport", 300.0)
         logger.info("[CROWD-SPORT] Strategy initialized (Delphi 10-group, 3-round, budget=$300)")
 
+        # ── v12.7: Crowd Prediction — Multi-Domain Delphi (politics, crypto, geopolitics, entertainment) ──
+        self.crowd_prediction = CrowdPredictionStrategy(
+            api=self.api, risk=self.risk,
+            domains=["politics", "crypto", "geopolitics", "entertainment"],
+        )
+        self.risk.set_strategy_budget("crowd_prediction", 200.0)
+        logger.info(
+            "[CROWD-PRED] Multi-domain strategy initialized "
+            "(politics/crypto/geopolitics/entertainment, DeepSeek, budget=$200)"
+        )
+
         # ── v10.8.4: Holding Rewards (4% APY) + Favorite-Longshot Bias ──
         self.holding_rewards = HoldingRewardsStrategy()
         self.favorite_longshot = FavoriteLongshotStrategy()
@@ -494,7 +506,7 @@ class MultiStrategyBot:
             f"Allocazione: WEATHER={self.config.allocation.weather}% "
             f"SNIPER={self.config.allocation.resolution_sniper}% "
             f"| Indipendenti: fav_longshot($35) negrisk($150) hold_rewards($35) "
-            f"market_making($25) econ_sniper($100) crowd_sport($50)"
+            f"market_making($25) econ_sniper($100) crowd_sport($50) crowd_pred($30)"
         )
 
         # v12.5.2: Notify startup via Telegram — include independent strategies
@@ -519,6 +531,8 @@ class MultiStrategyBot:
             independent_strats.append("market_making ($25/ordine)")
         if hasattr(self, 'crowd_sport'):
             independent_strats.append("crowd_sport ($50/trade, Delphi)")
+        if hasattr(self, 'crowd_prediction'):
+            independent_strats.append("crowd_prediction ($30/trade, multi-domain Delphi)")
         if hasattr(self, 'econ_sniper'):
             nxt = self.econ_sniper.next_release()
             econ_label = f"econ_sniper (next: {nxt.name} {nxt.date.strftime('%d/%m')})" if nxt else "econ_sniper"
@@ -723,6 +737,21 @@ class MultiStrategyBot:
                                 self.crowd_sport.execute(sig, self.api, self.risk, live=not paper)
                     except Exception as e:
                         logger.error(f"[CROWD-SPORT] Errore: {e}", exc_info=True)
+
+                # ── 0.8.8. Crowd Prediction — Multi-Domain Delphi (ogni 100 cicli ~50min, rotazione domini) ──
+                if self._cycle % 100 == 13:  # offset to avoid overlap
+                    try:
+                        # Rotate domains: cycle%400 determines which domain
+                        _domain_rotation = {0: "politics", 100: "crypto", 200: "geopolitics", 300: "entertainment"}
+                        _domain_key = (self._cycle % 400) - ((self._cycle % 400) % 100)
+                        _active_domain = _domain_rotation.get(_domain_key, "politics")
+                        logger.info(f"[CROWD-PRED] Scanning domain: {_active_domain}")
+                        crowd_pred_signals = self.crowd_prediction.scan_domain(_active_domain, shared_markets)
+                        if _can_trade and crowd_pred_signals:
+                            for sig in crowd_pred_signals[:3]:
+                                self.crowd_prediction.execute(sig, self.api, self.risk, live=not paper)
+                    except Exception as e:
+                        logger.error(f"[CROWD-PRED] Errore: {e}", exc_info=True)
 
                 # ── 0.8.5. Market Making v2.0 (ogni 3 cicli ~90s) ──
                 if self._cycle % 3 == 0:
@@ -2203,6 +2232,13 @@ class MultiStrategyBot:
                 "max_concurrent_markets": "MAX_CONCURRENT_MARKETS",
             }),
             "crowd_sport": (self.crowd_sport, {
+                "min_edge": "MIN_EDGE",
+                "max_bet": "MAX_BET",
+                "kelly_fraction": "KELLY_FRACTION",
+                "min_volume": "MIN_VOLUME",
+                "max_markets_per_scan": "MAX_MARKETS_PER_SCAN",
+            }),
+            "crowd_prediction": (self.crowd_prediction, {
                 "min_edge": "MIN_EDGE",
                 "max_bet": "MAX_BET",
                 "kelly_fraction": "KELLY_FRACTION",
