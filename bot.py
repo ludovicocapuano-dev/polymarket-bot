@@ -327,7 +327,8 @@ class MultiStrategyBot:
 
         # ── v12.6: Crowd Sport Prediction (Delphi Multi-Agent Simulation) ──
         self.crowd_sport = CrowdSportStrategy(api=self.api, risk=self.risk)
-        logger.info("[CROWD-SPORT] Strategy initialized (Delphi 10-group, 3-round)")
+        self.risk.set_strategy_budget("crowd_sport", 300.0)
+        logger.info("[CROWD-SPORT] Strategy initialized (Delphi 10-group, 3-round, budget=$300)")
 
         # ── v10.8.4: Holding Rewards (4% APY) + Favorite-Longshot Bias ──
         self.holding_rewards = HoldingRewardsStrategy()
