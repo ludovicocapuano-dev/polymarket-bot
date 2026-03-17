@@ -47,7 +47,15 @@ FRED_BASE = "https://api.stlouisfed.org/fred"
 POLL_INTERVAL_MS = 100  # 100ms between polls
 POLL_START_BEFORE_SEC = 10  # start polling 10s before release
 POLL_TIMEOUT_SEC = 120  # stop after 2min if no data
-REQUEST_TIMEOUT = 0.5  # 500ms HTTP timeout
+REQUEST_TIMEOUT = 2.0  # 2s HTTP timeout (BLS can be slow)
+
+# Browser-like headers to avoid BLS bot detection (Akamai WAF)
+BLS_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+    "Referer": "https://www.bls.gov/schedule/",
+}
 NFP_SURPRISE_THRESHOLD = 50_000  # ±50K jobs = significant surprise
 UNEMPLOYMENT_SURPRISE_THRESHOLD = 0.2  # ±0.2% = significant
 CPI_SURPRISE_THRESHOLD = 0.1  # ±0.1% = significant
@@ -329,6 +337,45 @@ class EconReleaseSniper:
 
         return result
 
+    def parse_import_export_release(self, html: str) -> dict:
+        """Parse BLS Import/Export Price Indexes release."""
+        result = {}
+        # Strip HTML tags for easier parsing
+        text = re.sub(r'<[^>]+>', ' ', html)
+        text = re.sub(r'\s+', ' ', text)
+
+        # Import prices: "Import prices rose 0.2 percent" or "fell 1.5 percent"
+        import_match = re.search(
+            r'[Ii]mport\s+prices?\s+(?:rose|increased|advanced)\s+([\d.]+)\s*percent',
+            text,
+        )
+        if import_match:
+            result["import_price_change"] = float(import_match.group(1))
+        else:
+            import_fell = re.search(
+                r'[Ii]mport\s+prices?\s+(?:fell|decreased|declined)\s+([\d.]+)\s*percent',
+                text,
+            )
+            if import_fell:
+                result["import_price_change"] = -float(import_fell.group(1))
+
+        # Export prices: "Export prices rose 0.6 percent"
+        export_match = re.search(
+            r'[Ee]xport\s+prices?\s+(?:rose|increased|advanced)\s+([\d.]+)\s*percent',
+            text,
+        )
+        if export_match:
+            result["export_price_change"] = float(export_match.group(1))
+        else:
+            export_fell = re.search(
+                r'[Ee]xport\s+prices?\s+(?:fell|decreased|declined)\s+([\d.]+)\s*percent',
+                text,
+            )
+            if export_fell:
+                result["export_price_change"] = -float(export_fell.group(1))
+
+        return result
+
     # ── Polling & Sniping ─────────────────────────────────────
 
     def poll_release(self, release: EconRelease) -> Optional[dict]:
@@ -342,7 +389,7 @@ class EconReleaseSniper:
 
         while time.time() - start < POLL_TIMEOUT_SEC:
             try:
-                resp = requests.get(release.url, timeout=REQUEST_TIMEOUT)
+                resp = requests.get(release.url, timeout=REQUEST_TIMEOUT, headers=BLS_HEADERS)
                 if resp.status_code != 200:
                     time.sleep(POLL_INTERVAL_MS / 1000)
                     continue
@@ -359,6 +406,8 @@ class EconReleaseSniper:
                     data = self.parse_employment_release(resp.text)
                 elif release.name == "cpi":
                     data = self.parse_cpi_release(resp.text)
+                elif release.name == "import_export_prices":
+                    data = self.parse_import_export_release(resp.text)
                 else:
                     data = {}
 
