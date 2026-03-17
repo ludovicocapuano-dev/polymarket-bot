@@ -2065,6 +2065,10 @@ class CrowdPredictionStrategy:
             logger.info(f"[CROWD-PRED] [{domain.upper()}] No markets found")
             return []
 
+        # v12.8: Filter out longshots and near-certainties — edge only exists in 10-80% range
+        markets = [m for m in markets
+                   if m.outcome_prices and 0.10 <= m.outcome_prices[0] <= 0.80]
+
         # Sort by volume, take top N
         markets.sort(key=lambda m: m.volume, reverse=True)
         markets = markets[:self.MAX_MARKETS_PER_SCAN]

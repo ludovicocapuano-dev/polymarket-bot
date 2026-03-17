@@ -918,6 +918,12 @@ class CrowdSportStrategy:
         if not markets:
             return []
 
+        # v12.8: Filter out extreme longshots and near-certainties
+        # Only simulate markets with YES price between 10-80% — that's where mispricing lives
+        markets = [m for m in markets
+                   if m.outcome_prices and 0.10 <= m.outcome_prices[0] <= 0.80]
+        logger.info(f"[CROWD-SPORT] After price filter (10-80%): {len(markets)} markets")
+
         # Sort by volume descending, take top N
         markets.sort(key=lambda m: m.volume, reverse=True)
         markets = markets[:self.MAX_MARKETS_PER_SCAN]

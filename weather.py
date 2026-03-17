@@ -64,7 +64,7 @@ def _market_efficiency(market: Market) -> float:
     return spread_score * 0.4 + liq_score * 0.3 + vol_score * 0.3
 
 STRATEGY_NAME = "weather"
-MAX_WEATHER_BET = 40.0  # v12.6.2: ridotto da $80 — capitale sceso a $3.2K, dimezzare esposizione
+MAX_WEATHER_BET = 55.0  # v12.8: rialzato da $40 — auto-compound scala, periodo d'oro usava $60-80
 
 # v11.1: City performance tiers basati su dati reali (275 trade, 17 giorni)
 # Tier 1: WR >= 75%, volume alto → full budget
@@ -492,11 +492,11 @@ class WeatherStrategy:
         # l'incertezza. Serve solo una soglia di edge minima crescente.
         days_ahead = self._days_until(date)
         if days_ahead == 0:
-            effective_min_edge = 0.08   # v12.6.2: alzato da 0.05 — serve più edge per coprire loss
+            effective_min_edge = 0.05   # v12.8: riportato a 5% — storico 63% WR, +$2,323 con questo livello
         elif days_ahead == 1:
-            effective_min_edge = 0.15   # v12.6.2: alzato da 0.12 — +1d più rischioso
+            effective_min_edge = 0.12   # v12.8: riportato a 12% — periodo d'oro usava questo
         else:
-            effective_min_edge = 0.25   # v12.6.2: alzato da 0.20 — +2d quasi non tradabile
+            effective_min_edge = 0.20   # v12.8: riportato a 20% — +2d ancora rischioso ma tradabile
 
         # Market efficiency: mercati efficienti (alta liquidita', spread
         # stretto) hanno bisogno di edge piu' alta per giustificare il trade.
