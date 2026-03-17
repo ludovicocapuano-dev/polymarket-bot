@@ -315,8 +315,16 @@ class RiskManager:
                 f"{self._onchain_position_count} on-chain)"
             )
 
-        # v8.1: Reserve floor — mantieni almeno X% del capitale liquido
-        reserve_floor = self.config.total_capital * (self.config.reserve_floor_pct / 100.0)
+        # v12.8: Reserve floor usa USDC disponibile reale, non capitale iniziale
+        # Se available < 50% del config.total_capital, scala il floor proporzionalmente
+        # Evita stallo dove il bot non può tradare perché floor > USDC
+        effective_capital = self.capital
+        if available < self.config.total_capital * 0.5:
+            # Capitale sceso significativamente — usa il capitale reale
+            effective_capital = available + self.total_exposed
+        reserve_floor = effective_capital * (self.config.reserve_floor_pct / 100.0)
+        # Floor assoluto minimo: $200 (sotto questo non tradare comunque)
+        reserve_floor = max(200.0, reserve_floor)
         available = self.available_capital
         if available - size < reserve_floor:
             return False, (
