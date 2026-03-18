@@ -119,6 +119,17 @@ class MarketDatabase:
                     UNIQUE(trade_id)
                 );
 
+                CREATE TABLE IF NOT EXISTS market_state_history (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    market_id       TEXT NOT NULL,
+                    old_state       TEXT,
+                    new_state       TEXT NOT NULL,
+                    changed_at      TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_state_history_market
+                    ON market_state_history(market_id, changed_at);
+
                 CREATE INDEX IF NOT EXISTS idx_market_trades_token_time
                     ON market_trades(token_id, trade_time);
                 CREATE INDEX IF NOT EXISTS idx_market_trades_market_time
@@ -172,11 +183,37 @@ class MarketDatabase:
 
     # ── Markets ───────────────────────────────────────────────
 
+    def _market_state(self, active: bool, closed: bool, resolved: bool) -> str:
+        if resolved:
+            return "resolved"
+        if closed:
+            return "closed"
+        if active:
+            return "active"
+        return "archived"
+
     def upsert_market(self, market_id: str, condition_id: str, question: str,
                       category: str = "", volume: float = 0, liquidity: float = 0,
                       active: bool = True, closed: bool = False, resolved: bool = False,
                       end_date: str = "", neg_risk: bool = False, **kwargs):
+        now = datetime.now(timezone.utc).isoformat()
+        new_state = self._market_state(active, closed, resolved)
+
         with self.connection() as conn:
+            # Check current state for transition tracking
+            row = conn.execute(
+                "SELECT active, closed, resolved FROM markets WHERE market_id = ?",
+                (market_id,)
+            ).fetchone()
+
+            if row:
+                old_state = self._market_state(bool(row["active"]), bool(row["closed"]), bool(row["resolved"]))
+                if old_state != new_state:
+                    conn.execute("""
+                        INSERT INTO market_state_history (market_id, old_state, new_state, changed_at)
+                        VALUES (?, ?, ?, ?)
+                    """, (market_id, old_state, new_state, now))
+
             conn.execute("""
                 INSERT INTO markets
                     (market_id, condition_id, question, category,
@@ -189,9 +226,7 @@ class MarketDatabase:
                     liquidity=excluded.liquidity, updated_at=excluded.updated_at
             """, (market_id, condition_id, question, category,
                   int(active), int(closed), int(resolved), volume, liquidity,
-                  end_date, int(neg_risk),
-                  datetime.now(timezone.utc).isoformat(),
-                  datetime.now(timezone.utc).isoformat()))
+                  end_date, int(neg_risk), now, now))
 
     def upsert_token(self, token_id: str, market_id: str, outcome: str):
         with self.connection() as conn:
@@ -478,6 +513,42 @@ class MarketDatabase:
                 WHERE ABS(p.latest_price - p.first_price) >= ?
                 ORDER BY price_move DESC LIMIT 20
             """, (f"-{hours} hours", min_move)).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_pre_resolution_prices(self, hours_before: int = 24) -> list[dict]:
+        """Get prices just before markets resolved — for calibration studies."""
+        with self.connection() as conn:
+            rows = conn.execute("""
+                SELECT h.market_id, m.question, m.winner,
+                    h.changed_at as resolved_at,
+                    ps.price as pre_resolution_price,
+                    ps.outcome,
+                    ps.snapshot_time
+                FROM market_state_history h
+                JOIN markets m ON h.market_id = m.market_id
+                LEFT JOIN price_snapshots ps ON h.market_id = ps.market_id
+                    AND ps.snapshot_time < h.changed_at
+                    AND ps.snapshot_time > datetime(h.changed_at, ?)
+                WHERE h.new_state = 'resolved'
+                ORDER BY h.changed_at DESC, ps.snapshot_time DESC
+            """, (f"-{hours_before} hours",)).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_state_transitions(self, market_id: str = None) -> list[dict]:
+        """Get state transition history for a market or all markets."""
+        with self.connection() as conn:
+            if market_id:
+                rows = conn.execute("""
+                    SELECT h.*, m.question FROM market_state_history h
+                    JOIN markets m ON h.market_id = m.market_id
+                    WHERE h.market_id = ? ORDER BY h.changed_at
+                """, (market_id,)).fetchall()
+            else:
+                rows = conn.execute("""
+                    SELECT h.*, m.question FROM market_state_history h
+                    JOIN markets m ON h.market_id = m.market_id
+                    ORDER BY h.changed_at DESC LIMIT 50
+                """).fetchall()
             return [dict(r) for r in rows]
 
     def cleanup_old_snapshots(self, keep_days: int = 7):
