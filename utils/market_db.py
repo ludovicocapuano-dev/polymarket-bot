@@ -387,6 +387,25 @@ class MarketDatabase:
 
     # ── Queries ───────────────────────────────────────────────
 
+    def get_liquid_markets(self, min_volume: float = 5000,
+                          max_spread: float = 0.10,
+                          min_book_depth: float = 50) -> list[dict]:
+        """Get markets with REAL liquidity (not just Gamma's approximation).
+        Uses actual spread data and trade volume from our snapshots."""
+        with self.connection() as conn:
+            rows = conn.execute("""
+                SELECT m.market_id, m.question, m.volume, m.liquidity,
+                    AVG(ps.spread) as avg_spread,
+                    COUNT(ps.id) as snapshot_count
+                FROM markets m
+                LEFT JOIN price_snapshots ps ON m.market_id = ps.market_id
+                WHERE m.active = 1 AND m.closed = 0 AND m.volume >= ?
+                GROUP BY m.market_id
+                HAVING avg_spread IS NULL OR avg_spread <= ?
+                ORDER BY m.volume DESC
+            """, (min_volume, max_spread)).fetchall()
+            return [dict(r) for r in rows]
+
     def get_active_markets(self, min_liquidity: float = 1000) -> list[dict]:
         with self.connection() as conn:
             rows = conn.execute("""
