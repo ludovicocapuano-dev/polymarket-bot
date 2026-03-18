@@ -2120,6 +2120,53 @@ class CrowdPredictionStrategy:
                     )
                     continue
 
+            # v12.8: Deep research pre-filter (MiroThinker-inspired)
+            # Research first, simulate only if research says crowd has edge
+            try:
+                from utils.deep_researcher import research_market
+                yes_price = market.outcome_prices[0] if market.outcome_prices else 0.5
+                report = research_market(market.question, yes_price, domain)
+                if report:
+                    if report.recommendation == "SKIP":
+                        logger.info(
+                            f"[CROWD-PRED] [{domain.upper()}] [{i+1}/{len(markets)}] "
+                            f"RESEARCH SKIP: {market.question[:50]} | "
+                            f"quality={report.information_quality} crowd_edge={report.crowd_has_edge}"
+                        )
+                        continue
+                    elif report.recommendation == "TRADE_DIRECTLY":
+                        # Research alone is sufficient — create signal without simulation
+                        edge = report.probability - yes_price if report.probability > yes_price else (1 - report.probability) - (1 - yes_price)
+                        if abs(edge) >= self.MIN_EDGE and report.confidence >= 0.65:
+                            side = "BUY_YES" if report.probability > yes_price else "BUY_NO"
+                            signal = CrowdSignal(
+                                market=market,
+                                question=market.question,
+                                crowd_probability=report.probability,
+                                polymarket_price=yes_price,
+                                edge=abs(edge),
+                                side=side,
+                                confidence=report.confidence,
+                                std_dev=0.05,
+                                kelly_size=min(self.MAX_BET, max(5, abs(edge) * self.KELLY_FRACTION * 1000)),
+                                reasoning=f"[RESEARCH-DIRECT] {report.bull_case} | {report.bear_case}",
+                            )
+                            signals.append(signal)
+                            _save_cached_signal(signal, domain)
+                            logger.info(
+                                f"[CROWD-PRED] [{domain.upper()}] [{i+1}/{len(markets)}] "
+                                f"RESEARCH DIRECT: {side} edge={abs(edge):.1%} | {market.question[:50]}"
+                            )
+                            continue
+                    # else: SIMULATE — proceed with crowd simulation
+                    logger.info(
+                        f"[CROWD-PRED] [{domain.upper()}] [{i+1}/{len(markets)}] "
+                        f"RESEARCH → SIMULATE: {market.question[:50]} | "
+                        f"quality={report.information_quality}"
+                    )
+            except Exception as e:
+                logger.debug(f"[RESEARCH] Pre-filter error: {e}")
+
             # Enrich with domain-specific context
             mode = "4096-agent hierarchical" if AGENT_COUNT >= 4096 else "50-agent Delphi"
             logger.info(
