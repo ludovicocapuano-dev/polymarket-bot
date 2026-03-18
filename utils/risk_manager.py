@@ -822,6 +822,13 @@ class RiskManager:
                 self._save_open_positions()
                 # v11.1: salva trades.json subito — non perdere outcome al restart
                 self.save_trades()
+                # v12.8: persist to SQLite database
+                try:
+                    from utils.market_db import db as _mdb
+                    _mdb.close_trade(t.token_id, "WIN" if won else "LOSS", pnl,
+                                     close_reason=getattr(t, '_close_reason', ''))
+                except Exception:
+                    pass
                 logger.info(
                     f"[{t.strategy}] {'VINTO' if won else 'PERSO'} "
                     f"PnL=${pnl:+.2f} | Giorn=${self._daily_pnl:+.2f} | "

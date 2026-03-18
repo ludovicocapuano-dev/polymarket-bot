@@ -78,6 +78,7 @@ from utils.advanced_risk import run_advanced_risk_analysis
 from utils.horizon_client import HorizonClient
 from utils.unusual_whales import UnusualWhalesClient
 from utils.uw_polymarket_matcher import UWPolymarketMatcher
+from utils.market_db import db as market_db
 
 try:
     from finbert_feed import FinBERTFeed
