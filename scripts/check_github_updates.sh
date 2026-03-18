@@ -18,6 +18,7 @@ REPOS=(
     "greyhaven-ai/autocontext"
     "666ghj/MiroFish"
     "MiroMindAI/MiroThinker"
+    "volcengine/OpenViking"
     "polymarket/polymarket-cli"
     "polymarket/py-clob-client"
     "polymarket/py-builder-signing-sdk"
