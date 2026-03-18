@@ -82,6 +82,7 @@ class MarketDatabase:
                     outcome         TEXT NOT NULL,
                     price           REAL NOT NULL,
                     best_bid        REAL,
+                    -- v12.8: unique constraint prevents duplicate snapshots on reconnect
                     best_ask        REAL,
                     spread          REAL,
                     snapshot_time   TEXT NOT NULL,
@@ -105,6 +106,23 @@ class MarketDatabase:
                     close_time      TEXT,
                     close_reason    TEXT
                 );
+
+                CREATE TABLE IF NOT EXISTS market_trades (
+                    trade_id        TEXT,
+                    market_id       TEXT NOT NULL,
+                    token_id        TEXT NOT NULL,
+                    outcome         TEXT,
+                    side            TEXT NOT NULL,
+                    price           REAL NOT NULL,
+                    size            REAL NOT NULL,
+                    trade_time      TEXT NOT NULL,
+                    UNIQUE(trade_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_market_trades_token_time
+                    ON market_trades(token_id, trade_time);
+                CREATE INDEX IF NOT EXISTS idx_market_trades_market_time
+                    ON market_trades(market_id, trade_time);
 
                 CREATE TABLE IF NOT EXISTS crowd_predictions (
                     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -134,6 +152,10 @@ class MarketDatabase:
                     signal_time     TEXT NOT NULL
                 );
 
+                -- v12.8: Idempotency — prevent duplicate snapshots on WS reconnect
+                -- Round snapshot_time to second precision for dedup
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_snapshots_dedup
+                    ON price_snapshots(token_id, snapshot_time);
                 CREATE INDEX IF NOT EXISTS idx_snapshots_token_time
                     ON price_snapshots(token_id, snapshot_time);
                 CREATE INDEX IF NOT EXISTS idx_snapshots_market_time
@@ -183,14 +205,16 @@ class MarketDatabase:
     def record_price(self, token_id: str, market_id: str, outcome: str,
                      price: float, bid: float = None, ask: float = None,
                      source: str = "api"):
+        """Record a price snapshot. Idempotent — duplicates are silently ignored."""
         spread = (ask - bid) if (bid is not None and ask is not None) else None
+        # Round to second precision for dedup (same token + same second = duplicate)
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
         with self.connection() as conn:
             conn.execute("""
-                INSERT INTO price_snapshots
+                INSERT OR IGNORE INTO price_snapshots
                     (token_id, market_id, outcome, price, best_bid, best_ask, spread, snapshot_time, source)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (token_id, market_id, outcome, price, bid, ask, spread,
-                  datetime.now(timezone.utc).isoformat(), source))
+            """, (token_id, market_id, outcome, price, bid, ask, spread, ts, source))
 
     def get_price_history(self, market_id: str, hours: int = 24) -> list[dict]:
         with self.connection() as conn:
@@ -268,6 +292,51 @@ class MarketDatabase:
                 else:
                     stats[s]["open"] = r["cnt"]
             return stats
+
+    # ── Market Trades (all trades, not just ours) ──────────────
+
+    def record_market_trade(self, trade_id: str, market_id: str, token_id: str,
+                            side: str, price: float, size: float,
+                            trade_time: str = "", outcome: str = ""):
+        """Record a market trade. Idempotent via UNIQUE(trade_id)."""
+        if not trade_time:
+            trade_time = datetime.now(timezone.utc).isoformat()
+        with self.connection() as conn:
+            conn.execute("""
+                INSERT OR IGNORE INTO market_trades
+                    (trade_id, market_id, token_id, outcome, side, price, size, trade_time)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (trade_id, market_id, token_id, outcome, side, price, size, trade_time))
+
+    def get_market_vwap(self, token_id: str, hours: int = 1) -> Optional[float]:
+        """Calculate VWAP for a token over the last N hours."""
+        with self.connection() as conn:
+            cutoff = datetime.fromtimestamp(
+                time.time() - hours * 3600, tz=timezone.utc
+            ).isoformat()
+            row = conn.execute("""
+                SELECT SUM(price * size) / SUM(size) as vwap, SUM(size) as total_volume
+                FROM market_trades WHERE token_id = ? AND trade_time > ?
+            """, (token_id, cutoff)).fetchone()
+            if row and row["vwap"]:
+                return float(row["vwap"])
+            return None
+
+    def get_volume_imbalance(self, token_id: str, hours: int = 1) -> Optional[float]:
+        """Buy volume / total volume ratio. >0.5 = net buying, <0.5 = net selling."""
+        with self.connection() as conn:
+            cutoff = datetime.fromtimestamp(
+                time.time() - hours * 3600, tz=timezone.utc
+            ).isoformat()
+            row = conn.execute("""
+                SELECT
+                    SUM(CASE WHEN side='BUY' THEN size ELSE 0 END) as buy_vol,
+                    SUM(size) as total_vol
+                FROM market_trades WHERE token_id = ? AND trade_time > ?
+            """, (token_id, cutoff)).fetchone()
+            if row and row["total_vol"] and row["total_vol"] > 0:
+                return float(row["buy_vol"] or 0) / float(row["total_vol"])
+            return None
 
     # ── Crowd Predictions ─────────────────────────────────────
 
