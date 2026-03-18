@@ -69,6 +69,7 @@ from strategies.cross_platform_arb import CrossPlatformArbStrategy
 from strategies.econ_release_sniper import EconReleaseSniper
 from strategies.crowd_sport import CrowdSportStrategy
 from strategies.crowd_prediction import CrowdPredictionStrategy
+from strategies.mro_kelly import MROKellyStrategy
 from utils.uma_monitor import UmaMonitor
 from monitoring.quant_metrics import evaluate_all_strategies
 from monitoring.hrp import HRPAllocator
@@ -363,6 +364,15 @@ class MultiStrategyBot:
             bankroll=500.0, base_size=25.0, max_size=150.0,
         )
 
+        # v12.9: MRO-Kelly — Mean Reversion Oscillator on BTC 5-min markets
+        self.mro_kelly = MROKellyStrategy(
+            api=self.api, risk=self.risk, binance=self.binance,
+            max_bet=20.0, min_bet=5.0, min_edge=0.06,
+            kelly_fraction=0.25, max_open_positions=3,
+        )
+        self.risk.set_strategy_budget("mro_kelly", 200.0)  # test phase budget
+        logger.info("[MRO-KELLY] Strategy initialized (test phase: $5-20/trade, max 3 pos)")
+
         # v12.0: Book-derived strategies
         self.abandoned_position = AbandonedPositionStrategy()
         self.cross_platform_arb = CrossPlatformArbStrategy(
@@ -371,7 +381,7 @@ class MultiStrategyBot:
 
         # v12.0: Quant monitoring (Lopez de Prado)
         active_strats = ["weather", "resolution_sniper", "favorite_longshot",
-                         "holding_rewards", "negrisk_arb", "btc_latency"]
+                         "holding_rewards", "negrisk_arb", "btc_latency", "mro_kelly"]
         self.hrp_allocator = HRPAllocator(strategy_names=active_strats)
         self.kyle_lambda = KyleLambdaEstimator()
         self.kalman_filter = WeatherKalmanFilter()
@@ -538,6 +548,8 @@ class MultiStrategyBot:
             nxt = self.econ_sniper.next_release()
             econ_label = f"econ_sniper (next: {nxt.name} {nxt.date.strftime('%d/%m')})" if nxt else "econ_sniper"
             independent_strats.append(econ_label)
+        if hasattr(self, 'mro_kelly'):
+            independent_strats.append("mro_kelly ($5-20/trade, MRO test)")
 
         all_strats = active_strats + [f"{s} (indip.)" for s in independent_strats]
         await self.telegram.notify_startup(
@@ -772,6 +784,17 @@ class MultiStrategyBot:
                             await self.btc_latency.execute(sig, paper=True)  # SEMPRE paper
                 except Exception as e:
                     logger.warning(f"[BTC-LATENCY] Errore: {e}", exc_info=True)
+
+                # ── 0.9.1. MRO-Kelly — Mean Reversion Oscillator BTC 5-min ──
+                try:
+                    mro_signals = self.mro_kelly.scan()
+                    if _can_trade and mro_signals:
+                        for sig in mro_signals[:2]:  # max 2 per ciclo
+                            if not self._running:
+                                break
+                            await self.mro_kelly.execute(sig, paper=paper)
+                except Exception as e:
+                    logger.warning(f"[MRO-KELLY] Errore: {e}", exc_info=True)
 
                 # ── 0.10. Abandoned Position Arb — DISABILITATO v12.5.3 ──
                 # Motivo: 0% WR, -$742 PnL, posizioni accumulate senza chiudersi

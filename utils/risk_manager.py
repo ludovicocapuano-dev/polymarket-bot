@@ -39,6 +39,7 @@ STRATEGY_BARRIERS: dict[str, TripleBarrier] = {
     "imported_onchain":  TripleBarrier(0.15, 0.15, 336),    # 14gg, conservativo
     "crowd_sport":       TripleBarrier(0.20, 0.15, 336),    # v12.6: TP 20%, SL 15%, 14gg — sport markets resolve slowly
     "crowd_prediction":  TripleBarrier(0.20, 0.15, 336),    # v12.7: TP 20%, SL 15%, 14gg — multi-domain Delphi
+    "mro_kelly":         TripleBarrier(0.10, 0.08, 0.5),    # v12.9: TP 10%, SL 8%, max hold 30min (5-min markets)
 }
 
 DEFAULT_BARRIER = TripleBarrier(0.10, 0.10, 48)
