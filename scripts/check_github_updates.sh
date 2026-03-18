@@ -16,6 +16,8 @@ REPOS=(
     "karpathy/autoresearch"
     "hyperspaceai/agi"
     "greyhaven-ai/autocontext"
+    "666ghj/MiroFish"
+    "MiroMindAI/MiroThinker"
     "polymarket/polymarket-cli"
     "polymarket/py-clob-client"
     "polymarket/py-builder-signing-sdk"
