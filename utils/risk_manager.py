@@ -507,7 +507,7 @@ class RiskManager:
         "arb_gabagool":       0.50,   # 1/2 Kelly — profitto quasi-garantito
         "high_prob_bond":     0.15,   # v10.5: da 0.40 — rischio asimmetrico ($20 per $1)
         "arbitrage":          0.40,   # 2/5 Kelly — arb strutturale
-        "weather":            0.35,   # v10.5: da 0.30 — unica profittevole, fee-free
+        "weather":            0.25,   # v12.9: quarter Kelly (112K study). Was 0.35 — too aggressive
         "data_driven":        0.12,   # v10.5: da 0.20 — edge inflato, WR 44%
         "event_driven":       0.20,   # v10.5: da 0.18 — Glint.trade + NLP
         "whale_copy":         0.12,   # ~1/8 Kelly — edge indiretto, dipende dal whale
@@ -588,9 +588,8 @@ class RiskManager:
         # Dynamic fraction per strategia
         base_frac = self.KELLY_FRACTIONS.get(strategy, self.config.kelly_fraction)
 
-        # Weather same-day boost: +30% di fraction (previsioni accurate 85%+)
-        if strategy == "weather" and days_ahead is not None and days_ahead == 0:
-            base_frac = min(base_frac * 1.30, 0.40)  # Cap 2/5 Kelly
+        # v12.9: No same-day boost — quarter Kelly is enough
+        # 112K study: top traders cap at 12-15% on high conf, not 40%
 
         # v10.0: Empirical Kelly — haircut data-driven basato su MC
         emp_factor = None
