@@ -2196,7 +2196,7 @@ class MultiStrategyBot:
                 "min_volume": "MIN_VOLUME",
                 "max_bet": "MAX_BET",
             }),
-            "abandoned_position": (self.abandoned, {
+            "abandoned_position": (self.abandoned_position, {
                 "min_near_certain_price": "MIN_NEAR_CERTAIN_PRICE",
                 "max_near_certain_price": "MAX_NEAR_CERTAIN_PRICE",
                 "max_volume_24h": "MAX_VOLUME_24H",
