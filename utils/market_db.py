@@ -432,6 +432,54 @@ class MarketDatabase:
                 "uw_signals": signals,
             }
 
+    def market_summary(self, market_id: str) -> dict:
+        """Get summary of a market's current state."""
+        latest = self.get_latest_prices(market_id)
+        history = self.get_price_history(market_id, hours=24)
+
+        result = {"market_id": market_id, "prices": [], "price_change_24h": 0}
+        for row in latest:
+            result["prices"].append({
+                "outcome": row["outcome"],
+                "price": row["price"],
+                "spread": row.get("spread"),
+            })
+
+        if history:
+            yes_prices = [h["price"] for h in history if h.get("outcome", "").lower() == "yes"]
+            if len(yes_prices) > 1:
+                result["yes_range"] = (min(yes_prices), max(yes_prices))
+                result["price_change_24h"] = yes_prices[-1] - yes_prices[0]
+
+        return result
+
+    def find_moving_markets(self, hours: int = 1, min_move: float = 0.05) -> list[dict]:
+        """Find markets where price moved significantly — spots incoming information."""
+        with self.connection() as conn:
+            rows = conn.execute("""
+                WITH recent AS (
+                    SELECT market_id, outcome, price, snapshot_time,
+                        ROW_NUMBER() OVER (PARTITION BY market_id, outcome ORDER BY snapshot_time DESC) as rn_latest,
+                        ROW_NUMBER() OVER (PARTITION BY market_id, outcome ORDER BY snapshot_time ASC) as rn_earliest
+                    FROM price_snapshots
+                    WHERE snapshot_time > datetime('now', ?)
+                      AND outcome = 'Yes'
+                ),
+                pivoted AS (
+                    SELECT market_id,
+                        MAX(CASE WHEN rn_latest = 1 THEN price END) as latest_price,
+                        MAX(CASE WHEN rn_earliest = 1 THEN price END) as first_price
+                    FROM recent GROUP BY market_id
+                )
+                SELECT p.market_id, m.question, p.first_price, p.latest_price,
+                    ABS(p.latest_price - p.first_price) as price_move
+                FROM pivoted p
+                JOIN markets m ON p.market_id = m.market_id
+                WHERE ABS(p.latest_price - p.first_price) >= ?
+                ORDER BY price_move DESC LIMIT 20
+            """, (f"-{hours} hours", min_move)).fetchall()
+            return [dict(r) for r in rows]
+
     def cleanup_old_snapshots(self, keep_days: int = 7):
         """Remove price snapshots older than N days to save disk."""
         with self.connection() as conn:
