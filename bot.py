@@ -652,6 +652,19 @@ class MultiStrategyBot:
                     except Exception as e:
                         logger.warning(f"[BALANCE] Errore check: {e}")
 
+                # v12.8: Auto-redeem ogni 50 cicli — riscuoti vincite automaticamente
+                if self._cycle % 50 == 25 and not self.config.paper_trading and self.redeemer:
+                    try:
+                        redeem_result = await asyncio.to_thread(
+                            self.redeemer.redeem_all_redeemable
+                        )
+                        if redeem_result and redeem_result.get("redeemed", 0) > 0:
+                            logger.info(
+                                f"[AUTO-REDEEM] Riscossi {redeem_result['redeemed']} posizioni"
+                            )
+                    except Exception as e:
+                        logger.debug(f"[AUTO-REDEEM] Errore: {e}")
+
                 # Skip trading se saldo troppo basso (ma auto-close continua!)
                 _can_trade = getattr(self, '_usdc_balance', 999) >= 2.0
 
@@ -1560,9 +1573,9 @@ class MultiStrategyBot:
                     timeout=10,
                 )
 
-                if resp.status_code == 404:
-                    # Mercato non trovato su Gamma — prova endpoint CLOB
-                    logger.debug(f"[PNL] Mercato {mid} non trovato su Gamma API")
+                if resp.status_code in (404, 422, 500, 502, 503):
+                    # Mercato non trovato o errore API — skip senza bloccare
+                    logger.debug(f"[PNL] Mercato {mid}: HTTP {resp.status_code}, skip")
                     continue
 
                 resp.raise_for_status()

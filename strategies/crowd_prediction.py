@@ -61,6 +61,22 @@ BUDGET = 200.0           # $200 independent budget
 # Agent count: 4096 (hierarchical) or 50 (fast Delphi)
 AGENT_COUNT = 4096
 
+# v12.8: Markets where crowd has NO informational edge — skip these
+# Internal corporate decisions, product release dates, things only insiders know
+CROWD_BLIND_KEYWORDS = [
+    # Product releases — only the company knows the timeline
+    "claude 5", "claude 4", "gpt-5", "gpt-6", "gpt-7", "gemini 3", "llama 4",
+    "gta vi", "gta 6", "iphone", "ios 20", "macos", "windows 12",
+    "released by", "released before", "launch by", "launch before",
+    # Internal corporate decisions
+    "ipo before", "acquired before", "merger", "delisted",
+    "step down", "resign", "fired", "ceo of",
+    # Exact dates/numbers that require inside info
+    "exact score", "exact number", "how many goals",
+    # Deaths/health — tasteless and unpredictable
+    "die before", "death", "alive",
+]
+
 # ── Domain Keywords ───────────────────────────────────────────────
 
 DOMAIN_KEYWORDS = {
@@ -2065,9 +2081,16 @@ class CrowdPredictionStrategy:
             logger.info(f"[CROWD-PRED] [{domain.upper()}] No markets found")
             return []
 
-        # v12.8: Filter out longshots and near-certainties — edge only exists in 10-80% range
+        # v12.8: Filter out longshots and near-certainties
         markets = [m for m in markets
                    if m.outcome_prices and 0.10 <= m.outcome_prices[0] <= 0.80]
+
+        # v12.8: Filter markets where crowd has no informational edge
+        pre_filter = len(markets)
+        markets = [m for m in markets
+                   if not any(kw in m.question.lower() for kw in CROWD_BLIND_KEYWORDS)]
+        if pre_filter != len(markets):
+            logger.info(f"[CROWD-PRED] Filtered {pre_filter - len(markets)} crowd-blind markets")
 
         # Sort by volume, take top N
         markets.sort(key=lambda m: m.volume, reverse=True)
