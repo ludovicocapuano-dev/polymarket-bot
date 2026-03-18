@@ -492,11 +492,11 @@ class WeatherStrategy:
         # l'incertezza. Serve solo una soglia di edge minima crescente.
         days_ahead = self._days_until(date)
         if days_ahead == 0:
-            effective_min_edge = 0.05   # v12.8: riportato a 5% — storico 63% WR, +$2,323 con questo livello
+            effective_min_edge = 0.08   # v12.9: 112K wallet study — top 1% enter at 8-10% deviation
         elif days_ahead == 1:
-            effective_min_edge = 0.12   # v12.8: riportato a 12% — periodo d'oro usava questo
+            effective_min_edge = 0.12   # +1d: same as golden era
         else:
-            effective_min_edge = 0.20   # v12.8: riportato a 20% — +2d ancora rischioso ma tradabile
+            effective_min_edge = 0.20   # +2d: high uncertainty
 
         # Market efficiency: mercati efficienti (alta liquidita', spread
         # stretto) hanno bisogno di edge piu' alta per giustificare il trade.

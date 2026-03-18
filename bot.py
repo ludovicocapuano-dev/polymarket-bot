@@ -701,36 +701,19 @@ class MultiStrategyBot:
                 except Exception as e:
                     logger.error(f"[SNIPER] Errore strategia: {e}", exc_info=True)
 
-                # ── 0.6. NegRisk Sum Arbitrage ──
-                # v10.8.4: scansiona mercati multi-outcome per arbitraggio somma
-                try:
-                    negrisk_opps = self.negrisk_arb.scan(shared_markets)
-                    if _can_trade and negrisk_opps:
-                        for opp in negrisk_opps[:3]:
-                            self.negrisk_arb.execute(opp, self.api, self.risk, live=not paper)
-                except Exception as e:
-                    logger.error(f"[NEGRISK-ARB] Errore: {e}", exc_info=True)
+                # ── 0.6. NegRisk Sum Arbitrage — PAUSED v12.9 ──
+                # 112K wallet study: specialize in 1-2 categories. Arb is noise.
+                pass
 
-                # ── 0.7. Holding Rewards (4% APY on eligible long-term markets) ──
-                if self._cycle % 10 == 0:  # ogni 10 cicli (~5 min)
-                    try:
-                        held_ids = {p.get("asset", "") for p in self.risk.open_positions.values()} if hasattr(self.risk, 'open_positions') else set()
-                        hold_opps = self.holding_rewards.scan(shared_markets, existing_positions=held_ids)
-                        if _can_trade and hold_opps:
-                            for opp in hold_opps[:2]:
-                                self.holding_rewards.execute(opp, self.api, self.risk, live=not paper)
-                    except Exception as e:
-                        logger.error(f"[HOLD-REWARDS] Errore: {e}", exc_info=True)
+                # ── 0.7. Holding Rewards — PAUSED v12.9 ──
+                # 112K wallet study: focus on 1-2 categories. Holding rewards is noise.
+                # if self._cycle % 10 == 0: ...
+                pass
 
-                # ── 0.8. Favorite-Longshot Bias ──
-                if self._cycle % 5 == 0:  # ogni 5 cicli (~2.5 min)
-                    try:
-                        fav_opps = self.favorite_longshot.scan(shared_markets, risk=self.risk)
-                        if _can_trade and fav_opps:
-                            for opp in fav_opps[:2]:
-                                self.favorite_longshot.execute(opp, self.api, self.risk, live=not paper)
-                    except Exception as e:
-                        logger.error(f"[FAV-LONG] Errore: {e}", exc_info=True)
+                # ── 0.8. Favorite-Longshot Bias — PAUSED v12.9 ──
+                # 112K wallet study: 0% WR, -$742 total. Focus on weather instead.
+                # if self._cycle % 5 == 0: ...
+                pass
 
                 # ── 0.8.6. Economic Data Release Sniper (ogni ciclo) ──
                 try:

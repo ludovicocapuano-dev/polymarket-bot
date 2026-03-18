@@ -846,8 +846,9 @@ class RiskManager:
 
     def check_barrier(self, trade: Trade, current_bid: float) -> str:
         """
-        v7.2: Triple-Barrier Exit System.
-        Ritorna 'HOLD', 'TAKE_PROFIT', 'STOP_LOSS', 'TIME_EXIT'.
+        v12.9: Triple-Barrier + Price Exit (112K wallet study).
+        Top traders hold 18-72h and exit on price moves, not resolution.
+        Ritorna 'HOLD', 'TAKE_PROFIT', 'STOP_LOSS', 'TIME_EXIT', 'PRICE_EXIT'.
         """
         barrier = STRATEGY_BARRIERS.get(trade.strategy, DEFAULT_BARRIER)
         pnl_pct = (current_bid - trade.price) / trade.price if trade.price > 0 else 0
@@ -857,6 +858,22 @@ class RiskManager:
             return "TAKE_PROFIT"
         if pnl_pct <= -barrier.stop_loss:
             return "STOP_LOSS"
+
+        # v12.9: Price-based exit — sell when price moved enough in our favor
+        # Top 1% traders hold 18-72h and exit on +15-20% price move
+        # For BUY_NO at $0.90: if bid rises to $0.97+ (7c profit on 90c = ~8%), exit
+        # For BUY_YES at $0.10: if bid rises to $0.15+ (50% move), exit
+        if trade.strategy in ("weather", "crowd_sport", "crowd_prediction"):
+            if trade.price >= 0.70:
+                # High-price positions (BUY_NO): take profit on small absolute move
+                abs_profit = current_bid - trade.price
+                if abs_profit >= 0.05 and age_hours >= 2:  # 5c profit, held 2h+
+                    return "PRICE_EXIT"
+            else:
+                # Low-price positions (BUY_YES): take profit on larger % move
+                if pnl_pct >= 0.15 and age_hours >= 1:  # 15% profit, held 1h+
+                    return "PRICE_EXIT"
+
         if age_hours >= barrier.max_holding_hours:
             return "TIME_EXIT"
         return "HOLD"
