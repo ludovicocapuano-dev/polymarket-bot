@@ -635,12 +635,13 @@ class WeatherStrategy:
         win_prob = adj_forecast_prob if best_side == "YES" else (1.0 - adj_forecast_prob)
         expected_value = win_prob * payoff_ratio - (1.0 - win_prob)
 
-        # v10.8.4: EV minimo alzato da 0.05 a 0.10 — dati mostrano che
-        # trade con EV 0.05-0.10 hanno WR ~50% (nessun edge reale).
+        # v12.9: EV gate — NEVER enter negative or marginal EV
+        # 112K wallet study: top 1.2% never enter negative EV
+        # EV < 0.10 = no real edge after accounting for uncertainty
         if expected_value < 0.10:
             logger.debug(
                 f"[WEATHER-SKIP] low EV: {city} {label} "
-                f"EV={expected_value:+.4f} < 0.05 "
+                f"EV={expected_value:+.4f} < 0.10 "
                 f"(win_prob={win_prob:.3f} payoff={payoff_ratio:.3f})"
             )
             return None
