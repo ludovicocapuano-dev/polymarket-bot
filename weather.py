@@ -377,36 +377,21 @@ class WeatherStrategy:
         # bucket_probability_in_unit gestisce la conversione F->C internamente
         forecast_prob = forecast.bucket_probability_in_unit(low, high, unit)
 
-        # v12.7: Forecast sigma filter — skip trades with high forecast uncertainty.
-        # When sigma > 3°F (1.67°C), our probability estimate is too unreliable
-        # to trade profitably. The edge calculation assumes our P(YES) is accurate,
-        # but high sigma means our estimate could be off by a lot.
+        # v12.9 SUBTRACTION: sigma_filter and source_disagreement REMOVED
+        # Autoresearch experiment: "every feature removal improved performance"
+        # These filters were added in v12.7 AFTER the golden era (+$1,908/12d)
+        # and coincided with the bot stopping to trade profitably.
+        # Sigma and disagreement are still logged for monitoring but don't block trades.
         forecast_sigma = forecast.uncertainty_in_unit(unit)
-        sigma_f = forecast_sigma if unit == "F" else forecast_sigma * 1.8  # normalize to F for threshold
+        sigma_f = forecast_sigma if unit == "F" else forecast_sigma * 1.8
         if sigma_f > 3.0:
-            logger.debug(
-                f"[WEATHER-SKIP] high sigma: {city} {label} "
-                f"sigma={forecast_sigma:.1f}°{unit} ({sigma_f:.1f}°F) > 3.0°F threshold"
-            )
-            return None
-
-        # v12.7: Multi-source disagreement filter — skip if sources disagree by >2°F.
-        # When WU says 72°F and OpenMeteo says 68°F, we can't trust the consensus.
-        # The bin probability estimate is unreliable.
+            logger.debug(f"[WEATHER-NOTE] high sigma {sigma_f:.1f}°F (not blocking)")
+        # Source disagreement: logged but not blocking
         if hasattr(forecast, 'sources') and len(forecast.sources) >= 2:
-            source_temps_unit = []
-            for src in forecast.sources:
-                t = c_to_f(src.temp) if unit == "F" else src.temp
-                source_temps_unit.append(t)
-            source_spread = max(source_temps_unit) - min(source_temps_unit)
-            source_spread_f = source_spread if unit == "F" else source_spread * 1.8
+            source_temps_unit = [c_to_f(s.temp) if unit == "F" else s.temp for s in forecast.sources]
+            source_spread_f = (max(source_temps_unit) - min(source_temps_unit)) * (1 if unit == "F" else 1.8)
             if source_spread_f > 2.0:
-                logger.debug(
-                    f"[WEATHER-SKIP] source disagreement: {city} {label} "
-                    f"spread={source_spread:.1f}°{unit} ({source_spread_f:.1f}°F) > 2.0°F — "
-                    f"sources: {[f'{s.provider}={t:.1f}' for s, t in zip(forecast.sources, source_temps_unit)]}"
-                )
-                return None
+                logger.debug(f"[WEATHER-NOTE] source spread {source_spread_f:.1f}°F (not blocking)")
 
         # v5.0: Boost same-day con osservazioni Wethr.net
         # Se e' oggi e abbiamo la temperatura corrente, affiniamo la stima
@@ -468,9 +453,11 @@ class WeatherStrategy:
         effective_bw = min(bucket_width, 20.0)  # cap at 20 degrees for edge calc
         if effective_bw <= 0:
             effective_bw = 1.0
+        # v12.9 SUBTRACTION: uncertainty-adjusted edge REMOVED
+        # Was shrinking our probability toward market — but we WANT to disagree with market!
+        # Golden era didn't have this. "Most extra logic introduces noise."
         sigma_penalty = forecast_sigma ** 2 / (effective_bw ** 2 + forecast_sigma ** 2)
-        # Shrink our probability estimate toward market's implied prob
-        adj_forecast_prob = forecast_prob + sigma_penalty * (price_yes - forecast_prob)
+        adj_forecast_prob = forecast_prob  # USE RAW FORECAST, not adjusted
 
         edge_yes = adj_forecast_prob - price_yes - fee
         edge_no = (1.0 - adj_forecast_prob) - price_no - fee
@@ -492,7 +479,7 @@ class WeatherStrategy:
         # l'incertezza. Serve solo una soglia di edge minima crescente.
         days_ahead = self._days_until(date)
         if days_ahead == 0:
-            effective_min_edge = 0.08   # v12.9: 112K wallet study — top 1% enter at 8-10% deviation
+            effective_min_edge = 0.05   # v12.9 SUBTRACTION: back to 5% — golden era level
         elif days_ahead == 1:
             effective_min_edge = 0.12   # +1d: same as golden era
         else:
@@ -922,14 +909,10 @@ class WeatherStrategy:
                 f"-> size=${size:.2f}"
             )
 
-        # v12.7: High-price sizing penalty — when buying at >$0.85, the
-        # risk/reward is extremely asymmetric AGAINST us: risk $0.85+ to make $0.15-.
-        # A single loss wipes out 5-6 wins. Scale down size proportionally.
-        # At price $0.90: penalty = 0.60 (risk $0.90 to make $0.10, need 90% WR)
-        # At price $0.80: penalty = 0.85 (moderate risk)
-        # At price $0.70: penalty = 1.00 (no penalty, acceptable ratio)
-        if price > 0.70:
-            # Linear ramp: 1.0 at $0.70, 0.50 at $0.95
+        # v12.9 SUBTRACTION: high-price penalty REMOVED
+        # "Every feature removal improved performance" — golden era had no penalty
+        # The Kelly criterion already accounts for price/payoff asymmetry
+        if False and price > 0.70:  # DISABLED
             high_price_penalty = max(0.50, 1.0 - (price - 0.70) * 2.0)
             if high_price_penalty < 1.0:
                 old_size = size
