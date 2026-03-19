@@ -33,6 +33,26 @@ timeout 60 python3 scripts/hyperspace_bridge.py --strategy weather >> "$LOG" 2>&
 echo "--- Crowd Sport Delphi Scan ---" >> "$LOG"
 timeout 600 python3 scripts/mirofish_sport_bridge.py --limit 5 >> "$LOG" 2>&1
 
+# 6. XGBoost model retrain (weekly — checks age internally)
+echo "--- XGBoost Retrain Check ---" >> "$LOG"
+timeout 300 python3 -c "
+from strategies.xgboost_predictor import XGBoostPredictor, collect_training_data, FeatureExtractor, MIN_TRAINING_SAMPLES
+import numpy as np
+predictor = XGBoostPredictor()
+if predictor.needs_retrain:
+    print('Retraining XGBoost model...')
+    fe = FeatureExtractor()
+    features, labels = collect_training_data(feature_extractor=fe)
+    if len(features) >= MIN_TRAINING_SAMPLES:
+        predictor.train(features, labels)
+        print(f'Retrained: test_acc={predictor.test_accuracy:.1%}, n={len(labels)}')
+    else:
+        print(f'Insufficient data: {len(features)} samples (need {MIN_TRAINING_SAMPLES})')
+else:
+    age_days = (__import__('time').time() - predictor.last_train_time) / 86400
+    print(f'Model fresh ({age_days:.1f}d old) — skip retrain')
+" >> "$LOG" 2>&1
+
 echo "=== DONE $(date) ===" >> "$LOG"
 
 # 4. Invia risultati su Telegram

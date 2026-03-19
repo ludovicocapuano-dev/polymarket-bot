@@ -70,6 +70,7 @@ from strategies.econ_release_sniper import EconReleaseSniper
 from strategies.crowd_sport import CrowdSportStrategy
 from strategies.crowd_prediction import CrowdPredictionStrategy
 from strategies.mro_kelly import MROKellyStrategy
+from strategies.xgboost_predictor import XGBoostStrategy
 from utils.uma_monitor import UmaMonitor
 from monitoring.quant_metrics import evaluate_all_strategies
 from monitoring.hrp import HRPAllocator
@@ -373,6 +374,15 @@ class MultiStrategyBot:
         self.risk.set_strategy_budget("mro_kelly", 200.0)  # test phase budget
         logger.info("[MRO-KELLY] Strategy initialized (test phase: $5-20/trade, max 3 pos)")
 
+        # v13.0: XGBoost Prediction Strategy — 330 boosted stumps, 7 features
+        self.xgboost_strategy = XGBoostStrategy(
+            api=self.api, risk=self.risk,
+            max_bet=60.0, min_bet=5.0, kelly_fraction=0.25,
+            max_open_positions=15,
+        )
+        self.risk.set_strategy_budget("xgboost_pred", 300.0)
+        logger.info("[XGBOOST] Strategy initialized (budget=$300, max_bet=$60, 7-feature model)")
+
         # v12.0: Book-derived strategies
         self.abandoned_position = AbandonedPositionStrategy()
         self.cross_platform_arb = CrossPlatformArbStrategy(
@@ -381,7 +391,8 @@ class MultiStrategyBot:
 
         # v12.0: Quant monitoring (Lopez de Prado)
         active_strats = ["weather", "resolution_sniper", "favorite_longshot",
-                         "holding_rewards", "negrisk_arb", "btc_latency", "mro_kelly"]
+                         "holding_rewards", "negrisk_arb", "btc_latency", "mro_kelly",
+                         "xgboost_pred"]
         self.hrp_allocator = HRPAllocator(strategy_names=active_strats)
         self.kyle_lambda = KyleLambdaEstimator()
         self.kalman_filter = WeatherKalmanFilter()
@@ -795,6 +806,31 @@ class MultiStrategyBot:
                             await self.mro_kelly.execute(sig, paper=paper)
                 except Exception as e:
                     logger.warning(f"[MRO-KELLY] Errore: {e}", exc_info=True)
+
+                # ── 0.9.2. XGBoost Prediction Strategy (ogni 20 cicli ~10min) ──
+                if self._cycle % 20 == 11:  # offset to avoid overlap
+                    try:
+                        xgb_signals = self.xgboost_strategy.scan(shared_markets)
+                        if _can_trade and xgb_signals:
+                            for sig in xgb_signals[:5]:
+                                if not self._running:
+                                    break
+                                self.xgboost_strategy.execute(
+                                    sig, self.api, self.risk, live=not paper
+                                )
+                    except Exception as e:
+                        logger.warning(f"[XGBOOST] Errore: {e}", exc_info=True)
+
+                # ── 0.9.3. XGBoost Exit Check (ogni 10 cicli ~5min) ──
+                if self._cycle % 10 == 6:  # offset
+                    try:
+                        xgb_exits = self.xgboost_strategy.check_exits(shared_markets)
+                        for exit_info in xgb_exits:
+                            self.xgboost_strategy.execute_exit(
+                                exit_info, self.api, self.risk, live=not paper
+                            )
+                    except Exception as e:
+                        logger.debug(f"[XGBOOST-EXIT] Errore: {e}")
 
                 # ── 0.10. Abandoned Position Arb — DISABILITATO v12.5.3 ──
                 # Motivo: 0% WR, -$742 PnL, posizioni accumulate senza chiudersi
