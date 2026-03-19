@@ -19,6 +19,7 @@ REPOS=(
     "666ghj/MiroFish"
     "MiroMindAI/MiroThinker"
     "volcengine/OpenViking"
+    "holypolyfoundation/bs-p"
     "polymarket/polymarket-cli"
     "polymarket/py-clob-client"
     "polymarket/py-builder-signing-sdk"

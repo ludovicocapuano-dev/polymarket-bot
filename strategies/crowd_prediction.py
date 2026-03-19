@@ -61,6 +61,15 @@ BUDGET = 200.0           # $200 independent budget
 # Agent count: 4096 (hierarchical) or 50 (fast Delphi)
 AGENT_COUNT = 4096
 
+# v12.9: Niche market scanner (low-competition markets)
+NICHE_MIN_VOLUME = 1_000
+NICHE_MAX_VOLUME = 10_000
+NICHE_MIN_EDGE = 0.10     # 10% min edge for niche (compensates low liquidity)
+NICHE_MAX_MARKETS = 3
+
+# v12.9: Multi-seed temperatures for noise reduction
+MULTI_SEED_TEMPS = [0.8, 0.6, 0.9]
+
 # v12.8: Markets where crowd has NO informational edge — skip these
 # Internal corporate decisions, product release dates, things only insiders know
 CROWD_BLIND_KEYWORDS = [
