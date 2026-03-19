@@ -659,6 +659,34 @@ class RiskManager:
             f"→ cushion={cushion:.2f}"
         )
 
+        # v12.9: Regime-Conditional Kelly — adjust for volatility and correlation
+        try:
+            from utils.advanced_formulas import (
+                regime_conditional_kelly, estimate_portfolio_correlation
+            )
+            # Estimate current volatility from open positions
+            n_open = len(self.open_trades)
+            positions_for_corr = [{"strategy": t.strategy} for t in self.open_trades]
+            avg_corr = estimate_portfolio_correlation(positions_for_corr)
+            # Use recent daily vol estimate (simplified: base on strategy)
+            from utils.advanced_formulas import NORMAL_VOLATILITY
+            current_vol = NORMAL_VOLATILITY.get(strategy, 0.06)
+            # If we have daily pnl data, scale vol estimate
+            if self._daily_pnl < 0 and self.capital > 0:
+                realized_vol = abs(self._daily_pnl) / self.capital
+                current_vol = max(current_vol, realized_vol)
+
+            frac_before = frac
+            regime_factor = regime_conditional_kelly(1.0, current_vol, avg_corr, n_open, strategy)
+            frac *= regime_factor
+            if regime_factor < 0.95:
+                logger.debug(
+                    f"[REGIME-KELLY] {strategy}: vol={current_vol:.3f} corr={avg_corr:.2f} "
+                    f"n_pos={n_open} → factor={regime_factor:.2f} (frac {frac_before:.4f}→{frac:.4f})"
+                )
+        except Exception:
+            pass  # graceful degradation
+
         # v12.0.1: Grossman-Zhou continuous drawdown scaling (replaces v11.0 3-tier CPPI)
         # Linear ramp: at 0% loss → 1.0, at 100% loss → 0.0
         # Harvey/Rattray graduated steps as floor: 50%→0.75, 75%→0.50, 100%→0.0
@@ -874,6 +902,16 @@ class RiskManager:
                 # Low-price positions (BUY_YES): take profit on larger % move
                 if pnl_pct >= 0.15 and age_hours >= 1:  # 15% profit, held 1h+
                     return "PRICE_EXIT"
+
+        # v12.9: Edge decay exit — if edge has decayed below minimum, exit
+        if trade.edge > 0 and age_hours >= 2:
+            try:
+                from utils.advanced_formulas import decay_adjusted_edge
+                current_edge = decay_adjusted_edge(trade.edge, age_hours, trade.strategy)
+                if current_edge < 0.02:  # edge decayed below 2%
+                    return "EDGE_DECAY"
+            except Exception:
+                pass
 
         if age_hours >= barrier.max_holding_hours:
             return "TIME_EXIT"
