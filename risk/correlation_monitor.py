@@ -50,7 +50,7 @@ THEME_KEYWORDS = {
     ],
 }
 
-MAX_THEME_EXPOSURE_PCT = 0.40  # 40% del capitale
+MAX_THEME_EXPOSURE_PCT = 0.55  # 55% del capitale (alzato da 40% — weather bloccato)
 
 # ── Correlazioni stimate per tema (MIT Lecture 7: Abbott) ──
 # Intra-tema: posizioni nello stesso tema sono correlate
