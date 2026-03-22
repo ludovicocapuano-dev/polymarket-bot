@@ -39,7 +39,7 @@ POLYGON_RPC = POLYGON_RPCS[0]  # backward compat
 GAMMA_API = "https://gamma-api.polymarket.com"
 DATA_API = "https://data-api.polymarket.com"
 
-# ABI minimale per redeemPositions
+# ABI minimale per CTF redeemPositions (mercati standard)
 REDEEM_ABI = json.loads("""[{
     "constant": false,
     "inputs": [
@@ -51,6 +51,54 @@ REDEEM_ABI = json.loads("""[{
     "name": "redeemPositions",
     "outputs": [],
     "stateMutability": "nonpayable",
+    "type": "function"
+}]""")
+
+# v12.9.1: ABI NegRiskAdapter.redeemPositions — firma diversa dal CTF!
+# NRA.redeemPositions(bytes32 conditionId, uint256[] amounts)
+# Internamente: riceve i token via safeBatchTransferFrom, chiama CTF.redeemPositions
+# con wrapped collateral, poi unwrappa a USDC e restituisce al caller.
+NEG_RISK_REDEEM_ABI = json.loads("""[{
+    "constant": false,
+    "inputs": [
+        {"name": "_conditionId", "type": "bytes32"},
+        {"name": "_amounts", "type": "uint256[]"}
+    ],
+    "name": "redeemPositions",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+}]""")
+
+# v12.9.1: ABI ERC1155 setApprovalForAll + balanceOf — necessari per NegRisk redeem
+# Il NegRiskAdapter chiama safeBatchTransferFrom per prendere i token dal caller,
+# quindi il caller (Safe proxy) deve aver approvato il NRA come operator sul CTF.
+ERC1155_ABI = json.loads("""[{
+    "inputs": [
+        {"name": "operator", "type": "address"},
+        {"name": "approved", "type": "bool"}
+    ],
+    "name": "setApprovalForAll",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+}, {
+    "inputs": [
+        {"name": "account", "type": "address"},
+        {"name": "operator", "type": "address"}
+    ],
+    "name": "isApprovedForAll",
+    "outputs": [{"name": "", "type": "bool"}],
+    "stateMutability": "view",
+    "type": "function"
+}, {
+    "inputs": [
+        {"name": "_owner", "type": "address"},
+        {"name": "_id", "type": "uint256"}
+    ],
+    "name": "balanceOf",
+    "outputs": [{"name": "", "type": "uint256"}],
+    "stateMutability": "view",
     "type": "function"
 }]""")
 
@@ -152,6 +200,8 @@ class ResolvedPosition:
     outcome: str  # "YES" o "NO"
     won: bool
     neg_risk: bool
+    size: float = 0.0  # v12.9.1: quantita' token (dalla Data API) per NegRisk redeem
+    asset: str = ""  # v12.9.1: token_id ERC1155 per NegRisk balance query
 
 
 class Redeemer:
@@ -198,6 +248,17 @@ class Redeemer:
                 address=Web3.to_checksum_address(USDC_ADDRESS),
                 abi=ERC20_ABI,
             )
+            # v12.9.1: NegRiskAdapter contract per redeem NegRisk positions
+            self._nra = self._w3.eth.contract(
+                address=Web3.to_checksum_address(NEG_RISK_ADAPTER),
+                abi=NEG_RISK_REDEEM_ABI,
+            )
+            # v12.9.1: CTF come ERC1155 per setApprovalForAll + balanceOf
+            self._ctf_1155 = self._w3.eth.contract(
+                address=Web3.to_checksum_address(CTF_ADDRESS),
+                abi=ERC1155_ABI,
+            )
+            self._nra_approved = False  # cache: CTF approved NRA as operator?
             self._available = True
             logger.info(
                 f"[REDEEM] Inizializzato — proxy={self._proxy_address[:10]}... "
@@ -361,7 +422,9 @@ class Redeemer:
                     question=pos.get("title", pos.get("question", "?")),
                     outcome=outcome or "redeemable",
                     won=won,
-                    neg_risk=pos.get("negRisk", pos.get("neg_risk", False)),
+                    neg_risk=pos.get("negRisk", pos.get("neg_risk", pos.get("negativeRisk", False))),
+                    size=float(pos.get("size", 0) or 0),
+                    asset=str(pos.get("asset", "") or ""),
                 ))
 
         except Exception as e:
@@ -421,13 +484,19 @@ class Redeemer:
         return resolved
 
     def _redeem_position(self, pos: ResolvedPosition) -> bool | None:
-        """Riscuote una posizione chiamando redeemPositions via Safe proxy."""
+        """
+        Riscuote una posizione chiamando redeemPositions via Safe proxy.
+
+        v12.9.1: Per NegRisk, usa NegRiskAdapter.redeemPositions(conditionId, amounts)
+        che ha firma diversa da CTF.redeemPositions. Il NRA internamente:
+        1. Prende i token dal caller via safeBatchTransferFrom (serve setApprovalForAll)
+        2. Chiama CTF.redeemPositions con wrapped collateral
+        3. Unwrappa il wrapped collateral a USDC e lo restituisce al caller
+        """
         try:
             from web3 import Web3
 
-            # Encode la chiamata redeemPositions
-            # v9.2.3: Strict validation (ispirato da Polymarket CLI B256 type)
-            # MAI pad silenzioso — un conditionId troncato indica bug nella fonte dati
+            # Validate conditionId
             condition_id_hex = pos.condition_id.replace("0x", "")
             if len(condition_id_hex) != 64 or not all(c in '0123456789abcdefABCDEF' for c in condition_id_hex):
                 logger.error(
@@ -436,12 +505,8 @@ class Redeemer:
                 )
                 return False
             condition_id_bytes = bytes.fromhex(condition_id_hex)
-            collateral = Web3.to_checksum_address(USDC_ADDRESS)
 
-            # v10.2.1: Pre-check on-chain — verifica che la condizione sia risolta
-            # sul CTF PRIMA di tentare il redeem. La Data API può dire "redeemable"
-            # prima che reportPayouts sia minato on-chain (~24s di race condition).
-            # Se payoutDenominator == 0, la condizione non è ancora risolta on-chain.
+            # v10.2.1: Pre-check on-chain — payoutDenominator
             try:
                 payout_denom_abi = [{
                     "constant": True,
@@ -461,21 +526,18 @@ class Redeemer:
                         f"[REDEEM] Condizione {pos.condition_id[:16]}... non ancora "
                         f"risolta on-chain (payoutDenominator=0), riprovo al prossimo ciclo"
                     )
-                    return None  # None = non ancora risolvibile, ritenta
+                    return None
             except Exception as e:
                 logger.warning(f"[REDEEM] Pre-check payoutDenominator fallito: {e}")
-                # Procedi comunque — il gas estimation catturerà eventuali errori
 
-            # v10.0.1: Sempre via CTF direttamente (anche neg_risk).
-            # Il Safe proxy ha un bug ABI (GS013) con certi indirizzi target
-            # (es. NegRiskAdapter). CTF.redeemPositions gestisce tutte le
-            # condizioni, incluse neg_risk — verificato via simulazione on-chain.
+            # ── v12.9.1: NegRisk usa NegRiskAdapter.redeemPositions ──
+            if pos.neg_risk:
+                return self._redeem_negrisk_position(pos, condition_id_bytes)
+
+            # ── Standard CTF redeem (non-NegRisk) ──
+            collateral = Web3.to_checksum_address(USDC_ADDRESS)
             target = Web3.to_checksum_address(CTF_ADDRESS)
 
-            # Encode dei dati della chiamata
-            # web3.py v6+: encode_abi (snake_case), v5: encodeABI (camelCase)
-            # web3.py v7: encode_abi(fn_name, args=[...])  — positional
-            # web3.py v5: encodeABI(fn_name=..., args=[...]) — keyword
             redeem_args = [
                 collateral,
                 HASH_ZERO,
@@ -487,12 +549,174 @@ class Redeemer:
             else:
                 redeem_data = self._ctf.encodeABI(fn_name="redeemPositions", args=redeem_args)
 
-            # Esegui attraverso il Safe proxy (con retry su revert)
             return self._exec_safe_transaction(target, redeem_data)
 
         except Exception as e:
             logger.error(f"[REDEEM] Errore redeem: {e}")
             return False
+
+    def _redeem_negrisk_position(self, pos: ResolvedPosition, condition_id_bytes: bytes) -> bool | None:
+        """
+        v12.9.1: Redeem NegRisk positions via NegRiskAdapter.
+
+        Il NegRiskAdapter.redeemPositions(bytes32 conditionId, uint256[] amounts):
+        - amounts[0] = quantita' YES tokens da redimere
+        - amounts[1] = quantita' NO tokens da redimere
+        - Il NRA chiama safeBatchTransferFrom sul CTF per prendere i token,
+          quindi il Safe proxy deve aver approvato il NRA come operator sul CTF.
+
+        Per trovare le amounts corrette:
+        1. Usa il campo 'size' dalla Data API (float, va convertito in uint256 * 1e6)
+        2. Fallback: query on-chain balanceOf sul CTF per i position IDs
+
+        Prerequisito: CTF.setApprovalForAll(NRA, true) dal Safe proxy.
+        """
+        try:
+            from web3 import Web3
+
+            proxy_cs = Web3.to_checksum_address(self._proxy_address)
+            nra_cs = Web3.to_checksum_address(NEG_RISK_ADAPTER)
+
+            # ── Step 1: Assicura che il Safe proxy abbia approvato NRA su CTF ──
+            if not self._nra_approved:
+                try:
+                    is_approved = self._ctf_1155.functions.isApprovedForAll(
+                        proxy_cs, nra_cs
+                    ).call()
+                    if is_approved:
+                        self._nra_approved = True
+                        logger.info("[REDEEM-NR] CTF gia' approvato per NegRiskAdapter")
+                    else:
+                        logger.info("[REDEEM-NR] CTF NON approvato per NRA, invio setApprovalForAll...")
+                        approve_ok = self._ensure_nra_approval()
+                        if not approve_ok:
+                            logger.error("[REDEEM-NR] setApprovalForAll fallito, impossibile redeem NegRisk")
+                            return False
+                        self._nra_approved = True
+                except Exception as e:
+                    logger.warning(f"[REDEEM-NR] Check isApprovedForAll fallito: {e}, tento approval...")
+                    approve_ok = self._ensure_nra_approval()
+                    if not approve_ok:
+                        return False
+                    self._nra_approved = True
+
+            # ── Step 2: Determina amounts (YES, NO) per il redeem ──
+            # La Data API ci da' 'size' per la posizione che abbiamo (YES o NO).
+            # Per NRA.redeemPositions, amounts = [yes_amount, no_amount].
+            # Se abbiamo solo NO tokens, amounts = [0, no_amount_raw].
+            # Se abbiamo solo YES tokens, amounts = [yes_amount_raw, 0].
+            # Usiamo size dalla Data API, convertita in unita' raw (6 decimali USDC).
+            size_raw = int(pos.size * 1_000_000) if pos.size > 0 else 0
+
+            if size_raw == 0:
+                # Fallback: prova a query on-chain balanceOf per i token
+                logger.info(f"[REDEEM-NR] size=0 dalla Data API, provo query on-chain...")
+                size_raw = self._query_negrisk_balance(pos, proxy_cs)
+                if size_raw == 0:
+                    logger.warning(
+                        f"[REDEEM-NR] Balance 0 on-chain per {pos.condition_id[:16]}... "
+                        f"(token gia' riscosso o bruciato?)"
+                    )
+                    return False
+
+            # Determina se la posizione e' YES o NO dal campo outcome/side
+            outcome_lower = pos.outcome.lower().strip() if pos.outcome else ""
+            is_yes = outcome_lower in ("yes", "y", "1", "true")
+            is_no = outcome_lower in ("no", "n", "0", "false")
+
+            if is_yes:
+                amounts = [size_raw, 0]
+            elif is_no:
+                amounts = [0, size_raw]
+            else:
+                # Se non sappiamo il lato, prova entrambi con la size su entrambi
+                # (il contratto bruciera' solo quello che abbiamo)
+                amounts = [size_raw, size_raw]
+                logger.info(
+                    f"[REDEEM-NR] Outcome sconosciuto '{pos.outcome}', "
+                    f"provo amounts=[{size_raw}, {size_raw}]"
+                )
+
+            logger.info(
+                f"[REDEEM-NR] Redeem NegRisk: cond={pos.condition_id[:16]}... "
+                f"amounts=[{amounts[0]}, {amounts[1]}] "
+                f"(size={pos.size:.6f}, outcome={pos.outcome})"
+            )
+
+            # ── Step 3: Encode e invio NRA.redeemPositions(conditionId, amounts) ──
+            target = Web3.to_checksum_address(NEG_RISK_ADAPTER)
+            if hasattr(self._nra, 'encode_abi'):
+                redeem_data = self._nra.encode_abi(
+                    "redeemPositions", [condition_id_bytes, amounts]
+                )
+            else:
+                redeem_data = self._nra.encodeABI(
+                    fn_name="redeemPositions", args=[condition_id_bytes, amounts]
+                )
+
+            return self._exec_safe_transaction(target, redeem_data)
+
+        except Exception as e:
+            logger.error(f"[REDEEM-NR] Errore redeem NegRisk: {e}")
+            return False
+
+    def _ensure_nra_approval(self) -> bool:
+        """
+        v12.9.1: Invia CTF.setApprovalForAll(NRA, true) via Safe proxy.
+        Necessario perche' NRA.redeemPositions chiama safeBatchTransferFrom
+        per prendere i conditional tokens dal caller.
+        """
+        try:
+            from web3 import Web3
+
+            nra_cs = Web3.to_checksum_address(NEG_RISK_ADAPTER)
+
+            if hasattr(self._ctf_1155, 'encode_abi'):
+                approve_data = self._ctf_1155.encode_abi(
+                    "setApprovalForAll", [nra_cs, True]
+                )
+            else:
+                approve_data = self._ctf_1155.encodeABI(
+                    fn_name="setApprovalForAll", args=[nra_cs, True]
+                )
+
+            logger.info(f"[REDEEM-NR] Invio setApprovalForAll(NRA) via Safe...")
+            success = self._exec_safe_transaction(
+                to=CTF_ADDRESS,
+                data=approve_data,
+            )
+            if success:
+                logger.info("[REDEEM-NR] setApprovalForAll(NRA) confermato!")
+            else:
+                logger.error("[REDEEM-NR] setApprovalForAll(NRA) fallito!")
+            return success
+
+        except Exception as e:
+            logger.error(f"[REDEEM-NR] Errore setApprovalForAll: {e}")
+            return False
+
+    def _query_negrisk_balance(self, pos: ResolvedPosition, proxy_cs: str) -> int:
+        """
+        v12.9.1: Query on-chain per il balance ERC1155 di un token NegRisk.
+        Usa il campo 'asset' (token_id) dalla Data API se disponibile.
+        """
+        try:
+            if pos.asset:
+                # asset e' il token_id ERC1155 (uint256 come stringa)
+                token_id = int(pos.asset) if pos.asset.isdigit() else int(pos.asset, 16)
+                balance = self._ctf_1155.functions.balanceOf(proxy_cs, token_id).call()
+                if balance > 0:
+                    logger.info(
+                        f"[REDEEM-NR] Balance on-chain per token {pos.asset[:16]}...: {balance}"
+                    )
+                    return balance
+
+            logger.info(f"[REDEEM-NR] Nessun asset/token_id disponibile per balance query")
+            return 0
+
+        except Exception as e:
+            logger.warning(f"[REDEEM-NR] Errore query balance on-chain: {e}")
+            return 0
 
     def _exec_safe_transaction(self, to: str, data: str) -> bool:
         """
@@ -655,15 +879,17 @@ class Redeemer:
                 continue
 
             title = pos.get("title", "") or pos.get("question", "") or "?"
-            neg_risk = pos.get("negRisk", pos.get("neg_risk", False))
+            neg_risk = pos.get("negRisk", pos.get("neg_risk", pos.get("negativeRisk", False)))
 
             rpos = ResolvedPosition(
                 market_id=pos.get("market_slug", pos.get("slug", cid[:16])),
                 condition_id=cid,
                 question=title,
-                outcome="redeemable",
+                outcome=pos.get("outcome", "redeemable"),
                 won=True,  # redeemable = possiamo riscuotere
                 neg_risk=neg_risk,
+                size=float(pos.get("size", 0) or 0),
+                asset=str(pos.get("asset", "") or ""),
             )
 
             stats["attempted"] += 1
@@ -790,6 +1016,15 @@ class Redeemer:
                         self._usdc = new_w3.eth.contract(
                             address=Web3.to_checksum_address(USDC_ADDRESS),
                             abi=ERC20_ABI,
+                        )
+                        # v12.9.1: Ricostruisci anche NRA e CTF ERC1155
+                        self._nra = new_w3.eth.contract(
+                            address=Web3.to_checksum_address(NEG_RISK_ADAPTER),
+                            abi=NEG_RISK_REDEEM_ABI,
+                        )
+                        self._ctf_1155 = new_w3.eth.contract(
+                            address=Web3.to_checksum_address(CTF_ADDRESS),
+                            abi=ERC1155_ABI,
                         )
                         logger.info(f"[REDEEM] Switchato a RPC: {rpc}")
                         return
