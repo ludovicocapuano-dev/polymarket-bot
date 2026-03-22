@@ -64,7 +64,7 @@ def _market_efficiency(market: Market) -> float:
     return spread_score * 0.4 + liq_score * 0.3 + vol_score * 0.3
 
 STRATEGY_NAME = "weather"
-MAX_WEATHER_BET = 55.0  # v12.8: rialzato da $40 — auto-compound scala, periodo d'oro usava $60-80
+MAX_WEATHER_BET = 66.0  # v12.9.1: AutoOptimizer suggerisce $66 (era $55)
 
 # v11.1: City performance tiers basati su dati reali (275 trade, 17 giorni)
 # Tier 1: WR >= 75%, volume alto → full budget
@@ -72,7 +72,7 @@ MAX_WEATHER_BET = 55.0  # v12.8: rialzato da $40 — auto-compound scala, period
 # Tier 3: WR < 50% → BLACKLIST (perdono soldi)
 CITY_BLACKLIST_DEFAULT = {"london", "paris"}  # 35% WR combinato, fallback statico
 CITY_TIER2_DEFAULT = {"miami", "buenos aires", "ankara"}  # WR 50-58%, fallback
-CITY_TIER2_MAX_BET = 35.0  # v12.1: cap ridotto per città marginali
+CITY_TIER2_MAX_BET = 17.0  # v12.9.1: AutoOptimizer riduce da $35 — tier2 cities hanno edge basso
 
 # v12.0.5: Dynamic city blacklist — auto-generated from recent trade WR
 _dynamic_city_blacklist: set[str] = set(CITY_BLACKLIST_DEFAULT)
@@ -561,7 +561,7 @@ class WeatherStrategy:
         # High-price guard — solo per BUY_YES: prezzi alti richiedono multi-fonte.
         # BUY_NO single-source a prezzo alto ha 100% WR storico (6/6 WIN),
         # il prezzo alto e' gia' protezione (payoff basso = perdita contenuta).
-        if best_side == "YES" and buy_price > 0.65 and n_sources < 2:
+        if best_side == "YES" and buy_price > 0.45 and n_sources < 3:  # v12.9.1: AutoOptimizer stringe (era 0.65/2)
             logger.debug(
                 f"[WEATHER-SKIP] single-source high-price: {city} {label} "
                 f"price={buy_price:.3f} sources={n_sources}"
@@ -601,9 +601,9 @@ class WeatherStrategy:
         # Same-day BUY_NO a prezzo alto (0.80) ha 100% WR storico: payoff
         # basso (0.2x) ma quasi certo. Rilassare soglia per non bloccarli.
         if days_ahead == 0 and best_side == "NO":
-            min_payoff = 0.15
+            min_payoff = 0.20  # v12.9.1: AutoOptimizer alza da 0.15
         else:
-            min_payoff = 0.25 + days_ahead * 0.08
+            min_payoff = 0.34 + days_ahead * 0.08  # v12.9.1: AutoOptimizer alza da 0.25 → 0.34
         payoff_ratio = (1.0 / buy_price) - 1.0 if buy_price > 0 else 0
         if payoff_ratio < min_payoff:
             logger.debug(
