@@ -340,21 +340,18 @@ class MultiStrategyBot:
         if nxt:
             logger.info(f"[ECON-SNIPER] Next release: {nxt.name} on {nxt.date.strftime('%Y-%m-%d %H:%M UTC')}")
 
-        # ── v12.6: Crowd Sport Prediction (Delphi Multi-Agent Simulation) ──
-        self.crowd_sport = CrowdSportStrategy(api=self.api, risk=self.risk)
-        self.risk.set_strategy_budget("crowd_sport", 300.0)
-        logger.info("[CROWD-SPORT] Strategy initialized (Delphi 10-group, 3-round, budget=$300)")
+        # ── v12.6: Crowd Sport — DISABILITATO v12.9.1 (no edge, LLM consensus ≠ informazione) ──
+        # self.crowd_sport = CrowdSportStrategy(api=self.api, risk=self.risk)
+        # self.risk.set_strategy_budget("crowd_sport", 300.0)
+        logger.info("[CROWD-SPORT] DISABILITATO v12.9.1 — capitale riallocato a weather")
 
-        # ── v12.7: Crowd Prediction — Multi-Domain Delphi (politics, crypto, geopolitics, entertainment) ──
-        self.crowd_prediction = CrowdPredictionStrategy(
-            api=self.api, risk=self.risk,
-            domains=["politics", "crypto", "geopolitics", "entertainment"],
-        )
-        self.risk.set_strategy_budget("crowd_prediction", 200.0)
-        logger.info(
-            "[CROWD-PRED] Multi-domain strategy initialized "
-            "(politics/crypto/geopolitics/entertainment, DeepSeek, budget=$200)"
-        )
+        # ── v12.7: Crowd Prediction — DISABILITATO v12.9.1 (no edge, costa $0.08/mercato DeepSeek) ──
+        # self.crowd_prediction = CrowdPredictionStrategy(
+        #     api=self.api, risk=self.risk,
+        #     domains=["politics", "crypto", "geopolitics", "entertainment"],
+        # )
+        # self.risk.set_strategy_budget("crowd_prediction", 200.0)
+        logger.info("[CROWD-PRED] DISABILITATO v12.9.1 — capitale riallocato a weather")
 
         # ── v10.8.4: Holding Rewards (4% APY) + Favorite-Longshot Bias ──
         self.holding_rewards = HoldingRewardsStrategy()
@@ -528,7 +525,7 @@ class MultiStrategyBot:
             f"Allocazione: WEATHER={self.config.allocation.weather}% "
             f"SNIPER={self.config.allocation.resolution_sniper}% "
             f"| Indipendenti: fav_longshot($35) negrisk($150) hold_rewards($35) "
-            f"market_making($25) econ_sniper($100) crowd_sport($50) crowd_pred($30)"
+            f"market_making($25) econ_sniper($100)"
         )
 
         # v12.5.2: Notify startup via Telegram — include independent strategies
@@ -748,30 +745,8 @@ class MultiStrategyBot:
                     if "release" not in str(e).lower():
                         logger.error(f"[ECON-SNIPER] Errore: {e}", exc_info=True)
 
-                # ── 0.8.7. Crowd Sport Prediction — Delphi (ogni 50 cicli ~25min) ──
-                if self._cycle % 50 == 7:  # offset to avoid overlap with other scans
-                    try:
-                        crowd_signals = self.crowd_sport.scan(shared_markets)
-                        if _can_trade and crowd_signals:
-                            for sig in crowd_signals[:3]:
-                                self.crowd_sport.execute(sig, self.api, self.risk, live=not paper)
-                    except Exception as e:
-                        logger.error(f"[CROWD-SPORT] Errore: {e}", exc_info=True)
-
-                # ── 0.8.8. Crowd Prediction — Multi-Domain Delphi (ogni 100 cicli ~50min, rotazione domini) ──
-                if self._cycle % 100 == 13:  # offset to avoid overlap
-                    try:
-                        # Rotate domains: cycle%400 determines which domain
-                        _domain_rotation = {0: "politics", 100: "crypto", 200: "geopolitics", 300: "entertainment"}
-                        _domain_key = (self._cycle % 400) - ((self._cycle % 400) % 100)
-                        _active_domain = _domain_rotation.get(_domain_key, "politics")
-                        logger.info(f"[CROWD-PRED] Scanning domain: {_active_domain}")
-                        crowd_pred_signals = self.crowd_prediction.scan_domain(_active_domain, shared_markets)
-                        if _can_trade and crowd_pred_signals:
-                            for sig in crowd_pred_signals[:3]:
-                                self.crowd_prediction.execute(sig, self.api, self.risk, live=not paper)
-                    except Exception as e:
-                        logger.error(f"[CROWD-PRED] Errore: {e}", exc_info=True)
+                # ── 0.8.7. Crowd Sport — DISABILITATO v12.9.1 ──
+                # ── 0.8.8. Crowd Prediction — DISABILITATO v12.9.1 ──
 
                 # ── 0.8.5. Market Making v2.0 (ogni 3 cicli ~90s) ──
                 if self._cycle % 3 == 0:
