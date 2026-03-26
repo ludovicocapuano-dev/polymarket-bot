@@ -64,14 +64,14 @@ def _market_efficiency(market: Market) -> float:
     return spread_score * 0.4 + liq_score * 0.3 + vol_score * 0.3
 
 STRATEGY_NAME = "weather"
-MAX_WEATHER_BET = 66.0  # v12.9.1: AutoOptimizer suggerisce $66 (era $55)
+MAX_WEATHER_BET = 35.0  # v12.10: ridotto da $66 — sizing golden era ($20-45) era profittevole, $50+ perde
 
 # v11.1: City performance tiers basati su dati reali (275 trade, 17 giorni)
 # Tier 1: WR >= 75%, volume alto → full budget
 # Tier 2: WR 57-74% → budget ridotto 60%
 # Tier 3: WR < 50% → BLACKLIST (perdono soldi)
-CITY_BLACKLIST_DEFAULT = {"london", "paris"}  # 35% WR combinato, fallback statico
-CITY_TIER2_DEFAULT = {"miami", "buenos aires", "ankara"}  # WR 50-58%, fallback
+CITY_BLACKLIST_DEFAULT = {"london", "paris", "houston", "los angeles", "denver", "dallas"}  # v12.10: +4 citta spring-volatile (Houston 22%WR, LA 17%, Denver 29%, Dallas 33%)
+CITY_TIER2_DEFAULT = {"miami", "buenos aires", "ankara", "toronto", "nyc"}  # v12.10: +Toronto 25%WR, +NYC 40%WR
 CITY_TIER2_MAX_BET = 17.0  # v12.9.1: AutoOptimizer riduce da $35 — tier2 cities hanno edge basso
 
 # v12.0.5: Dynamic city blacklist — auto-generated from recent trade WR
@@ -377,21 +377,22 @@ class WeatherStrategy:
         # bucket_probability_in_unit gestisce la conversione F->C internamente
         forecast_prob = forecast.bucket_probability_in_unit(low, high, unit)
 
-        # v12.9 SUBTRACTION: sigma_filter and source_disagreement REMOVED
-        # Autoresearch experiment: "every feature removal improved performance"
-        # These filters were added in v12.7 AFTER the golden era (+$1,908/12d)
-        # and coincided with the bot stopping to trade profitably.
-        # Sigma and disagreement are still logged for monitoring but don't block trades.
+        # v12.10: sigma_filter and source_disagreement RE-ENABLED
+        # v12.9 li aveva rimossi ("every feature removal improved performance" sul backtest golden era)
+        # Ma i dati reali Mar 23-26 mostrano: senza filtri, bot entra su bucket con sigma 5-6°F
+        # e perde 19 trade consecutivi. I filtri proteggono dai regimi ad alta incertezza (primavera).
         forecast_sigma = forecast.uncertainty_in_unit(unit)
         sigma_f = forecast_sigma if unit == "F" else forecast_sigma * 1.8
         if sigma_f > 3.0:
-            logger.debug(f"[WEATHER-NOTE] high sigma {sigma_f:.1f}°F (not blocking)")
-        # Source disagreement: logged but not blocking
+            logger.info(f"[WEATHER-SKIP] high sigma {sigma_f:.1f}°F > 3.0 — BLOCKING (v12.10)")
+            return None
+        # Source disagreement: BLOCKING if sources diverge > 2°F
         if hasattr(forecast, 'sources') and len(forecast.sources) >= 2:
             source_temps_unit = [c_to_f(s.temp) if unit == "F" else s.temp for s in forecast.sources]
             source_spread_f = (max(source_temps_unit) - min(source_temps_unit)) * (1 if unit == "F" else 1.8)
             if source_spread_f > 2.0:
-                logger.debug(f"[WEATHER-NOTE] source spread {source_spread_f:.1f}°F (not blocking)")
+                logger.info(f"[WEATHER-SKIP] source spread {source_spread_f:.1f}°F > 2.0 — BLOCKING (v12.10)")
+                return None
 
         # v5.0: Boost same-day con osservazioni Wethr.net
         # Se e' oggi e abbiamo la temperatura corrente, affiniamo la stima
@@ -453,11 +454,13 @@ class WeatherStrategy:
         effective_bw = min(bucket_width, 20.0)  # cap at 20 degrees for edge calc
         if effective_bw <= 0:
             effective_bw = 1.0
-        # v12.9 SUBTRACTION: uncertainty-adjusted edge REMOVED
-        # Was shrinking our probability toward market — but we WANT to disagree with market!
-        # Golden era didn't have this. "Most extra logic introduces noise."
+        # v12.10: uncertainty-adjusted edge RE-ENABLED
+        # v12.9 lo aveva rimosso. Ma senza adjustment, il bot entra su bucket dove
+        # sigma copre l'intero range (es. bucket 2°F, sigma 5°F = coin flip).
+        # Shrink conservativo: sposta forecast_prob verso market_prob proporzionalmente a sigma.
         sigma_penalty = forecast_sigma ** 2 / (effective_bw ** 2 + forecast_sigma ** 2)
-        adj_forecast_prob = forecast_prob  # USE RAW FORECAST, not adjusted
+        market_prob = price_yes  # market's estimate of P(YES)
+        adj_forecast_prob = forecast_prob * (1.0 - sigma_penalty) + market_prob * sigma_penalty
 
         edge_yes = adj_forecast_prob - price_yes - fee
         edge_no = (1.0 - adj_forecast_prob) - price_no - fee
@@ -478,12 +481,17 @@ class WeatherStrategy:
         # confidence inventata: sigma nel modello Phi(bucket) gia' cattura
         # l'incertezza. Serve solo una soglia di edge minima crescente.
         days_ahead = self._days_until(date)
-        if days_ahead == 0:
-            effective_min_edge = 0.05   # v12.9 SUBTRACTION: back to 5% — golden era level
-        elif days_ahead == 1:
-            effective_min_edge = 0.12   # +1d: same as golden era
-        else:
-            effective_min_edge = 0.20   # +2d: high uncertainty
+        # v12.10: BLOCCO same-day (17% WR, -$595) e +1d (39% WR, -$367)
+        # Solo +2d (67% WR, +$122) e +3d (100% WR, +$72) sono profittevoli.
+        # Il mercato same-day/+1d ha gia' prezzato il meteo reale — no edge informativo.
+        if days_ahead <= 1:
+            logger.debug(
+                f"[WEATHER-SKIP] horizon too short: {city} {label} "
+                f"days_ahead={days_ahead} (min 2 richiesto, v12.10)"
+            )
+            return None
+        # +2d+: unico orizzonte profittevole
+        effective_min_edge = 0.20
 
         # Market efficiency: mercati efficienti (alta liquidita', spread
         # stretto) hanno bisogno di edge piu' alta per giustificare il trade.
@@ -909,15 +917,15 @@ class WeatherStrategy:
                 f"-> size=${size:.2f}"
             )
 
-        # v12.9 SUBTRACTION: high-price penalty REMOVED
-        # "Every feature removal improved performance" — golden era had no penalty
-        # The Kelly criterion already accounts for price/payoff asymmetry
-        if False and price > 0.70:  # DISABLED
+        # v12.10: high-price penalty RE-ENABLED
+        # A price 0.80+, payoff è solo 0.25x ma loss è -$size. 29 delle 42 perdite
+        # weather erano su prezzi 0.70-0.85. Penalty riduce sizing su queste zone.
+        if price > 0.70:
             high_price_penalty = max(0.50, 1.0 - (price - 0.70) * 2.0)
             if high_price_penalty < 1.0:
                 old_size = size
                 size *= high_price_penalty
-                logger.debug(
+                logger.info(
                     f"[WEATHER] high-price penalty: price={price:.3f} "
                     f"penalty={high_price_penalty:.2f} size ${old_size:.2f}→${size:.2f}"
                 )

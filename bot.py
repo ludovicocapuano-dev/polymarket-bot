@@ -2262,20 +2262,21 @@ class MultiStrategyBot:
                 "max_inventory_per_side": "MAX_INVENTORY_PER_SIDE",
                 "max_concurrent_markets": "MAX_CONCURRENT_MARKETS",
             }),
-            "crowd_sport": (self.crowd_sport, {
+            # v12.10: crowd_sport e crowd_prediction disabilitati — skip se non inizializzati
+            **({"crowd_sport": (self.crowd_sport, {
                 "min_edge": "MIN_EDGE",
                 "max_bet": "MAX_BET",
                 "kelly_fraction": "KELLY_FRACTION",
                 "min_volume": "MIN_VOLUME",
                 "max_markets_per_scan": "MAX_MARKETS_PER_SCAN",
-            }),
-            "crowd_prediction": (self.crowd_prediction, {
+            })} if hasattr(self, 'crowd_sport') else {}),
+            **({"crowd_prediction": (self.crowd_prediction, {
                 "min_edge": "MIN_EDGE",
                 "max_bet": "MAX_BET",
                 "kelly_fraction": "KELLY_FRACTION",
                 "min_volume": "MIN_VOLUME",
                 "max_markets_per_scan": "MAX_MARKETS_PER_SCAN",
-            }),
+            })} if hasattr(self, 'crowd_prediction') else {}),
         }
 
         for strat_name, (strat_obj, param_map) in strategy_map.items():
