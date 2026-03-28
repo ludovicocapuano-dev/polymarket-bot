@@ -40,11 +40,13 @@ PROPOSED_YES = 1_000_000_000_000_000_000   # 1e18 = YES
 PROPOSED_NO = 0                             # 0 = NO
 PROPOSED_UNKNOWN = 500_000_000_000_000_000  # 0.5e18 = UNKNOWN
 
-# Polygon RPC endpoints (pubblici)
+# Polygon RPC endpoints (Alchemy primary + pubblici fallback)
+import os as _os
+_alchemy_key = _os.getenv("ALCHEMY_POLYGON_KEY", "")
 POLYGON_RPC_URLS = [
-    "https://polygon-rpc.com",
-    "https://rpc-mainnet.matic.quiknode.pro",
-    "https://polygon-mainnet.g.alchemy.com/v2/demo",
+    *([ f"https://polygon-mainnet.g.alchemy.com/v2/{_alchemy_key}"] if _alchemy_key else []),
+    "https://polygon-bor-rpc.publicnode.com",
+    "https://polygon.drpc.org",
 ]
 
 # Gamma API per mapping questionID → market

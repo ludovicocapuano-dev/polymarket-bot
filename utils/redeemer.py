@@ -29,7 +29,10 @@ USDC_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
 NEG_RISK_ADAPTER = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"
 # v5.9.3: Multiple RPC endpoints con fallback per evitare rate limit
 # v7.1.1: RPC aggiornati 2026-02-19 — i vecchi erano tutti morti
+import os as _os
+_alchemy_key = _os.getenv("ALCHEMY_POLYGON_KEY", "")
 POLYGON_RPCS = [
+    *([ f"https://polygon-mainnet.g.alchemy.com/v2/{_alchemy_key}"] if _alchemy_key else []),
     "https://polygon.gateway.tenderly.co",
     "https://polygon.drpc.org",
     "https://polygon-bor-rpc.publicnode.com",
