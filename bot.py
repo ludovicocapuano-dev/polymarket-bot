@@ -31,6 +31,7 @@ import requests
 from config import Config
 from utils.polymarket_api import PolymarketAPI
 from utils.binance_feed import BinanceFeed
+from utils.betfair_feed import BetfairFeed
 from utils.weather_feed import WeatherFeed
 from utils.arbbets_feed import ArbBetsFeed
 from utils.lunarcrush_feed import LunarCrushFeed
@@ -64,6 +65,7 @@ from strategies.negrisk_arb import NegRiskArbScanner
 from strategies.holding_rewards import HoldingRewardsStrategy
 from strategies.favorite_longshot import FavoriteLongshotStrategy
 from strategies.btc_latency import BTCLatencyStrategy
+from strategies.sport_latency import SportLatencyStrategy
 from strategies.abandoned_position import AbandonedPositionStrategy
 from strategies.cross_platform_arb import CrossPlatformArbStrategy
 from strategies.econ_release_sniper import EconReleaseSniper
@@ -196,6 +198,7 @@ class MultiStrategyBot:
         self.config = config
         self.api = PolymarketAPI(config.creds)
         self.binance = BinanceFeed()
+        self.betfair = BetfairFeed()  # v12.10: Betfair Exchange streaming for sport latency
         self.weather_feed = WeatherFeed()
         self.arbbets_feed = ArbBetsFeed()
         self.lunar_feed = LunarCrushFeed()
@@ -359,17 +362,24 @@ class MultiStrategyBot:
         # v10.8.6: BTC Latency Arb v3.0 — Multi-Mode (Sniper + OFI + Latency)
         self.btc_latency = BTCLatencyStrategy(
             api=self.api, risk=self.risk, binance=self.binance,
-            bankroll=500.0, base_size=25.0, max_size=150.0,
+            bankroll=500.0, base_size=15.0, max_size=25.0,  # v12.10: conservativo, $10-25/trade
         )
+
+        # v12.10: Sport Latency — Betfair Exchange odds for in-play sport arbitrage
+        self.sport_latency = SportLatencyStrategy(
+            api=self.api, risk=self.risk, betfair=self.betfair,
+            bankroll=500.0, max_size=100.0,
+        )
+        self.risk.set_strategy_budget("sport_latency", 500.0)
 
         # v12.9: MRO-Kelly — Mean Reversion Oscillator on BTC 5-min markets
         self.mro_kelly = MROKellyStrategy(
             api=self.api, risk=self.risk, binance=self.binance,
-            max_bet=20.0, min_bet=5.0, min_edge=0.06,
-            kelly_fraction=0.25, max_open_positions=3,
+            max_bet=35.0, min_bet=10.0, min_edge=0.05,  # v12.10: sizing alzato, edge abbassato
+            kelly_fraction=0.30, max_open_positions=5,   # v12.10: più posizioni
         )
-        self.risk.set_strategy_budget("mro_kelly", 200.0)  # test phase budget
-        logger.info("[MRO-KELLY] Strategy initialized (test phase: $5-20/trade, max 3 pos)")
+        self.risk.set_strategy_budget("mro_kelly", 500.0)  # v12.10: budget alzato da $200
+        logger.info("[MRO-KELLY] Strategy initialized (v12.10: $10-35/trade, max 5 pos, budget $500)")
 
         # v13.0: XGBoost Prediction Strategy — 330 boosted stumps, 7 features
         self.xgboost_strategy = XGBoostStrategy(
@@ -570,6 +580,7 @@ class MultiStrategyBot:
 
         await asyncio.gather(
             self.binance.connect(),
+            self.betfair.connect(),    # v12.10: Betfair Exchange streaming for sport latency
             self.uma_monitor.start(),  # v5.9.2: UMA resolution monitor
             self.ws_feed.connect(),    # v9.2: Polymarket WS price feed
             self.onchain_monitor.start(),  # v10.4: On-chain whale trade monitor
@@ -767,9 +778,21 @@ class MultiStrategyBot:
                     latency_signals = self.btc_latency.scan()
                     if latency_signals:
                         for sig in latency_signals[:2]:  # max 2 per ciclo
-                            await self.btc_latency.execute(sig, paper=True)  # SEMPRE paper
+                            await self.btc_latency.execute(sig, paper=paper)  # v12.10: live enabled
                 except Exception as e:
                     logger.warning(f"[BTC-LATENCY] Errore: {e}", exc_info=True)
+
+                # ── 0.9.0.1. Sport Latency Arb v1.0 (Betfair Exchange) ──
+                if hasattr(self, 'sport_latency'):
+                    try:
+                        sport_signals = self.sport_latency.scan(shared_markets=shared_markets)
+                        if sport_signals:
+                            for sig in sport_signals[:2]:  # max 2 per ciclo
+                                if not self._running:
+                                    break
+                                await self.sport_latency.execute(sig, paper=paper)
+                    except Exception as e:
+                        logger.warning(f"[SPORT-LATENCY] Errore: {e}", exc_info=True)
 
                 # ── 0.9.1. MRO-Kelly — Mean Reversion Oscillator BTC 5-min ──
                 try:
