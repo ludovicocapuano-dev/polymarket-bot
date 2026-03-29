@@ -32,7 +32,6 @@ from config import Config
 from utils.polymarket_api import PolymarketAPI
 from utils.binance_feed import BinanceFeed
 from utils.betfair_feed import BetfairFeed
-from utils.telegram_alert import TelegramAlert
 from utils.dashboard import Dashboard
 from utils.weather_feed import WeatherFeed
 from utils.arbbets_feed import ArbBetsFeed
@@ -201,7 +200,7 @@ class MultiStrategyBot:
         self.api = PolymarketAPI(config.creds)
         self.binance = BinanceFeed()
         self.betfair = BetfairFeed()  # v12.10: Betfair Exchange streaming for sport latency
-        self.telegram = TelegramAlert()  # v12.10: Telegram trade/drawdown/daily alerts
+        # self.telegram initialized later as TelegramNotifier (line ~510)
         self.dashboard = Dashboard()     # v12.10: Rich terminal dashboard (--dashboard flag)
         self.weather_feed = WeatherFeed()
         self.arbbets_feed = ArbBetsFeed()
@@ -585,7 +584,6 @@ class MultiStrategyBot:
         await asyncio.gather(
             self.binance.connect(),
             self.betfair.connect(),    # v12.10: Betfair Exchange streaming for sport latency
-            self.telegram.connect(),   # v12.10: Telegram alert queue drain loop
             self.dashboard.run(),      # v12.10: Rich terminal dashboard (noop if not TTY)
             self.uma_monitor.start(),  # v5.9.2: UMA resolution monitor
             self.ws_feed.connect(),    # v9.2: Polymarket WS price feed
@@ -786,7 +784,7 @@ class MultiStrategyBot:
                         for sig in latency_signals[:2]:  # max 2 per ciclo
                             traded = await self.btc_latency.execute(sig, paper=paper)  # v12.10: live enabled
                             if traded:
-                                self.telegram.trade_alert("btc_latency", f"BUY {sig.side}", sig.target_size, sig.market_price, sig.edge, sig.reasoning[:60], sig.kelly_fraction)
+                                asyncio.ensure_future(self.telegram.notify_trade("btc_latency", f"BUY {sig.side}", sig.reasoning[:60] if hasattr(sig, 'reasoning') else "BTC 5min", sig.target_size, sig.market_price, sig.edge, paper=paper))
                                 self.dashboard.record_trade("btc_latency", f"BUY {sig.side}", sig.target_size, sig.market_price, sig.edge, True, 0, "BTC 5min")
                 except Exception as e:
                     logger.warning(f"[BTC-LATENCY] Errore: {e}", exc_info=True)
@@ -812,7 +810,7 @@ class MultiStrategyBot:
                                 break
                             traded = await self.mro_kelly.execute(sig, paper=paper)
                             if traded:
-                                self.telegram.trade_alert("mro_kelly", f"BUY {sig.side}", sig.target_size, sig.market_price, sig.edge, sig.reasoning[:60] if hasattr(sig, 'reasoning') else "MRO", getattr(sig, 'kelly_fraction', 0))
+                                asyncio.ensure_future(self.telegram.notify_trade("mro_kelly", f"BUY {sig.side}", sig.reasoning[:60] if hasattr(sig, 'reasoning') else "BTC MRO", sig.target_size, sig.market_price, sig.edge, paper=paper))
                                 self.dashboard.record_trade("mro_kelly", f"BUY {sig.side}", sig.target_size, sig.market_price, sig.edge, True, 0, "BTC MRO")
                 except Exception as e:
                     logger.warning(f"[MRO-KELLY] Errore: {e}", exc_info=True)
@@ -2174,7 +2172,13 @@ class MultiStrategyBot:
             capital = s.get('capital', 1)
             dd_pct = abs(daily_pnl / capital * 100) if daily_pnl < 0 and capital > 0 else 0
             if dd_pct >= 10:
-                self.telegram.drawdown_alert(dd_pct, daily_pnl)
+                action = "HALT" if dd_pct >= 20 else "Monitoring"
+                asyncio.ensure_future(self.telegram.send(
+                    f"⚠️ <b>DRAWDOWN ALERT</b>\n\n"
+                    f"📉 Daily drawdown: -{dd_pct:.1f}%\n"
+                    f"💰 Daily PnL: ${daily_pnl:+.2f}\n"
+                    f"🔧 Action: {action}"
+                ))
 
     async def _log_position_health(self):
         """v10.4: Health check posizioni aperte."""
