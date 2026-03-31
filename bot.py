@@ -67,6 +67,7 @@ from strategies.holding_rewards import HoldingRewardsStrategy
 from strategies.favorite_longshot import FavoriteLongshotStrategy
 from strategies.btc_latency import BTCLatencyStrategy
 from strategies.sport_latency import SportLatencyStrategy
+from strategies.liquidity_vacuum import LiquidityVacuumStrategy
 from strategies.abandoned_position import AbandonedPositionStrategy
 from strategies.cross_platform_arb import CrossPlatformArbStrategy
 from strategies.econ_release_sniper import EconReleaseSniper
@@ -374,6 +375,12 @@ class MultiStrategyBot:
             bankroll=500.0, max_size=100.0,
         )
         self.risk.set_strategy_budget("sport_latency", 500.0)
+
+        # v12.10: Liquidity Vacuum Sniper — mean reversion on thin book spikes
+        self.liquidity_vacuum = LiquidityVacuumStrategy(
+            api=self.api, risk=self.risk,
+        )
+        self.risk.set_strategy_budget("liquidity_vacuum", 300.0)
 
         # v12.9: MRO-Kelly — Mean Reversion Oscillator on BTC 5-min markets
         self.mro_kelly = MROKellyStrategy(
@@ -800,6 +807,21 @@ class MultiStrategyBot:
                                 await self.sport_latency.execute(sig, paper=paper)
                     except Exception as e:
                         logger.warning(f"[SPORT-LATENCY] Errore: {e}", exc_info=True)
+
+                # ── 0.9.0.2. Liquidity Vacuum Sniper v1.0 ──
+                if hasattr(self, 'liquidity_vacuum'):
+                    try:
+                        vacuum_signals = self.liquidity_vacuum.scan(shared_markets=shared_markets)
+                        if vacuum_signals:
+                            for sig in vacuum_signals[:2]:
+                                if not self._running:
+                                    break
+                                traded = await self.liquidity_vacuum.execute(sig, paper=paper)
+                                if traded:
+                                    asyncio.ensure_future(self.telegram.notify_trade("liquidity_vacuum", f"BUY {sig.side}", sig.market.question[:60] if sig.market.question else "vacuum", sig.target_size, sig.current_price, sig.edge, paper=paper))
+                                    self.dashboard.record_trade("liquidity_vacuum", f"BUY {sig.side}", sig.target_size, sig.current_price, sig.edge, True, 0, "vacuum")
+                    except Exception as e:
+                        logger.warning(f"[VACUUM] Errore: {e}", exc_info=True)
 
                 # ── 0.9.1. MRO-Kelly — Mean Reversion Oscillator BTC 5-min ──
                 try:

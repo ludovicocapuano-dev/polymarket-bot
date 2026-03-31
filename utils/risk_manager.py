@@ -41,6 +41,8 @@ STRATEGY_BARRIERS: dict[str, TripleBarrier] = {
     "crowd_prediction":  TripleBarrier(0.20, 0.15, 336),    # v12.7: TP 20%, SL 15%, 14gg — multi-domain Delphi
     "mro_kelly":         TripleBarrier(0.10, 0.08, 0.5),    # v12.9: TP 10%, SL 8%, max hold 30min (5-min markets)
     "xgboost_pred":      TripleBarrier(0.50, 0.20, 336),    # v13.0: TP 50%, SL 20%, 14gg — high-conviction ML
+    "sport_latency":     TripleBarrier(0.20, 0.12, 48),     # v12.10: TP 20%, SL 12%, 2gg — sport events resolve in hours/days
+    "liquidity_vacuum":  TripleBarrier(0.08, 0.10, 1),      # v12.10: TP 8%, SL 10%, 1h — mean reversion is fast
 }
 
 DEFAULT_BARRIER = TripleBarrier(0.10, 0.10, 48)
