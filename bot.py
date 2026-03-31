@@ -542,10 +542,9 @@ class MultiStrategyBot:
         paper = self.config.paper_trading
         logger.info(f"Bot avviato in modalita' {'PAPER' if paper else 'LIVE'}")
         logger.info(
-            f"Allocazione: WEATHER={self.config.allocation.weather}% "
-            f"SNIPER={self.config.allocation.resolution_sniper}% "
-            f"| Indipendenti: fav_longshot($35) negrisk($150) hold_rewards($35) "
-            f"market_making($25) econ_sniper($100)"
+            f"Allocazione v12.10.5: WEATHER={self.config.allocation.weather}% "
+            f"| Indipendenti: mro_kelly($500) btc_latency($500) "
+            f"liquidity_vacuum($300) sport_latency($500)"
         )
 
         # v12.5.2: Notify startup via Telegram — include independent strategies
@@ -731,17 +730,10 @@ class MultiStrategyBot:
                 except Exception as e:
                     logger.error(f"[GABAGOOL] Errore strategia: {e}", exc_info=True)
 
-                # ── 0.5. Resolution Sniper + High-Prob Bonds ──
-                # v5.9.2: profitto quasi-certo da resolution sniping e bonding
-                try:
-                    sniper_signals = await self.sniper.scan(shared_markets=shared_markets)
-                    if _can_trade:
-                        for sig in sniper_signals[:5]:  # Max 5 (quasi risk-free)
-                            if not self._running:
-                                break
-                            await self.sniper.execute(sig, paper=paper)
-                except Exception as e:
-                    logger.error(f"[SNIPER] Errore strategia: {e}", exc_info=True)
+                # ── 0.5. Resolution Sniper — DISABILITATO v12.10.5 ──
+                # Postmortem: 0/3 WR, -$97. LLM confidence non calibrata.
+                # Perplexity "85% confident" ha perso tutti e 3 i trade.
+                pass
 
                 # ── 0.6. NegRisk Sum Arbitrage — PAUSED v12.9 ──
                 # 112K wallet study: specialize in 1-2 categories. Arb is noise.
@@ -757,32 +749,16 @@ class MultiStrategyBot:
                 # if self._cycle % 5 == 0: ...
                 pass
 
-                # ── 0.8.6. Economic Data Release Sniper (ogni ciclo) ──
-                try:
-                    econ_opps = self.econ_sniper.scan(shared_markets)
-                    if _can_trade and econ_opps:
-                        for opp in econ_opps[:5]:
-                            self.econ_sniper.execute_opportunity(opp, live=not paper)
-                except Exception as e:
-                    if "release" not in str(e).lower():
-                        logger.error(f"[ECON-SNIPER] Errore: {e}", exc_info=True)
+                # ── 0.8.6. Economic Data Release Sniper — DISABILITATO v12.10.5 ──
+                # Postmortem: 0 trade eseguiti, nessun edge provato. Focus su crypto.
+                pass
 
                 # ── 0.8.7. Crowd Sport — DISABILITATO v12.9.1 ──
                 # ── 0.8.8. Crowd Prediction — DISABILITATO v12.9.1 ──
 
-                # ── 0.8.5. Market Making v2.0 (ogni 3 cicli ~90s) ──
-                if self._cycle % 3 == 0:
-                    try:
-                        mm_opps = self.mm.scan(shared_markets)
-                        if _can_trade and mm_opps:
-                            for opp in mm_opps[:3]:
-                                self.mm.execute(opp, self.api, self.risk, live=not paper)
-                        # Check fills e cleanup stale orders (live only)
-                        if not paper:
-                            self.mm.check_fills(self.api, self.risk)
-                            self.mm.cleanup_stale_orders(self.api)
-                    except Exception as e:
-                        logger.error(f"[MM] Errore: {e}", exc_info=True)
+                # ── 0.8.5. Market Making v2.0 — DISABILITATO v12.10.5 ──
+                # Postmortem: richiede $2K+ budget, 0 trade eseguiti. Focus su crypto arb.
+                pass
 
                 # ── 0.9. BTC Latency Arb v3.0 (Multi-Mode) ──
                 try:
@@ -837,30 +813,9 @@ class MultiStrategyBot:
                 except Exception as e:
                     logger.warning(f"[MRO-KELLY] Errore: {e}", exc_info=True)
 
-                # ── 0.9.2. XGBoost Prediction Strategy (ogni 20 cicli ~10min) ──
-                if self._cycle % 20 == 11:  # offset to avoid overlap
-                    try:
-                        xgb_signals = self.xgboost_strategy.scan(shared_markets)
-                        if _can_trade and xgb_signals:
-                            for sig in xgb_signals[:5]:
-                                if not self._running:
-                                    break
-                                self.xgboost_strategy.execute(
-                                    sig, self.api, self.risk, live=not paper
-                                )
-                    except Exception as e:
-                        logger.warning(f"[XGBOOST] Errore: {e}", exc_info=True)
-
-                # ── 0.9.3. XGBoost Exit Check (ogni 10 cicli ~5min) ──
-                if self._cycle % 10 == 6:  # offset
-                    try:
-                        xgb_exits = self.xgboost_strategy.check_exits(shared_markets)
-                        for exit_info in xgb_exits:
-                            self.xgboost_strategy.execute_exit(
-                                exit_info, self.api, self.risk, live=not paper
-                            )
-                    except Exception as e:
-                        logger.debug(f"[XGBOOST-EXIT] Errore: {e}")
+                # ── 0.9.2. XGBoost — DISABILITATO v12.10.5 ──
+                # Postmortem: 0 trade, no trained model. Semplificare.
+                pass
 
                 # ── 0.10. Abandoned Position Arb — DISABILITATO v12.5.3 ──
                 # Motivo: 0% WR, -$742 PnL, posizioni accumulate senza chiudersi
@@ -868,15 +823,9 @@ class MultiStrategyBot:
                 # if _can_trade and aband_opps: ...
                 pass
 
-                # ── 0.11. Cross-Platform Arb (v12.0, ogni 10 cicli) ──
-                if self._cycle % 10 == 3:
-                    try:
-                        xplat_opps = self.cross_platform_arb.scan(shared_markets)
-                        if _can_trade and xplat_opps:
-                            for opp in xplat_opps[:2]:
-                                self.cross_platform_arb.execute(opp, self.api, self.risk, live=not paper)
-                    except Exception as e:
-                        logger.warning(f"[XPLAT-ARB] Errore: {e}", exc_info=True)
+                # ── 0.11. Cross-Platform Arb — DISABILITATO v12.10.5 ──
+                # Postmortem: 0 trade, Horizon SDK connesso ma mai tradato. Semplificare.
+                pass
 
                 # ── 1. Crypto 5-Min — DISABILITATO v7.0 (fees > edge, Kelly negativo) ──
 
