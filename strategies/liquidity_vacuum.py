@@ -190,8 +190,13 @@ class LiquidityVacuumStrategy:
         3. Spread is wide (>10 cents)
         4. No recent large volume (not an informed move)
         """
-        if len(snap.history) < 5:
-            return None  # need history for baseline
+        if len(snap.history) < 10:
+            return None  # need 10+ snapshots for reliable baseline (~5 min)
+
+        # depth=0 means "unknown" (no book fetched), not "thin book"
+        # Only detect vacuums when we have actual depth data
+        if snap.latest_bid_depth <= 0 and snap.latest_ask_depth <= 0:
+            return None  # no depth data — can't distinguish mechanical from informational
 
         if snap.baseline_yes <= 0 or snap.baseline_no <= 0:
             return None
@@ -224,14 +229,18 @@ class LiquidityVacuumStrategy:
         if baseline_price > 0 and abs_deviation / baseline_price < PRICE_SPIKE_THRESHOLD:
             return None
 
-        # Thin book check: total depth must be low
+        # Thin book check: total depth must be low AND known (>0)
         total_depth = snap.latest_bid_depth + snap.latest_ask_depth
         depth_usd = total_depth * current_price  # approximate $ depth
 
+        # Must have positive depth data to classify as thin
+        if total_depth <= 0:
+            return None  # no depth data — skip
+
         is_thin = (
             depth_usd < THIN_BOOK_DEPTH
-            or snap.latest_bid_depth < THIN_BOOK_QTY
-            or snap.latest_ask_depth < THIN_BOOK_QTY
+            and (snap.latest_bid_depth < THIN_BOOK_QTY
+                 or snap.latest_ask_depth < THIN_BOOK_QTY)
         )
 
         if not is_thin:
@@ -270,6 +279,11 @@ class LiquidityVacuumStrategy:
 
         if buy_price <= 0.05 or buy_price >= 0.95:
             return None  # extreme prices — too risky
+
+        # Sanity: edge > 50% is almost certainly noise, not a real vacuum
+        edge = expected_reversion / buy_price if buy_price > 0 else 0
+        if edge > 0.50:
+            return None  # unrealistic edge — skip
 
         # Edge = expected reversion / buy price
         edge = expected_reversion / buy_price if buy_price > 0 else 0
