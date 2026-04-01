@@ -550,41 +550,17 @@ class MultiStrategyBot:
             f"liquidity_vacuum($300) sport_latency($500)"
         )
 
-        # v12.5.2: Notify startup via Telegram — include independent strategies
-        active_strats = [
-            f"{name} ({pct}%)" for name, pct in [
-                ("weather", self.config.allocation.weather),
-                ("resolution_sniper", self.config.allocation.resolution_sniper),
-                ("event_driven", self.config.allocation.event_driven),
-                ("high_prob_bond", self.config.allocation.high_prob_bond),
-                ("whale_copy", self.config.allocation.whale_copy),
-            ] if pct > 0
+        # v12.10.8: Notify startup via Telegram — simplified strategy list
+        all_strats = [
+            f"mro_kelly (${self.mro_kelly.max_bet:.0f}/trade, budget $500)",
+            f"btc_latency (${self.btc_latency.max_size:.0f}/trade, budget $1000)",
+            f"liquidity_vacuum ($50/trade, budget $300)",
+            f"weather (difensivo, solo +2d+ sigma<3°F)",
+            f"sport_latency ({'attivo' if not self.betfair._disabled else 'attende Betfair'})",
         ]
-        # Independent strategies (no % allocation, own budget)
-        independent_strats = []
-        if hasattr(self, 'favorite_longshot'):
-            independent_strats.append("favorite_longshot ($35/trade)")
-        if hasattr(self, 'negrisk_arb'):
-            independent_strats.append("negrisk_arb ($150 max)")
-        if hasattr(self, 'holding_rewards'):
-            independent_strats.append("holding_rewards ($35/mkt)")
-        if hasattr(self, 'mm'):
-            independent_strats.append("market_making ($25/ordine)")
-        if hasattr(self, 'crowd_sport'):
-            independent_strats.append("crowd_sport ($50/trade, Delphi)")
-        if hasattr(self, 'crowd_prediction'):
-            independent_strats.append("crowd_prediction ($30/trade, multi-domain Delphi)")
-        if hasattr(self, 'econ_sniper'):
-            nxt = self.econ_sniper.next_release()
-            econ_label = f"econ_sniper (next: {nxt.name} {nxt.date.strftime('%d/%m')})" if nxt else "econ_sniper"
-            independent_strats.append(econ_label)
-        if hasattr(self, 'mro_kelly'):
-            independent_strats.append("mro_kelly ($5-20/trade, MRO test)")
-
-        all_strats = active_strats + [f"{s} (indip.)" for s in independent_strats]
         await self.telegram.notify_startup(
             mode="PAPER" if paper else "LIVE",
-            capital=self.config.risk.total_capital,
+            capital=self.risk.capital,
             strategies=all_strats,
         )
 
