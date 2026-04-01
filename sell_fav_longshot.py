@@ -39,7 +39,7 @@ def main():
     with open("logs/open_positions.json", "r") as f:
         positions = json.load(f)
 
-    EXIT_STRATEGIES = {"crowd_sport", "crowd_prediction"}
+    EXIT_STRATEGIES = {"imported_onchain"}
     to_sell = [p for p in positions if p.get("strategy") in EXIT_STRATEGIES]
     to_keep = [p for p in positions if p.get("strategy") not in EXIT_STRATEGIES]
 
