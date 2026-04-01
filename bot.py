@@ -2806,6 +2806,28 @@ class MultiStrategyBot:
                 )
                 # v10.8: Telegram P&L report (ogni ora, rate-limited dal notifier)
                 s = self.risk.status
+                # v12.10.8: calcola PnL settimanale e totale da trades.json
+                weekly_pnl = 0.0
+                alltime_pnl = 0.0
+                try:
+                    import json as _json
+                    from pathlib import Path as _Path
+                    import datetime as _dt
+                    trades_file = _Path(__file__).parent / "logs" / "trades.json"
+                    if trades_file.exists():
+                        trades_data = _json.loads(trades_file.read_text())
+                        week_ago = (_dt.datetime.now() - _dt.timedelta(days=7)).isoformat()
+                        for t in trades_data:
+                            pnl = t.get("pnl") or 0
+                            alltime_pnl += pnl
+                            closed = t.get("closed_at", "") or ""
+                            if closed >= week_ago:
+                                weekly_pnl += pnl
+                    # Aggiungi PnL sessione corrente (non ancora in trades.json)
+                    alltime_pnl += s.get('daily_pnl', 0)
+                    weekly_pnl += s.get('daily_pnl', 0)
+                except Exception:
+                    pass
                 await self.telegram.notify_pnl_report(
                     capital=s['capital'], daily_pnl=s['daily_pnl'],
                     total_trades=s['total_trades'], win_rate=s['win_rate'],
@@ -2814,6 +2836,8 @@ class MultiStrategyBot:
                     unrealized_pnl=getattr(self, '_unrealized_pnl', 0) or 0,
                     strategy_pnl=s['strategy_pnl'],
                     real_portfolio=getattr(self, '_real_portfolio', None),
+                    weekly_pnl=weekly_pnl,
+                    alltime_pnl=alltime_pnl,
                 )
 
     async def stop(self):

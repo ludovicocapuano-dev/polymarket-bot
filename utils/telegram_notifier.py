@@ -157,8 +157,11 @@ class TelegramNotifier:
         unrealized_pnl: float,
         strategy_pnl: dict[str, float],
         real_portfolio: dict = None,
+        weekly_pnl: float = 0.0,
+        alltime_pnl: float = 0.0,
+        deposited: float = 6203.0,
     ):
-        """Report P&L periodico (ogni ora). v12.10.8: solo strategie attive."""
+        """Report P&L periodico (ogni ora). v12.10.8: sessione + settimanale + totale."""
         now = time.time()
         if now - self._last_hourly_report < 3600:
             return
@@ -174,26 +177,21 @@ class TelegramNotifier:
             spnl_lines.append(f"  {icon} {k}: <b>${v:+.2f}</b>")
         spnl = "\n".join(spnl_lines) if spnl_lines else "  (nessun trade)"
 
-        # v10.8.3: PnL reale dal portfolio Polymarket
-        real_section = ""
-        if real_portfolio:
-            rp = real_portfolio
-            real_section = (
-                f"\n📊 <b>PORTFOLIO REALE:</b>\n"
-                f"  Depositato: ${rp['deposited']:,.2f}\n"
-                f"  Totale    : <b>${rp['portfolio_value']:,.2f}</b>\n"
-                f"  PnL       : <b>${rp['real_pnl']:+.2f} ({rp['real_pnl_pct']:+.1f}%)</b>\n"
-            )
+        # PnL percentuali
+        alltime_pct = (alltime_pnl / deposited * 100) if deposited > 0 else 0
+        weekly_pct = (weekly_pnl / capital * 100) if capital > 0 else 0
+        daily_pct = (daily_pnl / capital * 100) if capital > 0 else 0
 
         pnl_icon = "📈" if daily_pnl >= 0 else "📉"
         text = (
             f"{pnl_icon} <b>REPORT ORARIO</b>\n\n"
-            f"💰 Capitale    : <b>${capital:,.2f}</b>\n"
-            f"📊 PnL sessione: <b>${daily_pnl:+.2f}</b>\n"
-            f"💵 USDC liberi : ${usdc_balance:,.2f}\n"
-            f"📋 Trades      : {total_trades} (WR: {win_rate:.0f}%)\n"
-            f"📦 Posizioni   : {open_positions}\n"
-            f"{real_section}\n"
+            f"💰 Capitale: <b>${capital:,.2f}</b>\n\n"
+            f"📊 <b>PnL:</b>\n"
+            f"  Sessione : <b>${daily_pnl:+.2f}</b> ({daily_pct:+.1f}%)\n"
+            f"  7 giorni : <b>${weekly_pnl:+.2f}</b> ({weekly_pct:+.1f}%)\n"
+            f"  Totale   : <b>${alltime_pnl:+.2f}</b> ({alltime_pct:+.1f}%)\n\n"
+            f"💵 USDC: ${usdc_balance:,.2f} | 📦 Pos: {open_positions}\n"
+            f"📋 Trades: {total_trades} (WR: {win_rate:.0f}%)\n\n"
             f"<b>Strategie:</b>\n{spnl}"
         )
         await self.send(text)
