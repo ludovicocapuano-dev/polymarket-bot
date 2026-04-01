@@ -366,7 +366,7 @@ class MultiStrategyBot:
         # v10.8.6: BTC Latency Arb v3.0 — Multi-Mode (Sniper + OFI + Latency)
         self.btc_latency = BTCLatencyStrategy(
             api=self.api, risk=self.risk, binance=self.binance,
-            bankroll=1000.0, base_size=15.0, max_size=25.0,  # v12.10.5: budget alzato, sizing conservativo
+            bankroll=1000.0, base_size=30.0, max_size=50.0,  # v12.10.8: raddoppio sizing (13/13 WR, +$541)
         )
         self.risk.set_strategy_budget("btc_latency", 1000.0)
         # v12.10.5: reset PnL tracker — old halt losses shouldn't block new trades
@@ -388,8 +388,8 @@ class MultiStrategyBot:
         # v12.9: MRO-Kelly — Mean Reversion Oscillator on BTC 5-min markets
         self.mro_kelly = MROKellyStrategy(
             api=self.api, risk=self.risk, binance=self.binance,
-            max_bet=35.0, min_bet=10.0, min_edge=0.05,  # v12.10: sizing alzato, edge abbassato
-            kelly_fraction=0.30, max_open_positions=5,   # v12.10: più posizioni
+            max_bet=70.0, min_bet=20.0, min_edge=0.05,  # v12.10.8: raddoppio sizing (13/13 WR, +$541)
+            kelly_fraction=0.30, max_open_positions=5,
         )
         self.risk.set_strategy_budget("mro_kelly", 500.0)  # v12.10: budget alzato da $200
         logger.info("[MRO-KELLY] Strategy initialized (v12.10: $10-35/trade, max 5 pos, budget $500)")
