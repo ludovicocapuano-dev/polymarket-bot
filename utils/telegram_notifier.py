@@ -158,41 +158,43 @@ class TelegramNotifier:
         strategy_pnl: dict[str, float],
         real_portfolio: dict = None,
     ):
-        """Report P&L periodico (ogni ora)."""
+        """Report P&L periodico (ogni ora). v12.10.8: solo strategie attive."""
         now = time.time()
         if now - self._last_hourly_report < 3600:
             return
         self._last_hourly_report = now
 
-        spnl = "\n".join(
-            f"  {k}: <b>${v:+.2f}</b>" for k, v in strategy_pnl.items()
-        )
+        # v12.10.8: solo strategie con PnL != 0 o attive
+        active = {"mro_kelly", "btc_latency", "liquidity_vacuum", "weather", "sport_latency"}
+        spnl_lines = []
+        for k, v in sorted(strategy_pnl.items(), key=lambda x: -abs(x[1])):
+            if v == 0 and k not in active:
+                continue
+            icon = "🟢" if v > 0 else ("🔴" if v < 0 else "⚪")
+            spnl_lines.append(f"  {icon} {k}: <b>${v:+.2f}</b>")
+        spnl = "\n".join(spnl_lines) if spnl_lines else "  (nessun trade)"
 
         # v10.8.3: PnL reale dal portfolio Polymarket
+        real_section = ""
         if real_portfolio:
             rp = real_portfolio
             real_section = (
-                f"\n<b>PORTFOLIO REALE:</b>\n"
+                f"\n📊 <b>PORTFOLIO REALE:</b>\n"
                 f"  Depositato: ${rp['deposited']:,.2f}\n"
-                f"  Cash USDC : ${rp['usdc_cash']:,.2f}\n"
-                f"  Posizioni : ${rp['positions_value']:,.2f}\n"
                 f"  Totale    : <b>${rp['portfolio_value']:,.2f}</b>\n"
                 f"  PnL       : <b>${rp['real_pnl']:+.2f} ({rp['real_pnl_pct']:+.1f}%)</b>\n"
-                f"  Attive    : {rp['n_active']} | Redeemable: {rp['n_redeemable']}\n"
             )
-        else:
-            real_section = ""
 
+        pnl_icon = "📈" if daily_pnl >= 0 else "📉"
         text = (
-            f"<b>REPORT ORARIO</b>\n\n"
-            f"Capitale    : ${capital:,.2f}\n"
-            f"PnL sessione: <b>${daily_pnl:+.2f}</b>\n"
-            f"USDC liberi : ${usdc_balance:,.2f}\n"
-            f"Unrealized  : ${unrealized_pnl:+.2f}\n"
-            f"Trades      : {total_trades} (Win: {win_rate:.1f}%)\n"
-            f"Posizioni   : {open_positions}\n"
+            f"{pnl_icon} <b>REPORT ORARIO</b>\n\n"
+            f"💰 Capitale    : <b>${capital:,.2f}</b>\n"
+            f"📊 PnL sessione: <b>${daily_pnl:+.2f}</b>\n"
+            f"💵 USDC liberi : ${usdc_balance:,.2f}\n"
+            f"📋 Trades      : {total_trades} (WR: {win_rate:.0f}%)\n"
+            f"📦 Posizioni   : {open_positions}\n"
             f"{real_section}\n"
-            f"<b>P/L per strategia:</b>\n{spnl}"
+            f"<b>Strategie:</b>\n{spnl}"
         )
         await self.send(text)
 
