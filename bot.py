@@ -366,8 +366,11 @@ class MultiStrategyBot:
         # v10.8.6: BTC Latency Arb v3.0 — Multi-Mode (Sniper + OFI + Latency)
         self.btc_latency = BTCLatencyStrategy(
             api=self.api, risk=self.risk, binance=self.binance,
-            bankroll=500.0, base_size=15.0, max_size=25.0,  # v12.10: conservativo, $10-25/trade
+            bankroll=1000.0, base_size=15.0, max_size=25.0,  # v12.10.5: budget alzato, sizing conservativo
         )
+        self.risk.set_strategy_budget("btc_latency", 1000.0)
+        # v12.10.5: reset PnL tracker — old halt losses shouldn't block new trades
+        self.risk._strategy_pnl["btc_latency"] = 0.0
 
         # v12.10: Sport Latency — Betfair Exchange odds for in-play sport arbitrage
         self.sport_latency = SportLatencyStrategy(
