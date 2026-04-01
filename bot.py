@@ -1057,6 +1057,10 @@ class MultiStrategyBot:
                     except Exception as e:
                         logger.debug(f"[ORDERS] Errore pulizia: {e}")
 
+                # ── 10.5. Auto-Scaler crypto sizing (ogni 200 cicli ~100min) ──
+                if self._cycle % 200 == 100:
+                    self._auto_scale_crypto()
+
                 # ── 11. Purga posizioni stale (ogni 100 cicli) ──
                 if self._cycle % 100 == 0:
                     self.risk.purge_stale_positions(max_age_hours=48.0)
@@ -2089,6 +2093,95 @@ class MultiStrategyBot:
         except Exception as e:
             logger.warning(f"[PORTFOLIO] Errore fetch: {e}")
             return None
+
+    def _auto_scale_crypto(self):
+        """
+        v12.10.8: Auto-scale btc_latency e mro_kelly sizing basandosi sul WR.
+
+        Regole:
+        - Ogni 200 cicli (~100 min) controlla stats
+        - Se WR >= 85% e >= 15 trade → raddoppia sizing (cap $200)
+        - Se WR < 60% e >= 10 trade → dimezza sizing (floor $10)
+        - Notifica via Telegram ogni scale
+        - Max scaling: 4x dall'iniziale ($30→$60→$120→$200 cap)
+        """
+        MAX_SIZE_CAP = 200.0
+        MIN_SIZE_FLOOR = 10.0
+        SCALE_UP_WR = 0.85
+        SCALE_UP_MIN_TRADES = 15
+        SCALE_DOWN_WR = 0.60
+        SCALE_DOWN_MIN_TRADES = 10
+
+        for name, strat, size_attr, max_attr in [
+            ("btc_latency", self.btc_latency, "base_size", "max_size"),
+            ("mro_kelly", self.mro_kelly, "min_bet", "max_bet"),
+        ]:
+            stats = getattr(strat, 'stats', None)
+            if stats is None:
+                stats = getattr(strat, '_pnl_tracker', {})
+                if isinstance(stats, dict):
+                    trades_list = list(stats.values())
+                    total = len(trades_list)
+                    wins = sum(1 for t in trades_list if t.get('won'))
+                else:
+                    continue
+            elif isinstance(stats, dict):
+                total = stats.get('trades', 0)
+                wins = stats.get('wins', 0)
+            elif hasattr(stats, '__get__'):
+                # property
+                s = stats
+                total = s.get('trades', 0)
+                wins = s.get('wins', 0)
+            else:
+                continue
+
+            if total == 0:
+                continue
+
+            wr = wins / total
+            current_size = getattr(strat, size_attr, 0)
+            current_max = getattr(strat, max_attr, 0)
+
+            # Scale UP
+            if wr >= SCALE_UP_WR and total >= SCALE_UP_MIN_TRADES:
+                new_size = min(current_size * 2, MAX_SIZE_CAP)
+                new_max = min(current_max * 2, MAX_SIZE_CAP)
+                if new_size > current_size:
+                    setattr(strat, size_attr, new_size)
+                    setattr(strat, max_attr, new_max)
+                    logger.info(
+                        f"[AUTO-SCALE] {name}: SCALE UP! WR={wr:.0%} ({wins}/{total}) "
+                        f"| {size_attr} ${current_size:.0f}→${new_size:.0f} "
+                        f"| {max_attr} ${current_max:.0f}→${new_max:.0f}"
+                    )
+                    import asyncio
+                    asyncio.ensure_future(self.telegram.send(
+                        f"📈 <b>AUTO-SCALE UP</b>\n\n"
+                        f"Strategy: {name}\n"
+                        f"WR: {wr:.0%} ({wins}/{total} trades)\n"
+                        f"Size: ${current_size:.0f} → ${new_size:.0f}\n"
+                        f"Max: ${current_max:.0f} → ${new_max:.0f}"
+                    ))
+
+            # Scale DOWN
+            elif wr < SCALE_DOWN_WR and total >= SCALE_DOWN_MIN_TRADES:
+                new_size = max(current_size / 2, MIN_SIZE_FLOOR)
+                new_max = max(current_max / 2, MIN_SIZE_FLOOR * 2)
+                if new_size < current_size:
+                    setattr(strat, size_attr, new_size)
+                    setattr(strat, max_attr, new_max)
+                    logger.info(
+                        f"[AUTO-SCALE] {name}: SCALE DOWN! WR={wr:.0%} ({wins}/{total}) "
+                        f"| {size_attr} ${current_size:.0f}→${new_size:.0f}"
+                    )
+                    import asyncio
+                    asyncio.ensure_future(self.telegram.send(
+                        f"📉 <b>AUTO-SCALE DOWN</b>\n\n"
+                        f"Strategy: {name}\n"
+                        f"WR: {wr:.0%} ({wins}/{total} trades)\n"
+                        f"Size: ${current_size:.0f} → ${new_size:.0f}"
+                    ))
 
     def _log_pnl_report(self):
         """v10.4: Report P&L periodico per strategia."""
