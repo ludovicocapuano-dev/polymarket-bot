@@ -218,16 +218,94 @@ class WeatherStrategy:
         self._TRADE_COOLDOWN = 600  # v5.0: 10 min cooldown (niche dominance)
         self._prefetch_done = False
 
+    def _fetch_weather_markets_by_id(self) -> list:
+        """v12.9: Fetch weather markets directly by ID range from Gamma API.
+        Polymarket weather markets are no longer in the generic listing endpoint.
+        They must be fetched individually by numeric ID."""
+        import requests as _req
+        from utils.polymarket_api import Market as _M
+
+        # Cache for 5 minutes
+        now = time.time()
+        if hasattr(self, '_weather_id_cache_ts') and now - self._weather_id_cache_ts < 300:
+            return getattr(self, '_weather_id_cache', [])
+
+        markets = []
+        # Scan recent ID range (weather markets are in 1780000-1783000 range)
+        # Step by 5 to cover range efficiently
+        for mid in range(1781000, 1783000, 5):
+            try:
+                resp = _req.get(f"https://gamma-api.polymarket.com/markets/{mid}", timeout=3)
+                if resp.status_code == 200:
+                    m = resp.json()
+                    q = m.get("question", "")
+                    if "temperature" in q.lower() and m.get("active", True) and not m.get("closed", False):
+                        # Convert to Market-like object
+                        import json as _j
+                        prices_raw = m.get("outcomePrices", [])
+                        if isinstance(prices_raw, str):
+                            try: prices_raw = _j.loads(prices_raw)
+                            except: prices_raw = []
+                        tokens_raw = m.get("clobTokenIds", [])
+                        if isinstance(tokens_raw, str):
+                            try: tokens_raw = _j.loads(tokens_raw)
+                            except: tokens_raw = []
+
+                        # Build a Market-compatible object with all required attrs
+                        outcomes_raw = m.get("outcomes", ["Yes", "No"])
+                        if isinstance(outcomes_raw, str):
+                            try: outcomes_raw = _j.loads(outcomes_raw)
+                            except: outcomes_raw = ["Yes", "No"]
+                        market = type('WeatherMarket', (), {
+                            'id': m.get("conditionId", ""),
+                            'condition_id': m.get("conditionId", ""),
+                            'question': q,
+                            'category': 'weather',
+                            'active': True,
+                            'volume': float(m.get("volume", 0) or 0),
+                            'liquidity': float(m.get("liquidity", 0) or 0),
+                            'prices': {
+                                'yes': float(prices_raw[0]) if prices_raw else 0.5,
+                                'no': float(prices_raw[1]) if len(prices_raw) > 1 else 0.5,
+                            },
+                            'tokens': {
+                                'yes': tokens_raw[0] if tokens_raw else '',
+                                'no': tokens_raw[1] if len(tokens_raw) > 1 else '',
+                            },
+                            'spread': abs(1.0 - (float(prices_raw[0]) if prices_raw else 0.5) - (float(prices_raw[1]) if len(prices_raw) > 1 else 0.5)) if prices_raw else 0.05,
+                            'end_date': m.get("endDate", ""),
+                            'tags': [],
+                            'slug': m.get("slug", ""),
+                            'outcomes': outcomes_raw,
+                            'description': m.get("description", ""),
+                        })()
+                        markets.append(market)
+                elif resp.status_code == 404:
+                    pass  # ID doesn't exist, skip
+            except Exception:
+                pass
+
+        self._weather_id_cache = markets
+        self._weather_id_cache_ts = now
+        if markets:
+            logger.info(f"[WEATHER] Fetched {len(markets)} weather markets by ID (range 1781000-1783000)")
+        return markets
+
     async def scan(
         self, shared_markets: list[Market] | None = None
     ) -> list[WeatherOpportunity]:
         """Scansiona mercati weather per opportunita'."""
         markets = shared_markets or self.api.fetch_markets(limit=200)
         if not markets:
-            return []
+            markets = []
 
-        # Filtra mercati weather
-        weather_markets = self._filter_weather(markets)
+        # v12.9: ALWAYS fetch weather markets by ID — Gamma API listing
+        # no longer includes them. Shared_markets only has false positives (Mayweather etc.)
+        weather_markets = self._fetch_weather_markets_by_id()
+        if not weather_markets:
+            # Fallback to shared_markets filter (legacy, probably won't find any)
+            weather_markets = self._filter_weather(markets)
+
         if not weather_markets:
             logger.debug("[WEATHER] Scan: 0 mercati weather trovati")
             return []
