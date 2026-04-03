@@ -561,6 +561,7 @@ class MROKellyStrategy:
         # Need Binance feed
         btc_data = self.binance.get_symbol("btc")
         if btc_data.price <= 0:
+            logger.debug("[MRO-KELLY] No BTC price from Binance feed")
             return []
 
         # Update calculator with fresh tick data
@@ -568,6 +569,7 @@ class MROKellyStrategy:
 
         # Need enough candles for MRO calculation
         if not self.calculator.ready:
+            logger.debug(f"[MRO-KELLY] Not ready: {len(self.calculator.candles)} candles (need 6+)")
             return []
 
         mro_value = self.calculator.mro()
@@ -575,6 +577,16 @@ class MROKellyStrategy:
             return []
 
         # ── Check MRO threshold ──
+        # Log MRO value periodically (every ~30 cycles) for monitoring
+        if not hasattr(self, '_mro_log_counter'):
+            self._mro_log_counter = 0
+        self._mro_log_counter += 1
+        if self._mro_log_counter % 30 == 0 or abs(mro_value) >= self.mro_threshold * 0.7:
+            logger.info(
+                f"[MRO-KELLY] MRO={mro_value:+.1f} (threshold=±{self.mro_threshold}) "
+                f"BTC=${btc_data.price:,.0f} candles={len(self.calculator.candles)}"
+            )
+
         if abs(mro_value) < self.mro_threshold:
             return []
 
