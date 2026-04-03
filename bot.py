@@ -843,6 +843,14 @@ class MultiStrategyBot:
                                     edge_predicted=opp.edge, validation_score=report.score,
                                 )
                                 await self.weather.execute(opp, paper=paper)
+                                asyncio.ensure_future(self.telegram.notify_trade(
+                                    "weather", f"BUY_{opp.side}",
+                                    f"{opp.city} {opp.bucket_label}" if hasattr(opp, 'city') else opp.market.question[:60],
+                                    opp.target_size if hasattr(opp, 'target_size') else 0,
+                                    opp.buy_price if hasattr(opp, 'buy_price') else opp.price,
+                                    opp.edge,
+                                    paper=paper,
+                                ))
                 except Exception as e:
                     logger.error(f"[WEATHER] Errore strategia: {e}", exc_info=True)
 
