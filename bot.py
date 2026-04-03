@@ -848,7 +848,7 @@ class MultiStrategyBot:
                                     "weather", f"BUY_{opp.side}",
                                     f"{opp.city} {opp.bucket_label}" if hasattr(opp, 'city') else opp.market.question[:60],
                                     opp.target_size if hasattr(opp, 'target_size') else 0,
-                                    opp.buy_price if hasattr(opp, 'buy_price') else opp.price,
+                                    getattr(opp, 'buy_price', getattr(opp, 'price', 0.5)),
                                     opp.edge,
                                     paper=paper,
                                 ))
