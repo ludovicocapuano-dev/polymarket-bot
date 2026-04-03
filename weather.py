@@ -459,18 +459,17 @@ class WeatherStrategy:
         # v12.9 li aveva rimossi ("every feature removal improved performance" sul backtest golden era)
         # Ma i dati reali Mar 23-26 mostrano: senza filtri, bot entra su bucket con sigma 5-6°F
         # e perde 19 trade consecutivi. I filtri proteggono dai regimi ad alta incertezza (primavera).
+        # v12.9 SUBTRACTION: sigma and source filters REMOVED (duplicate block)
+        # These were blocking trades that the scan reported as opportunities
         forecast_sigma = forecast.uncertainty_in_unit(unit)
         sigma_f = forecast_sigma if unit == "F" else forecast_sigma * 1.8
-        if sigma_f > 4.0:  # v12.10.9: relaxed from 3.0 to 4.0 (was too strict)
-            logger.info(f"[WEATHER-SKIP] high sigma {sigma_f:.1f}°F > 4.0 — BLOCKING")
-            return None
-        # Source disagreement: BLOCKING if sources diverge > 2°F
+        if sigma_f > 4.0:
+            logger.debug(f"[WEATHER-NOTE] high sigma {sigma_f:.1f}°F (not blocking)")
         if hasattr(forecast, 'sources') and len(forecast.sources) >= 2:
             source_temps_unit = [c_to_f(s.temp) if unit == "F" else s.temp for s in forecast.sources]
             source_spread_f = (max(source_temps_unit) - min(source_temps_unit)) * (1 if unit == "F" else 1.8)
-            if source_spread_f > 3.0:  # v12.10.9: relaxed from 2.0 to 3.0
-                logger.info(f"[WEATHER-SKIP] source spread {source_spread_f:.1f}°F > 3.0 — BLOCKING")
-                return None
+            if source_spread_f > 3.0:
+                logger.debug(f"[WEATHER-NOTE] source spread {source_spread_f:.1f}°F (not blocking)")
 
         # v5.0: Boost same-day con osservazioni Wethr.net
         # Se e' oggi e abbiamo la temperatura corrente, affiniamo la stima
