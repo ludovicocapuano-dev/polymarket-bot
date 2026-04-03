@@ -461,15 +461,15 @@ class WeatherStrategy:
         # e perde 19 trade consecutivi. I filtri proteggono dai regimi ad alta incertezza (primavera).
         forecast_sigma = forecast.uncertainty_in_unit(unit)
         sigma_f = forecast_sigma if unit == "F" else forecast_sigma * 1.8
-        if sigma_f > 3.0:
-            logger.info(f"[WEATHER-SKIP] high sigma {sigma_f:.1f}°F > 3.0 — BLOCKING (v12.10)")
+        if sigma_f > 4.0:  # v12.10.9: relaxed from 3.0 to 4.0 (was too strict)
+            logger.info(f"[WEATHER-SKIP] high sigma {sigma_f:.1f}°F > 4.0 — BLOCKING")
             return None
         # Source disagreement: BLOCKING if sources diverge > 2°F
         if hasattr(forecast, 'sources') and len(forecast.sources) >= 2:
             source_temps_unit = [c_to_f(s.temp) if unit == "F" else s.temp for s in forecast.sources]
             source_spread_f = (max(source_temps_unit) - min(source_temps_unit)) * (1 if unit == "F" else 1.8)
-            if source_spread_f > 2.0:
-                logger.info(f"[WEATHER-SKIP] source spread {source_spread_f:.1f}°F > 2.0 — BLOCKING (v12.10)")
+            if source_spread_f > 3.0:  # v12.10.9: relaxed from 2.0 to 3.0
+                logger.info(f"[WEATHER-SKIP] source spread {source_spread_f:.1f}°F > 3.0 — BLOCKING")
                 return None
 
         # v5.0: Boost same-day con osservazioni Wethr.net
@@ -559,17 +559,52 @@ class WeatherStrategy:
         # confidence inventata: sigma nel modello Phi(bucket) gia' cattura
         # l'incertezza. Serve solo una soglia di edge minima crescente.
         days_ahead = self._days_until(date)
-        # v12.10: BLOCCO same-day (17% WR, -$595) e +1d (39% WR, -$367)
-        # Solo +2d (67% WR, +$122) e +3d (100% WR, +$72) sono profittevoli.
-        # Il mercato same-day/+1d ha gia' prezzato il meteo reale — no edge informativo.
-        if days_ahead <= 1:
-            logger.debug(
-                f"[WEATHER-SKIP] horizon too short: {city} {label} "
-                f"days_ahead={days_ahead} (min 2 richiesto, v12.10)"
-            )
-            return None
-        # +2d+: unico orizzonte profittevole
-        effective_min_edge = 0.20
+        # v12.10.9: Re-enable same-day/+1d WITH safety checks
+        # (was blocked in v12.10 after -$595 same-day and -$367 +1d)
+        # Now guarded by: Kalman correction + warming classifier agreement
+        if days_ahead == 0:
+            # Same-day: only if warming classifier agrees with forecast direction
+            try:
+                from utils.warming_classifier import (
+                    classify_warming_day, classifier_agrees_with_forecast,
+                    kalman_correct, fetch_current_conditions
+                )
+                classification, clf_conf = classify_warming_day(city)
+                if not classifier_agrees_with_forecast(classification, clf_conf, best_side):
+                    logger.info(
+                        f"[WEATHER-SKIP] classifier disagrees: {city} {label} "
+                        f"class={classification} conf={clf_conf:.2f} side={best_side}"
+                    )
+                    return None
+                # Apply Kalman correction if we have current conditions
+                conditions = fetch_current_conditions(city)
+                if conditions and conditions.get("temperature") is not None:
+                    station = get_station_info(city) if 'get_station_info' in dir() else None
+                    tz_offset = station.get("tz", 0) if station else 0
+                    hour_local = (datetime.now().hour + tz_offset) % 24
+                    # Kalman correct the forecast high
+                    corrected_high = kalman_correct(
+                        forecast.temperature, conditions["temperature"],
+                        hour_local,
+                        cloud_cover=conditions.get("cloud_cover", 50),
+                        wind_speed=conditions.get("wind_speed", 10),
+                    )
+                    logger.debug(
+                        f"[KALMAN] {city}: forecast={forecast.temperature:.1f} "
+                        f"current={conditions['temperature']:.1f} → corrected={corrected_high:.1f}"
+                    )
+                logger.info(
+                    f"[WEATHER] Same-day ENABLED: {city} {label} "
+                    f"classifier={classification} ({clf_conf:.2f})"
+                )
+            except Exception as e:
+                logger.debug(f"[WEATHER] Classifier error, blocking same-day: {e}")
+                return None
+            effective_min_edge = 0.08  # same-day with classifier: cautious but tradeable
+        elif days_ahead == 1:
+            effective_min_edge = 0.12  # +1d: standard
+        else:
+            effective_min_edge = 0.20  # +2d+: conservative
 
         # Market efficiency: mercati efficienti (alta liquidita', spread
         # stretto) hanno bisogno di edge piu' alta per giustificare il trade.
