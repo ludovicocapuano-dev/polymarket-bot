@@ -830,7 +830,8 @@ class MultiStrategyBot:
                             if not self._running:
                                 break
                             signal = from_weather_opportunity(opp)
-                            kelly = self.risk.kelly_size(opp.forecast_prob, signal.price, "weather")
+                            price = getattr(signal, 'price', None) or getattr(opp, 'buy_price', 0.5)
+                            kelly = self.risk.kelly_size(opp.forecast_prob, price, "weather")
                             report = self.signal_validator.validate(signal, trade_size=kelly)
                             if report.result == ValidationResult.TRADE or (
                                 report.result == ValidationResult.REVIEW and signal.edge >= 0.04

@@ -125,7 +125,11 @@ def from_weather_opportunity(opp) -> UnifiedSignal:
     """WeatherOpportunity → UnifiedSignal."""
     m = opp.market
     side = opp.side.upper()
-    price = m.prices.get(side.lower(), m.prices.get("yes", 0.5))
+    # v12.9: robust price extraction — handle missing prices dict
+    try:
+        price = m.prices.get(side.lower(), m.prices.get("yes", 0.5))
+    except (AttributeError, TypeError):
+        price = getattr(opp, 'buy_price', 0.5) or 0.5
 
     return UnifiedSignal(
         strategy="weather",
