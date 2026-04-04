@@ -54,7 +54,7 @@ class TelegramNotifier:
         return len(self._msg_times) < _MAX_MESSAGES_PER_MINUTE
 
     async def send(self, text: str, parse_mode: str = "HTML") -> bool:
-        """Invia un messaggio Telegram."""
+        """Invia un messaggio Telegram. Fallback a plain text se HTML parse fallisce."""
         if not self.enabled:
             return False
 
@@ -78,6 +78,22 @@ class TelegramNotifier:
                 self._msg_times.append(time.time())
                 if resp.status == 200:
                     return True
+                # v12.9: If HTML parse fails, retry without parse_mode
+                if resp.status == 400 and parse_mode == "HTML":
+                    import re
+                    plain = re.sub(r'<[^>]+>', '', text)
+                    payload_plain = {
+                        "chat_id": self.chat_id,
+                        "text": plain,
+                        "disable_web_page_preview": True,
+                    }
+                    async with session.post(
+                        f"{self._base_url}/sendMessage",
+                        json=payload_plain,
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as resp2:
+                        if resp2.status == 200:
+                            return True
                 body = await resp.text()
                 logger.warning(f"[TELEGRAM] Errore {resp.status}: {body[:200]}")
                 return False
