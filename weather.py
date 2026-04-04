@@ -233,13 +233,12 @@ class WeatherStrategy:
             return getattr(self, '_weather_id_cache', [])
 
         markets = []
-        # v13.1: Dynamic ID range — weather markets move ~1000 IDs per day
-        # Start from a recent known range and scan forward
-        # Use last known successful ID as anchor, scan ±5000 around it
+        # v13.1: Dynamic ID range — weather markets cluster in ~500 ID blocks
+        # Scan in small steps near the anchor, bigger steps further out
         last_known = getattr(self, '_last_weather_id', 1815000)
-        scan_start = max(last_known - 2000, 1810000)
-        scan_end = last_known + 5000
-        for mid in range(scan_start, scan_end, 5):
+        scan_start = max(last_known - 500, 1810000)
+        scan_end = last_known + 1000
+        for mid in range(scan_start, scan_end, 50):  # step 50 = fast scan (~30 fetches)
             try:
                 resp = _req.get(f"https://gamma-api.polymarket.com/markets/{mid}", timeout=3)
                 if resp.status_code == 200:
