@@ -106,8 +106,24 @@ class BinanceFeed:
     # ── Accesso per simbolo ────────────────────────────────────
 
     def get_symbol(self, symbol: str) -> SymbolData:
-        """Ottieni dati di un simbolo. Ritorna SymbolData vuoto se non esiste."""
-        return self._symbols.get(symbol.lower(), SymbolData())
+        """Ottieni dati di un simbolo. Falls back to REST if WS has no data."""
+        sd = self._symbols.get(symbol.lower(), SymbolData())
+        # v12.9: REST fallback when WS has no price (Binance may drop some streams)
+        if sd.price <= 0:
+            pair = SUPPORTED_SYMBOLS.get(symbol.lower())
+            if pair:
+                try:
+                    import requests as _req
+                    resp = _req.get(
+                        f"https://api.binance.com/api/v3/ticker/price?symbol={pair.upper()}",
+                        timeout=3,
+                    )
+                    if resp.status_code == 200:
+                        sd.price = float(resp.json().get("price", 0))
+                        sd.updated_at = time.time()
+                except Exception:
+                    pass
+        return sd
 
     def symbol_price(self, symbol: str) -> float:
         """Prezzo corrente di un simbolo."""
