@@ -206,6 +206,7 @@ class WeatherStrategy:
         min_edge: float = 0.04,      # v5.0: edge minimo 4% (niche dominance)
         min_confidence: float = 0.55,
         meta_labeler=None,           # v12.0.1: Lopez de Prado meta-labeling
+        horizon=None,                # v13.1: Horizon SDK primary execution
     ):
         self.api = api
         self.risk = risk
@@ -213,6 +214,7 @@ class WeatherStrategy:
         self.min_edge = min_edge
         self.min_confidence = min_confidence
         self.meta_labeler = meta_labeler
+        self.horizon = horizon  # v13.1: HorizonClient instance
         self._trades_executed = 0
         self._recently_traded: dict[str, float] = {}
         self._TRADE_COOLDOWN = 600  # v5.0: 10 min cooldown (niche dominance)
@@ -1122,19 +1124,42 @@ class WeatherStrategy:
 
             self.risk.close_trade(token_id, won=won, pnl=pnl)
         else:
-            # v10.3: smart_buy con A-S optimal execution (was buy_market → smart_buy naive)
+            # v13.1: Horizon SDK as primary execution, native smart_buy as fallback
             from utils.avellaneda_stoikov import market_inventory_frac
             inv = market_inventory_frac(self.risk.open_trades, opp.market.id, self.risk._strategy_budgets.get(STRATEGY_NAME, 1))
             vpin_val = self.risk.vpin_monitor.get_vpin(opp.market.id) if self.risk.vpin_monitor else 0.0
-            result = self.api.smart_buy(
-                token_id, size, target_price=price,
-                inventory_frac=inv, volume_24h=opp.market.volume, vpin=vpin_val,
-            )
-            if result:
-                # v7.4: Aggiorna prezzo con fill reale dal CLOB
-                if isinstance(result, dict) and result.get("_fill_price"):
-                    trade.price = result["_fill_price"]
-                self.risk.open_trade(trade)
+
+            if self.horizon is not None:
+                # Route through Horizon (handles algo selection + native fallback)
+                hz_result = self.horizon.execute_trade(
+                    token_id=token_id,
+                    side=f"BUY_{opp.side}",
+                    size=size,
+                    price=price,
+                    strategy="weather",
+                    inventory_frac=inv,
+                    volume_24h=opp.market.volume,
+                    vpin=vpin_val,
+                )
+                if hz_result.success:
+                    if hz_result.fill_price > 0:
+                        trade.price = hz_result.fill_price
+                    self.risk.open_trade(trade)
+                    result = hz_result.raw_result
+                else:
+                    logger.warning(f"[WEATHER] Horizon+native both failed: {hz_result.error}")
+                    result = None
+            else:
+                # Legacy path: direct native smart_buy (no Horizon available)
+                result = self.api.smart_buy(
+                    token_id, size, target_price=price,
+                    inventory_frac=inv, volume_24h=opp.market.volume, vpin=vpin_val,
+                )
+                if result:
+                    # v7.4: Aggiorna prezzo con fill reale dal CLOB
+                    if isinstance(result, dict) and result.get("_fill_price"):
+                        trade.price = result["_fill_price"]
+                    self.risk.open_trade(trade)
 
         self._recently_traded[opp.market.id] = now
         self._trades_executed += 1

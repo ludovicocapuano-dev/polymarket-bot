@@ -90,6 +90,7 @@ class BTCLatencyStrategy:
     api: PolymarketAPI
     risk: RiskManager
     binance: BinanceFeed
+    horizon: object = None  # v13.1: HorizonClient for primary execution
 
     # ── Parametri Latency Mode ──
     bankroll: float = 5000.0         # capitale dedicato a questa strategia
@@ -802,24 +803,48 @@ class BTCLatencyStrategy:
                 "btc_open": signal.btc_open,
             }
         else:
-            # Live: sweep orderbook con smart_buy
-            result = self.api.smart_buy(
-                token_id, size,
-                target_price=min(buy_price + 0.03, self.max_entry_price),
-            )
-            if result:
-                if isinstance(result, dict) and result.get("_fill_price"):
-                    trade.price = result["_fill_price"]
-                self.risk.open_trade(trade)
-                logger.info(
-                    f"[LIVE] BTC-LATENCY: {signal.direction} "
-                    f"BUY {signal.side} ${size:.0f} @{buy_price:.3f} | "
-                    f"P_fair={signal.fair_prob:.3f} edge={signal.edge:.4f} | "
-                    f"BTC=${signal.btc_price:,.0f}"
+            # v13.1: Horizon SDK primary execution (speed-critical for latency arb)
+            target = min(buy_price + 0.03, self.max_entry_price)
+            if self.horizon is not None:
+                hz_result = self.horizon.execute_trade(
+                    token_id=token_id,
+                    side=f"BUY_{signal.side}",
+                    size=size,
+                    price=target,
+                    strategy="btc_latency",
                 )
+                if hz_result.success:
+                    if hz_result.fill_price > 0:
+                        trade.price = hz_result.fill_price
+                    self.risk.open_trade(trade)
+                    logger.info(
+                        f"[LIVE] BTC-LATENCY [{hz_result.engine.upper()}]: {signal.direction} "
+                        f"BUY {signal.side} ${size:.0f} @{buy_price:.3f} | "
+                        f"P_fair={signal.fair_prob:.3f} edge={signal.edge:.4f} | "
+                        f"BTC=${signal.btc_price:,.0f}"
+                    )
+                else:
+                    logger.warning(f"[BTC-LATENCY] Execution failed: {hz_result.error}")
+                    return False
             else:
-                logger.warning(f"[BTC-LATENCY] Ordine fallito: {signal.market.id}")
-                return False
+                # Legacy path: direct native smart_buy
+                result = self.api.smart_buy(
+                    token_id, size,
+                    target_price=target,
+                )
+                if result:
+                    if isinstance(result, dict) and result.get("_fill_price"):
+                        trade.price = result["_fill_price"]
+                    self.risk.open_trade(trade)
+                    logger.info(
+                        f"[LIVE] BTC-LATENCY [NATIVE]: {signal.direction} "
+                        f"BUY {signal.side} ${size:.0f} @{buy_price:.3f} | "
+                        f"P_fair={signal.fair_prob:.3f} edge={signal.edge:.4f} | "
+                        f"BTC=${signal.btc_price:,.0f}"
+                    )
+                else:
+                    logger.warning(f"[BTC-LATENCY] Ordine fallito: {signal.market.id}")
+                    return False
 
         self._recently_traded[signal.market.id] = now
         self._trades_executed += 1

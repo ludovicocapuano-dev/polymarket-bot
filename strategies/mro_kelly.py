@@ -337,6 +337,7 @@ class MROKellyStrategy:
     api: PolymarketAPI
     risk: RiskManager
     binance: BinanceFeed
+    horizon: object = None  # v13.1: HorizonClient for primary execution
 
     # ── Parameters ──
     mro_threshold: float = 70.0     # |MRO| must exceed this
@@ -882,25 +883,50 @@ class MROKellyStrategy:
                 "pnl": pnl,
             })
         else:
-            # ── Live execution ──
-            result = self.api.smart_buy(
-                token_id, size,
-                target_price=min(buy_price + 0.03, 0.85),
-            )
-            if result:
-                if isinstance(result, dict) and result.get("_fill_price"):
-                    trade.price = result["_fill_price"]
-                self.risk.open_trade(trade)
-                self._open_position_count += 1
-                logger.info(
-                    f"[LIVE] MRO-KELLY: {signal.direction} "
-                    f"BUY {signal.side} ${size:.0f} @{buy_price:.3f} | "
-                    f"MRO={signal.mro_value:+.1f} edge={signal.edge:.4f} | "
-                    f"BTC=${signal.btc_price:,.0f}"
+            # v13.1: Horizon SDK primary execution
+            target = min(buy_price + 0.03, 0.85)
+            if self.horizon is not None:
+                hz_result = self.horizon.execute_trade(
+                    token_id=token_id,
+                    side=f"BUY_{signal.side}",
+                    size=size,
+                    price=target,
+                    strategy="mro_kelly",
                 )
+                if hz_result.success:
+                    if hz_result.fill_price > 0:
+                        trade.price = hz_result.fill_price
+                    self.risk.open_trade(trade)
+                    self._open_position_count += 1
+                    logger.info(
+                        f"[LIVE] MRO-KELLY [{hz_result.engine.upper()}]: {signal.direction} "
+                        f"BUY {signal.side} ${size:.0f} @{buy_price:.3f} | "
+                        f"MRO={signal.mro_value:+.1f} edge={signal.edge:.4f} | "
+                        f"BTC=${signal.btc_price:,.0f}"
+                    )
+                else:
+                    logger.warning(f"[MRO-KELLY] Execution failed: {hz_result.error}")
+                    return False
             else:
-                logger.warning(f"[MRO-KELLY] Order failed: {signal.market.id}")
-                return False
+                # Legacy path: direct native smart_buy
+                result = self.api.smart_buy(
+                    token_id, size,
+                    target_price=target,
+                )
+                if result:
+                    if isinstance(result, dict) and result.get("_fill_price"):
+                        trade.price = result["_fill_price"]
+                    self.risk.open_trade(trade)
+                    self._open_position_count += 1
+                    logger.info(
+                        f"[LIVE] MRO-KELLY [NATIVE]: {signal.direction} "
+                        f"BUY {signal.side} ${size:.0f} @{buy_price:.3f} | "
+                        f"MRO={signal.mro_value:+.1f} edge={signal.edge:.4f} | "
+                        f"BTC=${signal.btc_price:,.0f}"
+                    )
+                else:
+                    logger.warning(f"[MRO-KELLY] Order failed: {signal.market.id}")
+                    return False
 
         self._recently_traded[signal.market.id] = now
         self._trades_executed += 1
