@@ -36,6 +36,9 @@ logger = logging.getLogger(__name__)
 
 STRATEGY_NAME = "mro_kelly"
 
+# ── Multi-crypto support (v2.0) ──
+SUPPORTED_CRYPTOS = ["btc", "eth", "sol", "xrp"]
+
 # ── Gamma API ──
 GAMMA_API = "https://gamma-api.polymarket.com/markets"
 
@@ -357,8 +360,12 @@ class MROKellyStrategy:
     vol_spike_up: float = 20.0      # +20% volume for UP entry
     vol_spike_down: float = 30.0    # +30% volume for DOWN entry
 
+    # ── Multi-crypto ──
+    max_positions_per_crypto: int = 2  # max 2 positions per crypto (8 total)
+
     # ── State ──
-    calculator: MROCalculator = field(default_factory=MROCalculator)
+    _calculators: dict = field(default_factory=dict)  # symbol -> MROCalculator
+    calculator: MROCalculator = field(default_factory=MROCalculator)  # backward compat (btc)
     _trades_executed: int = 0
     _daily_pnl: float = 0.0
     _daily_pnl_reset: float = 0.0   # epoch of last daily reset
@@ -375,23 +382,29 @@ class MROKellyStrategy:
 
     def __post_init__(self):
         self._daily_pnl_reset = time.time()
+        # Initialize one MROCalculator per crypto
+        for sym in SUPPORTED_CRYPTOS:
+            self._calculators[sym] = MROCalculator()
+        # backward compat: self.calculator points to btc
+        self.calculator = self._calculators["btc"]
 
     # ══════════════════════════════════════════════════════════════
-    #  Market Discovery — find BTC 5-min Up/Down markets
+    #  Market Discovery — find crypto 5-min Up/Down markets
     # ══════════════════════════════════════════════════════════════
 
-    def _discover_btc_markets(self) -> list[Market]:
+    def _discover_crypto_markets(self, symbol: str = "btc") -> list[Market]:
         """
-        Find active BTC Up/Down 5-min markets on Polymarket.
-        Uses the slug pattern: btc-updown-5m-{epoch}.
+        Find active crypto Up/Down 5-min markets on Polymarket.
+        Uses the slug pattern: {symbol}-updown-5m-{epoch}.
         """
         now = int(time.time())
         current_slot = now - (now % self.SLOT_DURATION)
         markets = []
+        sym_upper = symbol.upper()
 
         for offset in range(3):  # current + next 2 slots
             epoch = current_slot + offset * self.SLOT_DURATION
-            slug = f"btc-updown-5m-{epoch}"
+            slug = f"{symbol}-updown-5m-{epoch}"
 
             # Check cache
             cached = self._market_cache.get(slug)
@@ -472,7 +485,7 @@ class MROKellyStrategy:
                 markets.append(mkt)
 
             except Exception as e:
-                logger.debug(f"[MRO-KELLY] Discovery error for {slug}: {e}")
+                logger.debug(f"[MRO-{sym_upper}] Discovery error for {slug}: {e}")
                 continue
 
         return markets
@@ -550,11 +563,11 @@ class MROKellyStrategy:
 
     def scan(self, shared_markets: list[Market] | None = None) -> list[MROSignal]:
         """
-        Main scan:
-        1. Update MRO calculator from Binance tick data
-        2. Check MRO thresholds
+        v2.0 Multi-crypto scan:
+        1. Update MRO calculator per crypto from Binance tick data
+        2. Check MRO thresholds per crypto
         3. Check entry filters (volume, price bounce, EMA, RSI/MACD)
-        4. Find matching Polymarket 5-min BTC markets
+        4. Find matching Polymarket 5-min markets per crypto
         5. Calculate edge (Pr vs market price)
         6. Return opportunities with edge > 6%
         """
@@ -562,215 +575,214 @@ class MROKellyStrategy:
         if self._is_halted():
             return []
 
-        # Need Binance feed
-        btc_data = self.binance.get_symbol("btc")
-        if btc_data.price <= 0:
-            logger.info("[MRO-KELLY] No BTC price from Binance feed")
-            return []
-
-        # Update calculator with fresh tick data
-        self.calculator.update(btc_data)
-
-        # Need enough candles for MRO calculation
-        if not self.calculator.ready:
-            logger.info(f"[MRO-KELLY] Not ready: {len(self.calculator.candles)} candles (need 6+)")
-            return []
-
-        mro_value = self.calculator.mro()
-        if mro_value is None:
-            return []
-
-        # ── Check MRO threshold ──
-        # Log MRO value periodically (every ~30 cycles) for monitoring
         if not hasattr(self, '_mro_log_counter'):
             self._mro_log_counter = 0
         self._mro_log_counter += 1
-        if self._mro_log_counter % 30 == 0 or abs(mro_value) >= self.mro_threshold * 0.7:
-            logger.info(
-                f"[MRO-KELLY] MRO={mro_value:+.1f} (threshold=±{self.mro_threshold}) "
-                f"BTC=${btc_data.price:,.0f} candles={len(self.calculator.candles)}"
-            )
-
-        if abs(mro_value) < self.mro_threshold:
-            return []
-
-        vol_change = self.calculator.volume_change_pct()
-        if vol_change is None:
-            return []
 
         now = time.time()
-        signals = []
+        all_signals = []
 
-        # ── Determine direction ──
-        if mro_value < -self.mro_threshold:
-            # OVERSOLD → expect mean reversion UP
-            direction = "UP"
+        # Track positions per crypto for the max_positions_per_crypto limit
+        if not hasattr(self, '_positions_per_crypto'):
+            self._positions_per_crypto = {sym: 0 for sym in SUPPORTED_CRYPTOS}
 
-            # Filter 1: volume spike >= +20%
-            if vol_change < self.vol_spike_up:
-                logger.debug(
-                    f"[MRO-KELLY] SKIP UP: vol_change={vol_change:.1f}% < {self.vol_spike_up}%"
-                )
-                return []
+        for crypto_symbol in SUPPORTED_CRYPTOS:
+            sym_upper = crypto_symbol.upper()
+            log_prefix = f"MRO-{sym_upper}"
 
-            # Filter 2: price bounced +0.1% from low
-            if not self.calculator.price_bounced_from_low(0.1):
-                logger.debug("[MRO-KELLY] SKIP UP: no price bounce from low")
-                return []
-
-            # Filter 3: EMA50 uptrend
-            if not self.calculator.ema50_uptrend:
-                logger.debug("[MRO-KELLY] SKIP UP: EMA50 downtrend")
-                return []
-
-            # Filter 4: RSI > 65 OR MACD > 0
-            rsi_ok = self.calculator.rsi > 65
-            macd_ok = self.calculator.macd > 0
-            if not (rsi_ok or macd_ok):
-                logger.debug(
-                    f"[MRO-KELLY] SKIP UP: RSI={self.calculator.rsi:.1f} "
-                    f"MACD={self.calculator.macd:.4f}"
-                )
-                return []
-
-        elif mro_value > self.mro_threshold:
-            # OVERBOUGHT → expect mean reversion DOWN
-            direction = "DOWN"
-
-            # Filter 1: volume spike >= +30%
-            if vol_change < self.vol_spike_down:
-                logger.debug(
-                    f"[MRO-KELLY] SKIP DOWN: vol_change={vol_change:.1f}% < {self.vol_spike_down}%"
-                )
-                return []
-
-            # Filter 2: price pulled -0.1% from high
-            if not self.calculator.price_pulled_from_high(0.1):
-                logger.debug("[MRO-KELLY] SKIP DOWN: no price pull from high")
-                return []
-
-            # Filter 3: EMA50 downtrend
-            if not self.calculator.ema50_downtrend:
-                logger.debug("[MRO-KELLY] SKIP DOWN: EMA50 uptrend")
-                return []
-
-            # Filter 4: RSI < 35 OR MACD < 0
-            rsi_ok = self.calculator.rsi < 35
-            macd_ok = self.calculator.macd < 0
-            if not (rsi_ok or macd_ok):
-                logger.debug(
-                    f"[MRO-KELLY] SKIP DOWN: RSI={self.calculator.rsi:.1f} "
-                    f"MACD={self.calculator.macd:.4f}"
-                )
-                return []
-        else:
-            return []
-
-        # ── Find matching Polymarket 5-min BTC markets ──
-        btc_markets = self._discover_btc_markets()
-        if not btc_markets:
-            logger.debug("[MRO-KELLY] No active BTC 5-min markets found")
-            return []
-
-        # ── Evaluate each market ──
-        for m in btc_markets:
-            # Cooldown per market
-            if now - self._recently_traded.get(m.id, 0) < self.cooldown_per_market:
+            # Need Binance feed for this crypto
+            crypto_data = self.binance.get_symbol(crypto_symbol)
+            if crypto_data.price <= 0:
                 continue
 
-            # Max open positions
-            if self._open_position_count >= self.max_open_positions:
-                break
-
-            # Determine slot timing
-            slug = getattr(m, "slug", "")
-            try:
-                slot_epoch = int(slug.split("-")[-1])
-            except (ValueError, IndexError):
+            # Get calculator for this crypto
+            calc = self._calculators.get(crypto_symbol)
+            if calc is None:
                 continue
 
-            t_remaining = (slot_epoch + self.SLOT_DURATION) - now
-            if t_remaining <= 0 or t_remaining > self.SLOT_DURATION:
+            # Update calculator with fresh tick data
+            calc.update(crypto_data)
+
+            # Need enough candles for MRO calculation
+            if not calc.ready:
+                if self._mro_log_counter % 30 == 0:
+                    logger.info(f"[{log_prefix}] Not ready: {len(calc.candles)} candles (need 6+)")
                 continue
 
-            # Get market prices
-            price_yes = m.prices.get("yes", 0.5)
-            price_no = m.prices.get("no", 0.5)
+            mro_value = calc.mro()
+            if mro_value is None:
+                continue
 
-            # odds_delta: how far market price deviates from 0.50
-            odds_delta = price_yes - 0.50
+            # ── Check MRO threshold ──
+            if self._mro_log_counter % 30 == 0 or abs(mro_value) >= self.mro_threshold * 0.7:
+                logger.info(
+                    f"[{log_prefix}] MRO={mro_value:+.1f} (threshold=+/-{self.mro_threshold}) "
+                    f"{sym_upper}=${crypto_data.price:,.2f} candles={len(calc.candles)}"
+                )
 
-            # Calculate probability using MRO model
-            pr_up = self._calc_probability(mro_value, odds_delta)
+            if abs(mro_value) < self.mro_threshold:
+                continue
 
-            # Choose side based on direction
-            if direction == "UP":
-                # Buy YES (betting on UP)
-                side = "YES"
-                our_prob = pr_up
-                market_price = price_yes
+            vol_change = calc.volume_change_pct()
+            if vol_change is None:
+                continue
+
+            signals = []
+
+            # ── Determine direction ──
+            if mro_value < -self.mro_threshold:
+                # OVERSOLD -> expect mean reversion UP
+                direction = "UP"
+
+                if vol_change < self.vol_spike_up:
+                    logger.debug(f"[{log_prefix}] SKIP UP: vol_change={vol_change:.1f}% < {self.vol_spike_up}%")
+                    continue
+
+                if not calc.price_bounced_from_low(0.1):
+                    logger.debug(f"[{log_prefix}] SKIP UP: no price bounce from low")
+                    continue
+
+                if not calc.ema50_uptrend:
+                    logger.debug(f"[{log_prefix}] SKIP UP: EMA50 downtrend")
+                    continue
+
+                rsi_ok = calc.rsi > 65
+                macd_ok = calc.macd > 0
+                if not (rsi_ok or macd_ok):
+                    logger.debug(f"[{log_prefix}] SKIP UP: RSI={calc.rsi:.1f} MACD={calc.macd:.4f}")
+                    continue
+
+            elif mro_value > self.mro_threshold:
+                # OVERBOUGHT -> expect mean reversion DOWN
+                direction = "DOWN"
+
+                if vol_change < self.vol_spike_down:
+                    logger.debug(f"[{log_prefix}] SKIP DOWN: vol_change={vol_change:.1f}% < {self.vol_spike_down}%")
+                    continue
+
+                if not calc.price_pulled_from_high(0.1):
+                    logger.debug(f"[{log_prefix}] SKIP DOWN: no price pull from high")
+                    continue
+
+                if not calc.ema50_downtrend:
+                    logger.debug(f"[{log_prefix}] SKIP DOWN: EMA50 uptrend")
+                    continue
+
+                rsi_ok = calc.rsi < 35
+                macd_ok = calc.macd < 0
+                if not (rsi_ok or macd_ok):
+                    logger.debug(f"[{log_prefix}] SKIP DOWN: RSI={calc.rsi:.1f} MACD={calc.macd:.4f}")
+                    continue
             else:
-                # Buy NO (betting on DOWN)
-                side = "NO"
-                our_prob = 1.0 - pr_up
-                market_price = price_no
+                continue
 
-            # Calculate edge
-            fee = self._crypto_fee(market_price)
-            edge = our_prob - market_price - fee
+            # ── Find matching Polymarket 5-min markets ──
+            crypto_markets = self._discover_crypto_markets(symbol=crypto_symbol)
+            if not crypto_markets:
+                logger.debug(f"[{log_prefix}] No active {sym_upper} 5-min markets found")
+                continue
 
-            if edge < self.min_edge:
-                logger.debug(
-                    f"[MRO-KELLY] SKIP {m.slug}: edge={edge:.4f} < {self.min_edge}"
+            # ── Evaluate each market ──
+            for m in crypto_markets:
+                # Cooldown per market
+                if now - self._recently_traded.get(m.id, 0) < self.cooldown_per_market:
+                    continue
+
+                # Max open positions (global)
+                if self._open_position_count >= self.max_open_positions * len(SUPPORTED_CRYPTOS):
+                    break
+
+                # Max positions per crypto
+                if self._positions_per_crypto.get(crypto_symbol, 0) >= self.max_positions_per_crypto:
+                    break
+
+                # Determine slot timing
+                slug = getattr(m, "slug", "")
+                try:
+                    slot_epoch = int(slug.split("-")[-1])
+                except (ValueError, IndexError):
+                    continue
+
+                t_remaining = (slot_epoch + self.SLOT_DURATION) - now
+                if t_remaining <= 0 or t_remaining > self.SLOT_DURATION:
+                    continue
+
+                # Get market prices
+                price_yes = m.prices.get("yes", 0.5)
+                price_no = m.prices.get("no", 0.5)
+
+                # odds_delta: how far market price deviates from 0.50
+                odds_delta = price_yes - 0.50
+
+                # Calculate probability using MRO model
+                pr_up = self._calc_probability(mro_value, odds_delta)
+
+                # Choose side based on direction
+                if direction == "UP":
+                    side = "YES"
+                    our_prob = pr_up
+                    market_price = price_yes
+                else:
+                    side = "NO"
+                    our_prob = 1.0 - pr_up
+                    market_price = price_no
+
+                # Calculate edge
+                fee = self._crypto_fee(market_price)
+                edge = our_prob - market_price - fee
+
+                if edge < self.min_edge:
+                    logger.debug(f"[{log_prefix}] SKIP {m.slug}: edge={edge:.4f} < {self.min_edge}")
+                    continue
+
+                # ── Kelly sizing: f* = (p - m) / (1 - m) x 0.25 ──
+                if market_price >= 1.0:
+                    continue
+                kelly_full = (our_prob - market_price) / (1.0 - market_price)
+                kelly_quarter = kelly_full * self.kelly_fraction
+                kelly_quarter = max(0.0, kelly_quarter)
+
+                # Size: quarter-Kelly of test bankroll, clamped to [min_bet, max_bet]
+                bankroll = self.max_bet * 10  # ~$200 test bankroll
+                target_size = bankroll * kelly_quarter
+                target_size = max(self.min_bet, min(self.max_bet, target_size))
+
+                signal = MROSignal(
+                    market=m,
+                    direction=direction,
+                    side=side,
+                    mro_value=mro_value,
+                    probability=our_prob,
+                    market_price=market_price,
+                    edge=edge,
+                    kelly_fraction=kelly_quarter,
+                    target_size=target_size,
+                    btc_price=crypto_data.price,
+                    rsi=calc.rsi,
+                    macd=calc.macd,
+                    volume_change=vol_change,
+                    reasoning=(
+                        f"[{sym_upper}] MRO={mro_value:+.1f} -> {direction} | "
+                        f"{sym_upper}=${crypto_data.price:,.2f} | "
+                        f"Pr={our_prob:.3f} vs mkt={market_price:.3f} "
+                        f"edge={edge:.4f} fee={fee:.5f} | "
+                        f"RSI={calc.rsi:.1f} MACD={calc.macd:.4f} | "
+                        f"vol_chg={vol_change:+.1f}% EMA50={'UP' if calc.ema50_uptrend else 'DOWN'} | "
+                        f"Kelly={kelly_quarter:.4f} size=${target_size:.0f} | "
+                        f"tau={t_remaining:.0f}s"
+                    ),
                 )
-                continue
+                signals.append(signal)
 
-            # ── Kelly sizing: f* = (p - m) / (1 - m) × 0.25 ──
-            if market_price >= 1.0:
-                continue
-            kelly_full = (our_prob - market_price) / (1.0 - market_price)
-            kelly_quarter = kelly_full * self.kelly_fraction
-            kelly_quarter = max(0.0, kelly_quarter)
+            if signals:
+                logger.info(
+                    f"[{log_prefix}] {len(signals)} signal(s): MRO={mro_value:+.1f} "
+                    f"dir={direction} RSI={calc.rsi:.1f}"
+                )
 
-            # Size: quarter-Kelly of test bankroll, clamped to [min_bet, max_bet]
-            bankroll = self.max_bet * 10  # ~$200 test bankroll
-            target_size = bankroll * kelly_quarter
-            target_size = max(self.min_bet, min(self.max_bet, target_size))
+            all_signals.extend(signals)
 
-            signal = MROSignal(
-                market=m,
-                direction=direction,
-                side=side,
-                mro_value=mro_value,
-                probability=our_prob,
-                market_price=market_price,
-                edge=edge,
-                kelly_fraction=kelly_quarter,
-                target_size=target_size,
-                btc_price=btc_data.price,
-                rsi=self.calculator.rsi,
-                macd=self.calculator.macd,
-                volume_change=vol_change,
-                reasoning=(
-                    f"MRO={mro_value:+.1f} → {direction} | "
-                    f"BTC=${btc_data.price:,.0f} | "
-                    f"Pr={our_prob:.3f} vs mkt={market_price:.3f} "
-                    f"edge={edge:.4f} fee={fee:.5f} | "
-                    f"RSI={self.calculator.rsi:.1f} MACD={self.calculator.macd:.4f} | "
-                    f"vol_chg={vol_change:+.1f}% EMA50={'UP' if self.calculator.ema50_uptrend else 'DOWN'} | "
-                    f"Kelly={kelly_quarter:.4f} size=${target_size:.0f} | "
-                    f"tau={t_remaining:.0f}s"
-                ),
-            )
-            signals.append(signal)
-
-        if signals:
-            logger.info(
-                f"[MRO-KELLY] {len(signals)} signal(s): MRO={mro_value:+.1f} "
-                f"dir={direction} RSI={self.calculator.rsi:.1f}"
-            )
-
-        return signals
+        return all_signals
 
     # ══════════════════════════════════════════════════════════════
     #  Execute
@@ -780,6 +792,11 @@ class MROKellyStrategy:
         """Execute an MRO-Kelly trade."""
         now = time.time()
 
+        # Detect crypto symbol from market slug
+        slug = getattr(signal.market, "slug", "")
+        crypto_symbol = slug.split("-")[0] if slug else "btc"
+        sym_upper = crypto_symbol.upper()
+
         # Re-check halts
         if self._is_halted():
             return False
@@ -788,17 +805,28 @@ class MROKellyStrategy:
         if now - self._recently_traded.get(signal.market.id, 0) < self.cooldown_per_market:
             return False
 
-        # Max open positions
-        if self._open_position_count >= self.max_open_positions:
+        # Max open positions (global: max_open_positions * num_cryptos)
+        total_max = self.max_open_positions * len(SUPPORTED_CRYPTOS)
+        if self._open_position_count >= total_max:
             logger.info(
-                f"[MRO-KELLY] Max positions reached ({self._open_position_count}/{self.max_open_positions})"
+                f"[MRO-{sym_upper}] Max total positions reached ({self._open_position_count}/{total_max})"
+            )
+            return False
+
+        # Max positions per crypto
+        if not hasattr(self, '_positions_per_crypto'):
+            self._positions_per_crypto = {sym: 0 for sym in SUPPORTED_CRYPTOS}
+        if self._positions_per_crypto.get(crypto_symbol, 0) >= self.max_positions_per_crypto:
+            logger.info(
+                f"[MRO-{sym_upper}] Max per-crypto positions reached "
+                f"({self._positions_per_crypto[crypto_symbol]}/{self.max_positions_per_crypto})"
             )
             return False
 
         token_key = signal.side.lower()
         token_id = signal.market.tokens.get(token_key)
         if not token_id:
-            logger.warning(f"[MRO-KELLY] No token ID for {token_key}")
+            logger.warning(f"[MRO-{sym_upper}] No token ID for {token_key}")
             return False
 
         buy_price = signal.market_price
@@ -810,7 +838,7 @@ class MROKellyStrategy:
             side=f"BUY_{signal.side}", market_id=signal.market.id,
         )
         if not allowed:
-            logger.info(f"[MRO-KELLY] Risk block: {reason}")
+            logger.info(f"[MRO-{sym_upper}] Risk block: {reason}")
             return False
 
         trade = Trade(
@@ -844,12 +872,12 @@ class MROKellyStrategy:
             pnl -= fee
 
             logger.info(
-                f"[PAPER] MRO-KELLY: {signal.direction} "
+                f"[PAPER] MRO-{sym_upper}: {signal.direction} "
                 f"BUY {signal.side} ${size:.0f} @{buy_price:.3f} | "
                 f"MRO={signal.mro_value:+.1f} Pr={signal.probability:.3f} "
                 f"edge={signal.edge:.4f} Kelly={signal.kelly_fraction:.4f} | "
                 f"{'WIN' if won else 'LOSS'} pnl=${pnl:+.2f} (fee=${fee:.2f}) | "
-                f"BTC=${signal.btc_price:,.0f} RSI={signal.rsi:.1f}"
+                f"{sym_upper}=${signal.btc_price:,.2f} RSI={signal.rsi:.1f}"
             )
 
             self.risk.open_trade(trade)
@@ -864,7 +892,7 @@ class MROKellyStrategy:
                 if self._consecutive_losses >= 3:
                     self._loss_cooldown_until = now + self.cooldown_after_losses
                     logger.warning(
-                        f"[MRO-KELLY] 3 consecutive losses — "
+                        f"[MRO-{sym_upper}] 3 consecutive losses — "
                         f"pausing for {self.cooldown_after_losses / 60:.0f}min"
                     )
 
@@ -901,14 +929,15 @@ class MROKellyStrategy:
                         trade.price = hz_result.fill_price
                     self.risk.open_trade(trade)
                     self._open_position_count += 1
+                    self._positions_per_crypto[crypto_symbol] = self._positions_per_crypto.get(crypto_symbol, 0) + 1
                     logger.info(
-                        f"[LIVE] MRO-KELLY [{hz_result.engine.upper()}]: {signal.direction} "
+                        f"[LIVE] MRO-{sym_upper} [{hz_result.engine.upper()}]: {signal.direction} "
                         f"BUY {signal.side} ${size:.0f} @{buy_price:.3f} | "
                         f"MRO={signal.mro_value:+.1f} edge={signal.edge:.4f} | "
-                        f"BTC=${signal.btc_price:,.0f}"
+                        f"{sym_upper}=${signal.btc_price:,.2f}"
                     )
                 else:
-                    logger.warning(f"[MRO-KELLY] Execution failed: {hz_result.error}")
+                    logger.warning(f"[MRO-{sym_upper}] Execution failed: {hz_result.error}")
                     return False
             else:
                 # Legacy path: direct native smart_buy
@@ -921,14 +950,15 @@ class MROKellyStrategy:
                         trade.price = result["_fill_price"]
                     self.risk.open_trade(trade)
                     self._open_position_count += 1
+                    self._positions_per_crypto[crypto_symbol] = self._positions_per_crypto.get(crypto_symbol, 0) + 1
                     logger.info(
-                        f"[LIVE] MRO-KELLY [NATIVE]: {signal.direction} "
+                        f"[LIVE] MRO-{sym_upper} [NATIVE]: {signal.direction} "
                         f"BUY {signal.side} ${size:.0f} @{buy_price:.3f} | "
                         f"MRO={signal.mro_value:+.1f} edge={signal.edge:.4f} | "
-                        f"BTC=${signal.btc_price:,.0f}"
+                        f"{sym_upper}=${signal.btc_price:,.2f}"
                     )
                 else:
-                    logger.warning(f"[MRO-KELLY] Order failed: {signal.market.id}")
+                    logger.warning(f"[MRO-{sym_upper}] Order failed: {signal.market.id}")
                     return False
 
         self._recently_traded[signal.market.id] = now
@@ -951,6 +981,18 @@ class MROKellyStrategy:
             sum(t.get("edge", 0) for t in trades) / len(trades)
         ) if trades else 0
 
+        # Per-crypto calculator stats
+        crypto_stats = {}
+        for sym, calc in self._calculators.items():
+            crypto_stats[sym] = {
+                "ready": calc.ready,
+                "candles": len(calc.candles),
+                "mro": calc.mro(),
+                "rsi": calc.rsi,
+                "macd": calc.macd,
+                "ema50": calc.ema50,
+            }
+
         return {
             "trades": len(trades),
             "wins": wins,
@@ -969,4 +1011,5 @@ class MROKellyStrategy:
             "macd": self.calculator.macd,
             "ema50": self.calculator.ema50,
             "scale_eligible": len(trades) >= 50 and wr >= 58,
+            "crypto_stats": crypto_stats,
         }
