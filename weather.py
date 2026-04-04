@@ -423,7 +423,7 @@ class WeatherStrategy:
         # 1. Rileva citta'
         city = self.weather.detect_city(q)
         if not city:
-            logger.debug(f"[WEATHER-SKIP] no city: {q[:80]}")
+            logger.info(f"[WEATHER-PARSE] no city: {q[:80]}")
             return None
 
         # v12.0.5: Dynamic city blacklist (learns from trade outcomes)
@@ -437,19 +437,19 @@ class WeatherStrategy:
         # 2. Rileva data
         date = self._parse_date(q)
         if not date:
-            logger.debug(f"[WEATHER-SKIP] no date: {q[:80]}")
+            logger.info(f"[WEATHER-PARSE] no date: city={city} q={q[:80]}")
             return None
 
         # 3. Ottieni previsione
         forecast = self.weather.get_forecast_for_date(city, date)
         if not forecast:
-            logger.debug(f"[WEATHER-SKIP] no forecast: {city} {date}")
+            logger.info(f"[WEATHER-PARSE] no forecast: {city} {date}")
             return None
 
         # 4. Rileva bucket di temperatura
         bucket = self._parse_bucket(market)
         if not bucket:
-            logger.debug(f"[WEATHER-SKIP] no bucket: {q[:100]} outcomes={market.outcomes[:4]}")
+            logger.info(f"[WEATHER-PARSE] no bucket: {q[:100]} outcomes={market.outcomes[:4]}")
             return None
 
         low, high, label = bucket

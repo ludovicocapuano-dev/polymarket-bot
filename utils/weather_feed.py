@@ -238,6 +238,52 @@ WEATHER_CITIES: dict[str, dict] = {
         "nws_grid": None,
         "unit": "C",
     },
+    # v13.2: nuove città Polymarket (Apr 2026)
+    "tel aviv": {
+        "lat": 32.011,
+        "lon": 34.887,
+        "keywords": ["tel aviv"],
+        "station": "Ben Gurion Airport",
+        "wethr_code": "LLBG",
+        "nws_grid": None,
+        "unit": "C",
+    },
+    "milan": {
+        "lat": 45.630,
+        "lon": 8.723,
+        "keywords": ["milan", "milano"],
+        "station": "Malpensa Airport",
+        "wethr_code": "LIMC",
+        "nws_grid": None,
+        "unit": "C",
+    },
+    "chongqing": {
+        "lat": 29.719,
+        "lon": 106.642,
+        "keywords": ["chongqing"],
+        "station": "Jiangbei Intl",
+        "wethr_code": "ZUCK",
+        "nws_grid": None,
+        "unit": "C",
+    },
+    "shenzhen": {
+        "lat": 22.639,
+        "lon": 113.811,
+        "keywords": ["shenzhen"],
+        "station": "Bao'an Intl",
+        "wethr_code": "ZGSZ",
+        "nws_grid": None,
+        "unit": "C",
+    },
+    "san francisco": {
+        "lat": 37.619,
+        "lon": -122.375,
+        "keywords": ["san francisco", "sfo"],
+        "station": "San Francisco Intl",
+        "wethr_code": "KSFO",
+        "nws_grid": ("MTR", 85, 105),
+        "unit": "F",
+    },
 }
 
 # ── URL API ───────────────────────────────────────────────────
