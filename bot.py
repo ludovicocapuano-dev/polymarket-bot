@@ -575,15 +575,11 @@ class MultiStrategyBot:
             f"liquidity_vacuum($300) sport_latency($500)"
         )
 
-        # v12.10.8: Notify startup via Telegram — simplified strategy list
-        _fe_status = self.fast_executor.status_str() if self.fast_executor else "N/A"
+        # v13.2: Notify startup via Telegram — only ACTIVE strategies
         all_strats = [
-            f"mro_kelly (${self.mro_kelly.max_bet:.0f}/trade, budget $500)",
-            f"btc_latency (${self.btc_latency.max_size:.0f}/trade, budget $1000)",
-            f"liquidity_vacuum ($50/trade, budget $300)",
-            f"weather (difensivo, solo +2d+ sigma<3°F)",
-            f"sport_latency ({'attivo' if not self.betfair._disabled else 'attende Betfair'})",
-            f"fast_executor ({_fe_status})",
+            f"weather (90%, subtraction mode)",
+            f"mro_kelly (${self.mro_kelly.max_bet:.0f}/trade, BTC/ETH/SOL/XRP)",
+            f"btc_latency (${self.btc_latency.max_size:.0f}/trade)",
         ]
         # v13.2: usa USDC reale per Telegram, non risk.capital (include exposed vecchio)
         telegram_capital = getattr(self, '_startup_usdc', 0) or self.risk.capital
