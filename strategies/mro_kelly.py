@@ -95,7 +95,7 @@ class MROCalculator:
         """
         now = time.time()
         sd = binance_symbol_data
-        if sd.price <= 0 or not sd.history:
+        if sd.price <= 0:
             return
 
         # Determine current candle epoch
@@ -562,7 +562,7 @@ class MROKellyStrategy:
         # Need Binance feed
         btc_data = self.binance.get_symbol("btc")
         if btc_data.price <= 0:
-            logger.debug("[MRO-KELLY] No BTC price from Binance feed")
+            logger.info("[MRO-KELLY] No BTC price from Binance feed")
             return []
 
         # Update calculator with fresh tick data
@@ -570,7 +570,7 @@ class MROKellyStrategy:
 
         # Need enough candles for MRO calculation
         if not self.calculator.ready:
-            logger.debug(f"[MRO-KELLY] Not ready: {len(self.calculator.candles)} candles (need 6+)")
+            logger.info(f"[MRO-KELLY] Not ready: {len(self.calculator.candles)} candles (need 6+)")
             return []
 
         mro_value = self.calculator.mro()
