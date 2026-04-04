@@ -795,32 +795,11 @@ class MultiStrategyBot:
                 except Exception as e:
                     logger.warning(f"[BTC-LATENCY] Errore: {e}", exc_info=True)
 
-                # ── 0.9.0.1. Sport Latency Arb v1.0 (Betfair Exchange) ──
-                if hasattr(self, 'sport_latency'):
-                    try:
-                        sport_signals = self.sport_latency.scan(shared_markets=shared_markets)
-                        if sport_signals:
-                            for sig in sport_signals[:2]:  # max 2 per ciclo
-                                if not self._running:
-                                    break
-                                await self.sport_latency.execute(sig, paper=paper)
-                    except Exception as e:
-                        logger.warning(f"[SPORT-LATENCY] Errore: {e}", exc_info=True)
+                # ── 0.9.0.1. Sport Latency — BLOCCATO su richiesta utente ──
+                pass
 
-                # ── 0.9.0.2. Liquidity Vacuum Sniper v1.0 ──
-                if hasattr(self, 'liquidity_vacuum'):
-                    try:
-                        vacuum_signals = self.liquidity_vacuum.scan(shared_markets=shared_markets)
-                        if vacuum_signals:
-                            for sig in vacuum_signals[:2]:
-                                if not self._running:
-                                    break
-                                traded = await self.liquidity_vacuum.execute(sig, paper=paper)
-                                if traded:
-                                    asyncio.ensure_future(self.telegram.notify_trade("liquidity_vacuum", f"BUY {sig.side}", sig.market.question[:60] if sig.market.question else "vacuum", sig.target_size, sig.current_price, sig.edge, paper=paper))
-                                    self.dashboard.record_trade("liquidity_vacuum", f"BUY {sig.side}", sig.target_size, sig.current_price, sig.edge, True, 0, "vacuum")
-                    except Exception as e:
-                        logger.warning(f"[VACUUM] Errore: {e}", exc_info=True)
+                # ── 0.9.0.2. Liquidity Vacuum — BLOCCATO su richiesta utente ──
+                pass
 
                 # ── 0.9.1. MRO-Kelly — Mean Reversion Oscillator BTC 5-min ──
                 try:
