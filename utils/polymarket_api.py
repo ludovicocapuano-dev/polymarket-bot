@@ -807,8 +807,14 @@ class PolymarketAPI:
                 pass
 
             if fallback_market:
-                logger.info("[SMART] Fallback a market order (TAKER)")
-                return self.buy_market(token_id, amount)  # buy_market embeds fill price
+                # v12.9: Price-capped fallback — never pay more than target + 10%
+                # The XRP incident: target $0.615, filled at $0.98 (60% overpay)
+                max_price = round(target_price * 1.10, 2)  # 10% max slippage
+                logger.info(
+                    f"[SMART] Fallback a limit order @${max_price:.2f} "
+                    f"(target=${target_price:.2f} + 10% cap)"
+                )
+                return self.buy_limit(token_id, max_price, shares)
             return None
 
         # v7.4: Embed actual fill price for limit fills (retry con backoff)
@@ -820,15 +826,21 @@ class PolymarketAPI:
             if fill:
                 break
         if fill and isinstance(result, dict):
-            # v10.5: Sanity check — fill price deve essere plausibile
+            # v12.9: ALWAYS record actual fill price — even if suspicious
+            # The trade happened at this price, PnL must reflect reality
             if fill["fill_price"] < target_price * 0.3:
                 logger.warning(
-                    f"[FILL] Fill price sospetto: ${fill['fill_price']:.4f} "
-                    f"vs target ~${target_price:.4f} — IGNORATO (altro trader?)"
+                    f"[FILL] Fill price BASSO: ${fill['fill_price']:.4f} "
+                    f"vs target ~${target_price:.4f}"
                 )
-            else:
-                result["_fill_price"] = fill["fill_price"]
-                result["_fill_size"] = fill["fill_size"]
+            elif fill["fill_price"] > target_price * 1.5:
+                logger.warning(
+                    f"[FILL] Fill price ALTO (slippage): ${fill['fill_price']:.4f} "
+                    f"vs target ~${target_price:.4f}"
+                )
+            result["_fill_price"] = fill["fill_price"]
+            result["_fill_size"] = fill["fill_size"]
+            if True:
                 logger.info(
                     f"[FILL] Real fill: {fill['fill_size']:.2f} shares "
                     f"@${fill['fill_price']:.4f} (attempt {_attempt})"

@@ -857,11 +857,15 @@ class MultiStrategyBot:
                                 )
                                 traded = await self.weather.execute(opp, paper=paper)
                                 if traded:
+                                    # v12.9: Get actual fill price for accurate notification
+                                    fill_price = getattr(opp, 'buy_price', getattr(opp, 'price', 0.5))
+                                    if isinstance(traded, dict) and traded.get("_fill_price"):
+                                        fill_price = traded["_fill_price"]
                                     asyncio.ensure_future(self.telegram.notify_trade(
                                         "weather", f"BUY_{opp.side}",
                                         f"{opp.city} {opp.bucket_label}" if hasattr(opp, 'city') else opp.market.question[:60],
                                         opp.target_size if hasattr(opp, 'target_size') else 0,
-                                        getattr(opp, 'buy_price', getattr(opp, 'price', 0.5)),
+                                        fill_price,
                                         opp.edge,
                                         paper=paper,
                                     ))
