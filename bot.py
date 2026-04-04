@@ -546,10 +546,12 @@ class MultiStrategyBot:
                 sys.exit(1)
 
         # v12.0.1: Reconcile capital = USDC balance + tracked exposure
-        # Senza questo, posizioni importate fanno sembrare available_capital negativo
+        # v13.2: salva USDC reale per Telegram (prima del reconcile che gonfia)
+        self._startup_usdc = 0
         try:
             usdc_bal = self.api.get_usdc_balance()
             if usdc_bal >= 0:
+                self._startup_usdc = usdc_bal
                 real_capital = usdc_bal + self.risk.total_exposed
                 if abs(real_capital - self.risk.capital) > 50:
                     logger.info(
@@ -583,10 +585,8 @@ class MultiStrategyBot:
             f"sport_latency ({'attivo' if not self.betfair._disabled else 'attende Betfair'})",
             f"fast_executor ({_fe_status})",
         ]
-        # v13.2: usa USDC reale per Telegram, non risk.capital (che include exposed vecchio)
-        telegram_capital = getattr(self, '_usdc_balance', self.risk.capital)
-        if telegram_capital <= 0:
-            telegram_capital = self.risk.capital
+        # v13.2: usa USDC reale per Telegram, non risk.capital (include exposed vecchio)
+        telegram_capital = getattr(self, '_startup_usdc', 0) or self.risk.capital
         await self.telegram.notify_startup(
             mode="PAPER" if paper else "LIVE",
             capital=telegram_capital,
