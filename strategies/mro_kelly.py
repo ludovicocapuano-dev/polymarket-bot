@@ -636,21 +636,21 @@ class MROKellyStrategy:
                 direction = "UP"
 
                 if vol_change < self.vol_spike_up:
-                    logger.debug(f"[{log_prefix}] SKIP UP: vol_change={vol_change:.1f}% < {self.vol_spike_up}%")
+                    logger.info(f"[{log_prefix}] SKIP UP: vol_change={vol_change:.1f}% < {self.vol_spike_up}%")
                     continue
 
                 if not calc.price_bounced_from_low(0.1):
-                    logger.debug(f"[{log_prefix}] SKIP UP: no price bounce from low")
+                    logger.info(f"[{log_prefix}] SKIP UP: no price bounce from low")
                     continue
 
                 if not calc.ema50_uptrend:
-                    logger.debug(f"[{log_prefix}] SKIP UP: EMA50 downtrend")
+                    logger.info(f"[{log_prefix}] SKIP UP: EMA50 downtrend")
                     continue
 
                 rsi_ok = calc.rsi > 65
                 macd_ok = calc.macd > 0
                 if not (rsi_ok or macd_ok):
-                    logger.debug(f"[{log_prefix}] SKIP UP: RSI={calc.rsi:.1f} MACD={calc.macd:.4f}")
+                    logger.info(f"[{log_prefix}] SKIP UP: RSI={calc.rsi:.1f} MACD={calc.macd:.4f}")
                     continue
 
             elif mro_value > self.mro_threshold:
@@ -658,21 +658,21 @@ class MROKellyStrategy:
                 direction = "DOWN"
 
                 if vol_change < self.vol_spike_down:
-                    logger.debug(f"[{log_prefix}] SKIP DOWN: vol_change={vol_change:.1f}% < {self.vol_spike_down}%")
+                    logger.info(f"[{log_prefix}] SKIP DOWN: vol_change={vol_change:.1f}% < {self.vol_spike_down}%")
                     continue
 
                 if not calc.price_pulled_from_high(0.1):
-                    logger.debug(f"[{log_prefix}] SKIP DOWN: no price pull from high")
+                    logger.info(f"[{log_prefix}] SKIP DOWN: no price pull from high")
                     continue
 
                 if not calc.ema50_downtrend:
-                    logger.debug(f"[{log_prefix}] SKIP DOWN: EMA50 uptrend")
+                    logger.info(f"[{log_prefix}] SKIP DOWN: EMA50 uptrend")
                     continue
 
                 rsi_ok = calc.rsi < 35
                 macd_ok = calc.macd < 0
                 if not (rsi_ok or macd_ok):
-                    logger.debug(f"[{log_prefix}] SKIP DOWN: RSI={calc.rsi:.1f} MACD={calc.macd:.4f}")
+                    logger.info(f"[{log_prefix}] SKIP DOWN: RSI={calc.rsi:.1f} MACD={calc.macd:.4f}")
                     continue
             else:
                 continue
