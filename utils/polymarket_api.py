@@ -696,14 +696,16 @@ class PolymarketAPI:
         # This is correct maker behavior per Becker 2026.
         spread = best_ask - best_bid
 
-        # Only skip on truly empty book (no bids AND no asks)
+        # Skip on empty or effectively empty book
+        # bid=$0.01 ask=$0.99 = nobody is trading, market is nearly resolved
         if not bids and not asks:
+            logger.info(f"[SMART] Book vuoto (no bids/asks) — SKIP {token_id[:16]}")
+            return None
+        if spread >= 0.90:
             logger.info(
-                f"[SMART] Book vuoto (no bids/asks) target=${target_price:.2f} "
-                f"su {token_id[:16]}..."
+                f"[SMART] Book morto (bid=${best_bid:.2f} ask=${best_ask:.2f} "
+                f"spread=${spread:.2f}) — SKIP, nessuna liquidità reale"
             )
-            if fallback_market:
-                return self.buy_market(token_id, amount)
             return None
 
         # Determine limit price based on book state
