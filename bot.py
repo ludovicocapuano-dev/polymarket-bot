@@ -583,9 +583,13 @@ class MultiStrategyBot:
             f"sport_latency ({'attivo' if not self.betfair._disabled else 'attende Betfair'})",
             f"fast_executor ({_fe_status})",
         ]
+        # v13.2: usa USDC reale per Telegram, non risk.capital (che include exposed vecchio)
+        telegram_capital = getattr(self, '_usdc_balance', self.risk.capital)
+        if telegram_capital <= 0:
+            telegram_capital = self.risk.capital
         await self.telegram.notify_startup(
             mode="PAPER" if paper else "LIVE",
-            capital=self.risk.capital,
+            capital=telegram_capital,
             strategies=all_strats,
         )
 
