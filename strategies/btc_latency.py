@@ -127,7 +127,7 @@ class BTCLatencyStrategy:
     _pnl_tracker: dict = field(default_factory=dict)
     _signal_history: deque = field(default_factory=lambda: deque(maxlen=500))
     _market_cache: dict = field(default_factory=dict)   # slug -> (Market, expire_ts)
-    _slot_opens: dict = field(default_factory=dict)      # epoch -> btc_price
+    _slot_opens: dict = field(default_factory=dict)      # (symbol, epoch) -> price
     _ofi_history: deque = field(default_factory=lambda: deque(maxlen=100))  # v3.0: (ts, ofi, bp)
 
     # ── Constants ──
@@ -280,10 +280,10 @@ class BTCLatencyStrategy:
         """
         now = time.time()
 
-        # Cleanup slot opens vecchi
-        stale = [e for e in self._slot_opens if now - e > 600]
-        for e in stale:
-            del self._slot_opens[e]
+        # Cleanup slot opens vecchi — key is (symbol, epoch)
+        stale = [k for k in self._slot_opens if now - k[1] > 600]
+        for k in stale:
+            del self._slot_opens[k]
 
         all_signals = []
 
@@ -339,7 +339,7 @@ class BTCLatencyStrategy:
                 if t_remaining <= 0:
                     continue
 
-                s_open = self._get_slot_open(slot_epoch, sd)
+                s_open = self._get_slot_open(slot_epoch, sd, symbol=sym_upper)
                 if s_open is None or s_open <= 0:
                     continue
 
@@ -527,7 +527,7 @@ class BTCLatencyStrategy:
                     slot_epoch = int(slug.split("-")[-1])
                 except Exception:
                     pass
-                s_open = self._slot_opens.get(slot_epoch, s_now) if slot_epoch else s_now
+                s_open = self._slot_opens.get((sym_upper, slot_epoch), s_now) if slot_epoch else s_now
                 lr = math.log(s_now / s_open) if s_open > 0 else 0
                 logger.info(
                     f"[{log_prefix}] no edge | {sym_upper}=${s_now:,.0f} "
@@ -592,14 +592,14 @@ class BTCLatencyStrategy:
 
         return 0.0
 
-    def _get_slot_open(self, slot_epoch: int, btc) -> float | None:
+    def _get_slot_open(self, slot_epoch: int, btc, symbol: str = "BTC") -> float | None:
         """
-        Prezzo BTC all'apertura del slot. Registra alla prima osservazione.
-        Cerca nel history di Binance il prezzo piu' vicino al timestamp di
-        apertura. Fallback: prezzo corrente se siamo nei primi 30s.
+        Prezzo della crypto all'apertura del slot. Registra alla prima osservazione.
+        v13.1: Uses (symbol, epoch) key to avoid mixing BTC/ETH/SOL/XRP prices.
         """
-        if slot_epoch in self._slot_opens:
-            return self._slot_opens[slot_epoch]
+        key = (symbol.upper(), slot_epoch)
+        if key in self._slot_opens:
+            return self._slot_opens[key]
 
         # Cerca in history il prezzo piu' vicino a slot_epoch
         best_price = None
@@ -611,13 +611,13 @@ class BTCLatencyStrategy:
                 best_price = price
 
         if best_price and best_dt < 60:
-            self._slot_opens[slot_epoch] = best_price
+            self._slot_opens[key] = best_price
             return best_price
 
         # Fallback: se siamo nei primi 30s del slot, usa prezzo corrente
         now = time.time()
         if now - slot_epoch < 30:
-            self._slot_opens[slot_epoch] = btc.price
+            self._slot_opens[key] = btc.price
             return btc.price
 
         return None
