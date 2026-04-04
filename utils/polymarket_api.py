@@ -807,14 +807,19 @@ class PolymarketAPI:
                 pass
 
             if fallback_market:
-                # v12.9: Price-capped fallback — never pay more than target + 10%
-                # The XRP incident: target $0.615, filled at $0.98 (60% overpay)
-                max_price = round(target_price * 1.10, 2)  # 10% max slippage
+                # v13.1: Price-capped fallback — never pay more than target + 10%
+                max_price = round(target_price * 1.10, 2)
                 logger.info(
                     f"[SMART] Fallback a limit order @${max_price:.2f} "
                     f"(target=${target_price:.2f} + 10% cap)"
                 )
-                return self.buy_limit(token_id, max_price, shares)
+                fallback_result = self.buy_limit(token_id, max_price, shares)
+                # CRITICAL: embed the REAL price so PnL is calculated correctly
+                if fallback_result and isinstance(fallback_result, dict):
+                    fallback_result["_fill_price"] = max_price
+                    fallback_result["_fallback_from"] = target_price
+                    logger.info(f"[SMART] Fallback fill price recorded: ${max_price:.2f} (was target ${target_price:.2f})")
+                return fallback_result
             return None
 
         # v7.4: Embed actual fill price for limit fills (retry con backoff)

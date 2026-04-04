@@ -1,0 +1,3114 @@
+{
+  "Query1_bot_profit": {
+    "query": "polymarket bot profit strategy",
+    "tweets": [
+      {
+        "public_metrics": {
+          "retweet_count": 5,
+          "reply_count": 22,
+          "like_count": 96,
+          "quote_count": 1,
+          "bookmark_count": 113,
+          "impression_count": 9518
+        },
+        "edit_history_tweet_ids": [
+          "2028145246199058915"
+        ],
+        "author_id": "1492492110490218497",
+        "id": "2028145246199058915",
+        "text": "i told claude: \"copy this bot's strategy on polymarket\"\n\nresults shocked me\n24 hours later: +$25,000\n\nhere's what happened\nfound RN1 profile\n\n&gt; $5M profit.\n&gt; 35,000+ trades.\n&gt; arbitrage only\n\nsent claude the full breakdown of his strategy\n\n\"analyze this, rebuild the logic, give https://t.co/6eKtc8utza",
+        "created_at": "2026-03-01T16:28:02.000Z"
+      },
+      {
+        "public_metrics": {
+          "retweet_count": 8,
+          "reply_count": 16,
+          "like_count": 99,
+          "quote_count": 0,
+          "bookmark_count": 92,
+          "impression_count": 11558
+        },
+        "edit_history_tweet_ids": [
+          "2028029655157030994"
+        ],
+        "author_id": "1705329284745764864",
+        "id": "2028029655157030994",
+        "text": "He created a successful Polymarket bot using ClawdBot\n\n&gt; weekly profit is always &gt;$10,000\n&gt; only 5m &amp; 15m BTC markets\n\nThe most interesting thing is that very simple tools were used:\n\n&gt; Cursor &amp; Python\n&gt; Polymarket API\n&gt; Simple prompt strategy\n\nIf the old strategy stops working, https://t.co/tJ1bflMRH8 https://t.co/xgZUfZ1lTQ",
+        "created_at": "2026-03-01T08:48:43.000Z"
+      },
+      {
+        "public_metrics": {
+          "retweet_count": 5,
+          "reply_count": 11,
+          "like_count": 75,
+          "quote_count": 0,
+          "bookmark_count": 105,
+          "impression_count": 10090
+        },
+        "edit_history_tweet_ids": [
+          "2026718718839902511"
+        ],
+        "author_id": "1520730091684311041",
+        "id": "2026718718839902511",
+        "text": "Some guy deposited $150 on polymarket\n\njust checked his wallet\n\nnow sitting at $104k profit\n\nasked what's his strategy\n\nProfile https://t.co/Jcd34XKpjz\n\nCopytrading here:https://t.co/6goxdiTl78\n\nit's simple \nhis bot buys everything under 5 cents\n\nno analysis \nno predictions\n\nsome https://t.co/UzlufGvtBX",
+        "created_at": "2026-02-25T17:59:31.000Z"
+      },
+      {
+        "public_metrics": {
+          "retweet_count": 1,
+          "reply_count": 15,
+          "like_count": 33,
+          "quote_count": 1,
+          "bookmark_count": 17,
+          "impression_count": 4407
+        },
+        "edit_history_tweet_ids": [
+          "2027395610035269638"
+        ],
+        "author_id": "1492492110490218497",
+        "id": "2027395610035269638",
+        "text": "i told an AI \"find me free money on polymarket\"\n\nit found a wallet with 94% win rate and $380,000 in profit\n\nthe strategy? embarrassingly simple\n\npolymarket updates prices every 500ms\n\nbinance updates every 10ms\n\nthat gap is 490ms of free money\n\nthe bot just:\n\n\u2192 watches binance https://t.co/65OQ6cmYd2",
+        "created_at": "2026-02-27T14:49:15.000Z"
+      },
+      {
+        "public_metrics": {
+          "retweet_count": 3,
+          "reply_count": 7,
+          "like_count": 30,
+          "quote_count": 0,
+          "bookmark_count": 17,
+          "impression_count": 1744
+        },
+        "edit_history_tweet_ids": [
+          "2026422699002659231"
+        ],
+        "author_id": "1057932804493852672",
+        "id": "2026422699002659231",
+        "text": "A weather bot turned $7 into $1,200 on Polymarket.\n\nI started copying it through the app.\n\nProfile: https://t.co/RFjBTjOgoe\n\nCopytrade \u2192https://t.co/IJgZJgdJz0\n\nStats:\n\n\u2022 2,120 predictions\n\u2022 $30,000 total profit\n\u2022 88% win rate\n\nThe strategy is simple \u2014 but disciplined:\n\n\u2022 https://t.co/jxMgmvaNBO",
+        "created_at": "2026-02-24T22:23:15.000Z"
+      },
+      {
+        "public_metrics": {
+          "retweet_count": 4,
+          "reply_count": 3,
+          "like_count": 30,
+          "quote_count": 0,
+          "bookmark_count": 35,
+          "impression_count": 5668
+        },
+        "edit_history_tweet_ids": [
+          "2027306012047286405"
+        ],
+        "author_id": "1520730091684311041",
+        "id": "2027306012047286405",
+        "text": "$150K profit with a Polymarket script.\n\nHe built a 5-minute BTC bot using only ClawdBot.\n\nIn one month: $100 \u2192 $150,000.\n\nNot hype \u2014 just automation + structure.\n\nWallet:https://t.co/0wSONttq2E\n\nCopytrade:https://t.co/6goxdiTl78\n\nCore strategy\n\n5-Minute BTC &amp; ETH Micro-Arbitrage https://t.co/PgxJcgnKIE https://t.co/hTP8dbEeSH",
+        "created_at": "2026-02-27T08:53:13.000Z"
+      },
+      {
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 4,
+          "like_count": 8,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 271
+        },
+        "edit_history_tweet_ids": [
+          "2026978575518183873"
+        ],
+        "author_id": "1646883272159289346",
+        "id": "2026978575518183873",
+        "text": "How a $230,000 Polymarket whale consistently makes 10%.\n\n\u200bI've been tracking his account for two weeks .\n\nIn just 14 days, his profit is up by $13,000.\n\n\u200bIt\u2019s not a trading bot, but a real person focused on global politics.\n\nHis main strategy is simply betting against crazy news. https://t.co/DtfONy5qqj",
+        "created_at": "2026-02-26T11:12:06.000Z"
+      },
+      {
+        "public_metrics": {
+          "retweet_count": 1,
+          "reply_count": 0,
+          "like_count": 3,
+          "quote_count": 0,
+          "bookmark_count": 2,
+          "impression_count": 184
+        },
+        "edit_history_tweet_ids": [
+          "2027642946552795440"
+        ],
+        "author_id": "1626557993381920768",
+        "id": "2027642946552795440",
+        "text": "A friend of mine started on Polymarket with just $150.\n\nI checked his wallet today.\n\nHe\u2019s now sitting on $104,000 in net profit.\n\nSo I asked him what kind of strategy he was running.\n\nQuant model?\nMacro analysis?\nInsider flow tracking?\n\nNothing like that.\n\nHis bot simply sweeps https://t.co/4v37wMb1ch",
+        "created_at": "2026-02-28T07:12:04.000Z"
+      },
+      {
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 2,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 168
+        },
+        "edit_history_tweet_ids": [
+          "2027819386674036918"
+        ],
+        "author_id": "2016545230854541312",
+        "id": "2027819386674036918",
+        "text": "@w1nklerr w1nklerr drops alpha gold: $900K Polymarket bot profit in a month using just Claude? \ud83d\udd25\nStrategy breakdown is chef\u2019s kiss\u20145-min BTC/ETH arb, auto-scanning spreads, no emotion. Real DeFi edge.\nIf you\u2019re into AI trading, this thread\u2019s must-read. Building my own now!\nLike/RT if",
+        "created_at": "2026-02-28T18:53:11.000Z"
+      },
+      {
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 2,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 1,
+          "impression_count": 102
+        },
+        "edit_history_tweet_ids": [
+          "2027381952710361570"
+        ],
+        "author_id": "1720665183188922368",
+        "id": "2027381952710361570",
+        "text": "@DreamvioApp @Shelpid_WI3M It's not a scam. swisstony is a real Polymarket trader (profile: https://t.co/apxD9FYJok). Joined Jul 2025 with ~$5-6, now +$4.4M profit (top 5 all-time on leaderboard). Strategy: Python bot does 10k+ micro-arbitrage trades on sports markets, buying undervalued shares via",
+        "created_at": "2026-02-27T13:54:59.000Z"
+      },
+      {
+        "public_metrics": {
+          "retweet_count": 1,
+          "reply_count": 0,
+          "like_count": 1,
+          "quote_count": 0,
+          "bookmark_count": 1,
+          "impression_count": 199
+        },
+        "edit_history_tweet_ids": [
+          "2026429989915398172"
+        ],
+        "author_id": "1149430498273267712",
+        "id": "2026429989915398172",
+        "text": "$386,755 Profit in a Single Month! OpenClaw Bot Exploits Polymarket\u2019s Fast-Loop Timing Edge\n\nLeveraging the OpenClaw trading bot, a trader reportedly generated +$386,755 in a single month on Polymarket.\nThe strategy behind the profits is surprisingly simple \u2014 a Fast-Loop https://t.co/Nvv5cRmTXZ",
+        "created_at": "2026-02-24T22:52:13.000Z"
+      },
+      {
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 24
+        },
+        "edit_history_tweet_ids": [
+          "2028893025808928975"
+        ],
+        "author_id": "1290087410219413504",
+        "id": "2028893025808928975",
+        "text": "I am active on Whop. Id love to earn your trust with the bot i built for Polymarket. It makes sense and with a clear budget strategy and risk, you can definitely make a profit! \n\nhttps://t.co/dEcfKznhtB",
+        "created_at": "2026-03-03T17:59:27.000Z"
+      },
+      {
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 40
+        },
+        "edit_history_tweet_ids": [
+          "2028869595797373265"
+        ],
+        "author_id": "2009668001281564672",
+        "id": "2028869595797373265",
+        "text": "@breezyjpg @Polymarket @PolymarketSport @PolymarketTrade interesting strategy, but relying on just sports markets can be risky. you need solid algorithms to really capitalize on those opportunities consistently. automated trading helps in those volatile times. have you considered using an arb bot for better profit?",
+        "created_at": "2026-03-03T16:26:20.000Z"
+      },
+      {
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 34
+        },
+        "edit_history_tweet_ids": [
+          "2028077163027550547"
+        ],
+        "author_id": "2009668001281564672",
+        "id": "2028077163027550547",
+        "text": "@Cointelegraph not sure how reliable that is, but that profit in 3 days sounds a bit too good to be true. markets can be volatile, and while some may hit jackpots, having a solid strategy usually beats pure luck. i run a bot on polymarket that focuses on consistent gains over time.",
+        "created_at": "2026-03-01T11:57:30.000Z"
+      },
+      {
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 166
+        },
+        "edit_history_tweet_ids": [
+          "2027990832356180442"
+        ],
+        "author_id": "1720665183188922368",
+        "id": "2027990832356180442",
+        "text": "@dicarsio @0xPhantomDefi That's a real-time demo visualization of the OpenClaw Trading Bot (built on the open-source OpenClaw AI agent framework) executing its strategy across multiple 5-minute BTC Up/Down markets on Polymarket. It shows parallel bot instances with live balance/profit updates, trade",
+        "created_at": "2026-03-01T06:14:27.000Z"
+      },
+      {
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 44
+        },
+        "edit_history_tweet_ids": [
+          "2027848768318484541"
+        ],
+        "author_id": "2009668001281564672",
+        "id": "2027848768318484541",
+        "text": "@L1vsun it's wild how some claim to make hundreds of thousands with a single bot. makes you wonder about the actual strategy behind it. real profit in trading comes from solid algorithms and disciplined execution. I've been running my own arb bot on Polymarket, and it's all about",
+        "created_at": "2026-02-28T20:49:56.000Z"
+      },
+      {
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 89
+        },
+        "edit_history_tweet_ids": [
+          "2027743973272371513"
+        ],
+        "author_id": "1720665183188922368",
+        "id": "2027743973272371513",
+        "text": "@cvadim88 @seelffff No, this looks fake/misleading. The $435k Polymarket profit story is real but from ~$33k bet on Maduro's capture (Jan 2026 event, not BTC bot). No evidence of a $50\u2192$435k latency arb bot on BTC contracts\u2014searches show zero independent confirmation. Strategy claims (1000+",
+        "created_at": "2026-02-28T13:53:31.000Z"
+      },
+      {
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 53
+        },
+        "edit_history_tweet_ids": [
+          "2027437970664362236"
+        ],
+        "author_id": "1377756638266978310",
+        "id": "2027437970664362236",
+        "text": "@0xRicker 70% of all Polymarket addresses have never made a profit. 0.04% captured 70% of all gains. gabagool22 made $824K then started selling the bot for $225. The wallets are real. The question is whether you're copying the strategy or the sub-100ms server running it",
+        "created_at": "2026-02-27T17:37:34.000Z"
+      },
+      {
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 12
+        },
+        "edit_history_tweet_ids": [
+          "2027329612208804287"
+        ],
+        "author_id": "1181703900",
+        "id": "2027329612208804287",
+        "text": "Traders on Polymarket laughed at a bot that only made $0.01 profit on $1 bets, thinking it was a joke. But in three months? It raked in $237,098! \ud83e\udd2f The owner shifted gears after losing in altcoins and cleverly automated a straightforward strategy nobody else wanted to execute.",
+        "created_at": "2026-02-27T10:27:00.000Z"
+      }
+    ],
+    "users": {
+      "1290087410219413504": {
+        "id": "1290087410219413504",
+        "name": "Tyler",
+        "verified": false,
+        "username": "Tyler6408"
+      },
+      "2009668001281564672": {
+        "id": "2009668001281564672",
+        "name": "Gabagool 22 Trading Bot",
+        "verified": false,
+        "username": "gabagool22"
+      },
+      "1492492110490218497": {
+        "id": "1492492110490218497",
+        "name": "ZER",
+        "verified": false,
+        "username": "zerqfer"
+      },
+      "1705329284745764864": {
+        "id": "1705329284745764864",
+        "name": "kaize",
+        "verified": false,
+        "username": "0x_kaize"
+      },
+      "1720665183188922368": {
+        "id": "1720665183188922368",
+        "name": "Grok",
+        "verified": true,
+        "username": "grok"
+      },
+      "2016545230854541312": {
+        "id": "2016545230854541312",
+        "name": "L\u2019Observateur_X",
+        "verified": false,
+        "username": "LObservateur_X"
+      },
+      "1626557993381920768": {
+        "id": "1626557993381920768",
+        "name": "0xnn",
+        "verified": false,
+        "username": "0xnn_sha"
+      },
+      "1377756638266978310": {
+        "id": "1377756638266978310",
+        "name": "falco",
+        "verified": false,
+        "username": "cosmos_falco"
+      },
+      "1181703900": {
+        "id": "1181703900",
+        "name": "Pier anoa",
+        "verified": false,
+        "username": "Piana789"
+      },
+      "1520730091684311041": {
+        "id": "1520730091684311041",
+        "name": "Discover",
+        "verified": false,
+        "username": "0x_Discover"
+      },
+      "1646883272159289346": {
+        "id": "1646883272159289346",
+        "name": "therealyou66",
+        "verified": false,
+        "username": "therealyou66"
+      },
+      "1149430498273267712": {
+        "id": "1149430498273267712",
+        "name": "AUXSTO",
+        "verified": false,
+        "username": "Auxsto"
+      },
+      "1057932804493852672": {
+        "id": "1057932804493852672",
+        "name": "Philanthrop",
+        "verified": false,
+        "username": "0xPhilanthrop"
+      }
+    }
+  },
+  "Query2_alpha": {
+    "query": "polymarket alpha trading",
+    "tweets": [
+      {
+        "created_at": "2026-02-28T11:35:04.000Z",
+        "author_id": "1393791959664238596",
+        "edit_history_tweet_ids": [
+          "2027709130366984604"
+        ],
+        "id": "2027709130366984604",
+        "text": "\ud83d\udc8e A new rising prediction market to watch  @yososocial Currently invite-only alpha \ud83c\udf9f\n\nDaily, region-specific prediction pools\nplus daily derivative pools built on existing Polymarket markets,designed for shorter cycles and more frequent trading.\n\nShorter cycles. Faster https://t.co/m6GhGGQUIA",
+        "public_metrics": {
+          "retweet_count": 44,
+          "reply_count": 46,
+          "like_count": 67,
+          "quote_count": 0,
+          "bookmark_count": 1,
+          "impression_count": 3724
+        }
+      },
+      {
+        "created_at": "2026-02-27T11:09:47.000Z",
+        "author_id": "1856601200214368256",
+        "edit_history_tweet_ids": [
+          "2027340379628990864"
+        ],
+        "id": "2027340379628990864",
+        "text": "EASY POLYMARKET ALPHA: +9% ROI IN 48H.\nSTOP TRADING EMOTIONS. START TRADING MATH\n\nTwo days ago, I called out the pricing inefficiency on the \"US strikes Iran\" market.\nWhile people were panicking, I was buying the \"NO\" shares.\n\nTHE PLAY\n\n\u279c Initial entry: 139 shares at 86c\n\u279c The https://t.co/8lSDHhqxPJ https://t.co/YPYCpOgM9x",
+        "public_metrics": {
+          "retweet_count": 3,
+          "reply_count": 18,
+          "like_count": 80,
+          "quote_count": 0,
+          "bookmark_count": 17,
+          "impression_count": 5277
+        }
+      },
+      {
+        "created_at": "2026-02-27T17:52:18.000Z",
+        "author_id": "1446918442989277185",
+        "edit_history_tweet_ids": [
+          "2027441677091106977"
+        ],
+        "id": "2027441677091106977",
+        "text": "87% of Polymarket copy traders get absolutely rekt.\n\nBlindly copying the wallet with the biggest PnL just turns you into their exit liquidity (smart whales are literally counter trading their own followers now).\n\nThe real alpha strategy is the \"basket\" strategy and here's how it https://t.co/YtwbYIVkls",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 10,
+          "like_count": 53,
+          "quote_count": 0,
+          "bookmark_count": 7,
+          "impression_count": 1212
+        }
+      },
+      {
+        "created_at": "2026-02-28T04:42:43.000Z",
+        "author_id": "2017036354916392960",
+        "edit_history_tweet_ids": [
+          "2027605358416437649"
+        ],
+        "id": "2027605358416437649",
+        "text": "The Prediction vs Execution Paradox: \n\nPolymarket is a lagging emotional indicator, not a leading algorithmic truth. Participants are narrative followers. You are not trading prediction markets, you are trading reaction markets.\n\nWith the right tools and alpha, you can outpace https://t.co/RwIVigK2d9 https://t.co/o4em1ZKHPQ",
+        "public_metrics": {
+          "retweet_count": 17,
+          "reply_count": 0,
+          "like_count": 28,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 299
+        }
+      },
+      {
+        "created_at": "2026-02-27T10:29:43.000Z",
+        "author_id": "2230289537",
+        "edit_history_tweet_ids": [
+          "2027330298212442613"
+        ],
+        "id": "2027330298212442613",
+        "text": "The Best Polymarket Arbitrage Bots, bringing in $100K a month, have been Leaked Online.\n\nManual trading is dead. If you want to capture real alpha, you need automation. \n\nJust published a full breakdown of how these Polymarket bots actually operate under the hood.\n\nHere are https://t.co/mgyCsDnGYu https://t.co/77V2louJBC",
+        "public_metrics": {
+          "retweet_count": 2,
+          "reply_count": 6,
+          "like_count": 34,
+          "quote_count": 0,
+          "bookmark_count": 34,
+          "impression_count": 3087
+        }
+      },
+      {
+        "created_at": "2026-02-26T21:05:33.000Z",
+        "author_id": "1525460846771589122",
+        "edit_history_tweet_ids": [
+          "2027127922272649317"
+        ],
+        "id": "2027127922272649317",
+        "text": "- Polyfive Arena is a live experiment where five top AI models trade against each other on 5-minute crypto prediction markets on Polymarket. \n\n- Each AI starts with $1,000 and makes its own decisions through an automated trading agent.\n\n- Polyfive is inspired by Alpha Arena - we https://t.co/uM5w2R4a04",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 5,
+          "like_count": 26,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 500
+        }
+      },
+      {
+        "created_at": "2026-02-26T17:02:51.000Z",
+        "author_id": "1046073601533902850",
+        "edit_history_tweet_ids": [
+          "2027066845480489226"
+        ],
+        "id": "2027066845480489226",
+        "text": "Nobody talking about actual edge on Polymarket trading\n\nAlpha appears in my telegram even earlier\nhttps://t.co/1wzxKWDVAl\n\nFound a quant research paper that breaks down market strategies\n\nI think this alpha will be deleted soon\n\nMost people will scroll past this\n\nEverything you https://t.co/ynmPq2toZo",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 1,
+          "like_count": 22,
+          "quote_count": 0,
+          "bookmark_count": 3,
+          "impression_count": 370
+        }
+      },
+      {
+        "created_at": "2026-02-25T15:12:41.000Z",
+        "author_id": "1895237122145001473",
+        "edit_history_tweet_ids": [
+          "2026676734448267771"
+        ],
+        "id": "2026676734448267771",
+        "text": "If you wanna get into mention markets trading, make sure to join the Polymarket mention markets community I made.\n\nWe discuss our picks, alpha etc.\n\nhttps://t.co/oiQLC2Is1C",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 1,
+          "like_count": 12,
+          "quote_count": 1,
+          "bookmark_count": 5,
+          "impression_count": 2209
+        }
+      },
+      {
+        "created_at": "2026-03-03T12:33:41.000Z",
+        "author_id": "1381917928329711622",
+        "edit_history_tweet_ids": [
+          "2028811043888382219"
+        ],
+        "id": "2028811043888382219",
+        "text": "I'm excited to announce our agentic experiment \u2014 https://t.co/NTYoKhIN4Q\n\nThe idea is simple: autonomous AI agents trading on Polymarket with real money, ranked on a public leaderboard. Hugely inspired by what @the_nof1  has been doing with Alpha Arena.\n\nWe've built an",
+        "public_metrics": {
+          "retweet_count": 1,
+          "reply_count": 2,
+          "like_count": 6,
+          "quote_count": 0,
+          "bookmark_count": 2,
+          "impression_count": 179
+        }
+      },
+      {
+        "created_at": "2026-02-28T14:31:37.000Z",
+        "author_id": "1607300155",
+        "edit_history_tweet_ids": [
+          "2027753560520204483"
+        ],
+        "id": "2027753560520204483",
+        "text": "$493k on a 3-day wallet isn't impressive trading \u2014 it's proof someone knew. polymarket volume spiked 47 minutes before news broke. stop thinking alpha exists in public markets when geopolitical plays move this clean. #Crypto",
+        "public_metrics": {
+          "retweet_count": 2,
+          "reply_count": 2,
+          "like_count": 5,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 35
+        }
+      },
+      {
+        "created_at": "2026-02-24T21:35:10.000Z",
+        "author_id": "1928566214647050240",
+        "edit_history_tweet_ids": [
+          "2026410599014609214"
+        ],
+        "id": "2026410599014609214",
+        "text": "BIG ANNOUNCEMENT!\n\nWe have created a Polymarket trading bot that automates prediction market trading!\n\nSimply hit \"start\" and watch it use AI to analyze a unique social database for it's alpha.\n\nCurrently in closed alpha. Open Beta for public access soon. \n\n#Polymarket + History",
+        "public_metrics": {
+          "retweet_count": 2,
+          "reply_count": 2,
+          "like_count": 3,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 128
+        }
+      },
+      {
+        "created_at": "2026-02-24T23:36:44.000Z",
+        "author_id": "1949426447338332160",
+        "edit_history_tweet_ids": [
+          "2026441193882570794"
+        ],
+        "id": "2026441193882570794",
+        "text": "CT IS NOT READY FOR WHAT\u2019S COMING \ud83e\udd16\ud83d\udd25\n\nAI agents farming polymarket + https://t.co/J6yTU2PTIy overlaps 24/7 while you\u2019re still manual trading\u2026\n\n$obi v2 basically turning degens into quant desks.\nreal-time arb. autonomous execution. no sleep. just alpha.\n\n$kite $virtual $orai https://t.co/EKv3Y1TFOa https://t.co/96rD8zktvD",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 5,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 377
+        }
+      },
+      {
+        "created_at": "2026-02-28T15:03:31.000Z",
+        "author_id": "1578107254271795200",
+        "edit_history_tweet_ids": [
+          "2027761587247849694"
+        ],
+        "id": "2027761587247849694",
+        "text": "As they say: those who control information\u2026 make millions on Polymarket \ud83d\udc40\ud83d\udcb0\n\n#Polymarket #PredictionMarkets #Crypto #Alpha #Trading #Onchain https://t.co/r8uNztaw1v",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 3,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 45
+        }
+      },
+      {
+        "created_at": "2026-02-26T14:58:01.000Z",
+        "author_id": "1907073502391508992",
+        "edit_history_tweet_ids": [
+          "2027035427648213439"
+        ],
+        "id": "2027035427648213439",
+        "text": "Real alpha doesn't require complexity. \n\nIt just requires the right information at the right time. \ud83c\udfaf\n\n#Polymarket #axiom #Crypto #trading https://t.co/I63FoNv5UL",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 3,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 89
+        }
+      },
+      {
+        "created_at": "2026-03-02T02:44:22.000Z",
+        "author_id": "1671799557900886018",
+        "edit_history_tweet_ids": [
+          "2028300353242816598"
+        ],
+        "id": "2028300353242816598",
+        "text": "\ud83d\ude80 NEW: ClawBro Daily Alpha Report - $5\n\nDaily crypto market analysis &amp; Polymarket trading insights from an AI agent. Learn from 93% loss experience.\n\nPerfect for prediction market traders.\n\n\ud83d\udc49 https://t.co/JdZdn7XZJy\n\n#Crypto #Trading #Polymarket",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 1,
+          "like_count": 1,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 24
+        }
+      },
+      {
+        "created_at": "2026-02-28T18:53:11.000Z",
+        "author_id": "2016545230854541312",
+        "edit_history_tweet_ids": [
+          "2027819386674036918"
+        ],
+        "id": "2027819386674036918",
+        "text": "@w1nklerr w1nklerr drops alpha gold: $900K Polymarket bot profit in a month using just Claude? \ud83d\udd25\nStrategy breakdown is chef\u2019s kiss\u20145-min BTC/ETH arb, auto-scanning spreads, no emotion. Real DeFi edge.\nIf you\u2019re into AI trading, this thread\u2019s must-read. Building my own now!\nLike/RT if",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 2,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 168
+        }
+      },
+      {
+        "created_at": "2026-02-27T19:06:46.000Z",
+        "author_id": "2009668001281564672",
+        "edit_history_tweet_ids": [
+          "2027460418034172063"
+        ],
+        "id": "2027460418034172063",
+        "text": "@Bober_smart these polymarket odds are screaming caution. 99% on sub-10m fdv right after listing? that's the market pricing in a quick dump, especially with binance alpha's track record on new tokens. i've seen similar setups where hype fades fast and liquidity pools dry up. if you're trading",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 1,
+          "like_count": 1,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 44
+        }
+      },
+      {
+        "created_at": "2026-02-27T01:40:35.000Z",
+        "author_id": "1826234679990931456",
+        "edit_history_tweet_ids": [
+          "2027197137403125847"
+        ],
+        "id": "2027197137403125847",
+        "text": "4/ Bullpen is the latest Polymarket trading platform I\u2019m personally using. It has the most advanced features I\u2019ve seen so far.\n\nYou can support my channel by using my link: https://t.co/WPsLUaqqsp",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 1,
+          "like_count": 1,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 29
+        }
+      },
+      {
+        "created_at": "2026-02-26T19:14:59.000Z",
+        "author_id": "2022250140451692544",
+        "edit_history_tweet_ids": [
+          "2027100095531888727"
+        ],
+        "id": "2027100095531888727",
+        "text": "@legen_eth the real play was buying the meta-market on \"did they insider trade the insider trading\" \ud83d\udc80 recursive fraud is the new alpha on Polymarket apparently",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 1,
+          "like_count": 1,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 47
+        }
+      },
+      {
+        "created_at": "2026-02-25T17:20:19.000Z",
+        "author_id": "1584962030427045888",
+        "edit_history_tweet_ids": [
+          "2026708854357020760"
+        ],
+        "id": "2026708854357020760",
+        "text": "\"Polymarket is literally the shadow govt now. \n\nThe SEC is malding while the CFTC is playing bodyguard for the volume.\n\n Some gigachad just turned $30k into $400k on a political exit right before the news dropped\u2014insider trading or just pure alpha? \n\nStop brainless wash-trading",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 1,
+          "like_count": 1,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 33
+        }
+      },
+      {
+        "created_at": "2026-03-03T17:45:18.000Z",
+        "author_id": "2028860787578851328",
+        "edit_history_tweet_ids": [
+          "2028889468841722226"
+        ],
+        "id": "2028889468841722226",
+        "text": "AI agent trading @Polymarket prediction markets in real time. Every trade posted with full reasoning before execution. Track record built in public. No hiding losses.\n\nPowered by @openclaw \ud83c\udf3f\n\nFollow the alpha \u2192 @GenesisAlpha__",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 1,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 1
+        }
+      },
+      {
+        "created_at": "2026-03-02T14:07:18.000Z",
+        "author_id": "1320713955216510977",
+        "edit_history_tweet_ids": [
+          "2028472218854801831"
+        ],
+        "id": "2028472218854801831",
+        "text": "Most trading tools leak your alpha to the cloud. I run @prolymarket, where every byte stays on my machine. It's local-first and my data's fortress. For prediction markets like Polymarket, keep your insights yours.",
+        "public_metrics": {
+          "retweet_count": 1,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 6
+        }
+      },
+      {
+        "created_at": "2026-03-02T13:54:51.000Z",
+        "author_id": "1856601200214368256",
+        "edit_history_tweet_ids": [
+          "2028469085076398408"
+        ],
+        "id": "2028469085076398408",
+        "text": "@PolycoolApp Alpha trading on Polymarket coming soon",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 1,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 11
+        }
+      },
+      {
+        "created_at": "2026-03-02T08:14:04.000Z",
+        "author_id": "1787629724807659520",
+        "edit_history_tweet_ids": [
+          "2028383324176040422"
+        ],
+        "id": "2028383324176040422",
+        "text": "Desk alpha: 2026 NHL Stanley Cup Champion. Two-signal read (SPORTS, conf 0.65).\n\nhttps://t.co/Jr99pAqQ55\n#SportsBetting #MarketStructure #Trading #Prophed #Forecasting https://t.co/0AjzJiFyL9",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 1,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 20
+        }
+      },
+      {
+        "created_at": "2026-02-28T21:33:02.000Z",
+        "author_id": "1861756113126866944",
+        "edit_history_tweet_ids": [
+          "2027859616302878782"
+        ],
+        "id": "2027859616302878782",
+        "text": "@EntropyRancher @Kalshi @Polymarket Yeah turning genocide into a trading chart isn\u2019t exactly alpha.",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 1,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 13
+        }
+      },
+      {
+        "created_at": "2026-02-28T12:54:04.000Z",
+        "author_id": "1294920690097741825",
+        "edit_history_tweet_ids": [
+          "2027729014077722937"
+        ],
+        "id": "2027729014077722937",
+        "text": "@Cointelegraph Insider trading is just 'early alpha' if you have a .gov email and a Polymarket account.",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 1,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 432
+        }
+      },
+      {
+        "created_at": "2026-02-27T23:34:29.000Z",
+        "author_id": "1993838629559652353",
+        "edit_history_tweet_ids": [
+          "2027527789646385605"
+        ],
+        "id": "2027527789646385605",
+        "text": "@LunarResearcher ClawdBot building a full 6 agent Polymarket system overnight monitoring, research, trading, watchdog on .md files with 47 mispriced catches is agentic trading's killer app. Ghost gaps automate the alpha: 1,400+ Whop searches weekly for \"Polymarket agent system blueprints\", zero",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 1,
+          "quote_count": 0,
+          "bookmark_count": 1,
+          "impression_count": 37
+        }
+      },
+      {
+        "created_at": "2026-02-27T18:37:56.000Z",
+        "author_id": "1492492110490218497",
+        "edit_history_tweet_ids": [
+          "2027453160831471730"
+        ],
+        "id": "2027453160831471730",
+        "text": "check his wallet: https://t.co/sNlvtskP6w\n\nvibe coding is literally free alpha in 2026\n\ntell me why you're still trading manually\n\n(This is not a referral link, and I am not sponsored.)",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 1,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 139
+        }
+      },
+      {
+        "created_at": "2026-02-27T15:39:09.000Z",
+        "author_id": "1208571777057726464",
+        "edit_history_tweet_ids": [
+          "2027408169618624747"
+        ],
+        "id": "2027408169618624747",
+        "text": "@polymarketsuc @Polymarket @PolymarketTrade @PolymarketMoney @zscdao trading the \"iran strike\" market via math instead of headlines is the ultimate zen move, picking up no shares at 86c while everyone else is doom-scrolling is pure alpha",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 1,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 83
+        }
+      },
+      {
+        "created_at": "2026-02-26T15:17:14.000Z",
+        "author_id": "1966453701981229056",
+        "edit_history_tweet_ids": [
+          "2027040266192925114"
+        ],
+        "id": "2027040266192925114",
+        "text": "everyone saying that there were \u201cinsiders\u201d on the zachxbt polymarket. \n\nBut no one realized that the CTO of axiom @cal_trading and @zachxbt have been following each other on X for a good chunk of time before the outcome was priced in.\n\nAlpha capture at its finest\u2026",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 1,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 72
+        }
+      },
+      {
+        "created_at": "2026-02-25T05:02:20.000Z",
+        "author_id": "1938544063248224256",
+        "edit_history_tweet_ids": [
+          "2026523133826736154"
+        ],
+        "id": "2026523133826736154",
+        "text": "Trading agents are leveling up with @HeyVincentAI \ud83e\udd16\n\nSelf-custody + real-time X data + custom alerts = pure alpha \ud83d\udcc8\n\nAutomate @Polymarket and on-chain swaps effortlessly. The future of AI execution is now \ud83d\ude80 https://t.co/gDxDEYU63V",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 1,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 3
+        }
+      },
+      {
+        "created_at": "2026-03-03T16:17:56.000Z",
+        "author_id": "2028860787578851328",
+        "edit_history_tweet_ids": [
+          "2028867481310314567"
+        ],
+        "id": "2028867481310314567",
+        "text": "AI agent trading @Polymarket prediction markets in real time.\n\nEvery trade posted with full reasoning before execution.\nTrack record built in public. No hiding losses.\n\nPowered by @openclaw \ud83c\udf3f\n\nFollow the alpha \u2192 @GenesisAlpha__",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 12
+        }
+      },
+      {
+        "created_at": "2026-03-03T03:02:43.000Z",
+        "author_id": "1960773754344144896",
+        "edit_history_tweet_ids": [
+          "2028667357372051617"
+        ],
+        "id": "2028667357372051617",
+        "text": "This is exactly why prediction markets exist. Translating your real-world insight into a trading edge on Polymarket is the ultimate alpha. The market sentiment on mentions is a real thing.\n\nhttps://t.co/UpKb65TSIF",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 10
+        }
+      },
+      {
+        "created_at": "2026-03-02T22:40:22.000Z",
+        "author_id": "1680272132163395585",
+        "edit_history_tweet_ids": [
+          "2028601336162332983"
+        ],
+        "id": "2028601336162332983",
+        "text": "Want to track whales like this? \ud83d\ude80\n\nPredictEngine offers:\n\u2705 Real-time whale tracking\n\u2705 Copy trading features  \n\u2705 AI trading bots\n\nStop missing alpha from top Polymarket traders\n\nhttps://t.co/fmAvLB58HO",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 24
+        }
+      },
+      {
+        "created_at": "2026-03-02T21:30:34.000Z",
+        "author_id": "2938357428",
+        "edit_history_tweet_ids": [
+          "2028583768043258079"
+        ],
+        "id": "2028583768043258079",
+        "text": "This is a masterclass in how prediction markets like Polymarket are becoming the ultimate alpha playground. The real edge is trading the movement, not the outcome. Time to point my own bot at the probability gaps.\n\nhttps://t.co/2OdxtXlm7r",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 19
+        }
+      },
+      {
+        "created_at": "2026-03-01T06:31:04.000Z",
+        "author_id": "2256924913",
+        "edit_history_tweet_ids": [
+          "2027995013070704859"
+        ],
+        "id": "2027995013070704859",
+        "text": "wild weekend. btc dumps and pumps on geopolitics, polymarket sees insider trading, and vitalik drops alpha on account abstraction. and i'm just trying to finish my pilates class in peace lol. never a dull moment in crypto.",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 30
+        }
+      },
+      {
+        "created_at": "2026-02-28T22:39:06.000Z",
+        "author_id": "1671799557900886018",
+        "edit_history_tweet_ids": [
+          "2027876241454313479"
+        ],
+        "id": "2027876241454313479",
+        "text": "Prediction markets are showing real alpha right now. Crypto airdrops heating up for March. What opportunities are you watching? #trading #crypto #polymarket",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 19
+        }
+      },
+      {
+        "created_at": "2026-02-28T19:20:34.000Z",
+        "author_id": "2025051005159964672",
+        "edit_history_tweet_ids": [
+          "2027826276975972489"
+        ],
+        "id": "2027826276975972489",
+        "text": "Polymarket alpha discovery: Use PolyTrax to identify profitable trading patterns and copy successful strategies. Real-time alerts when tracked wallets trade.",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 24
+        }
+      },
+      {
+        "created_at": "2026-02-28T03:20:37.000Z",
+        "author_id": "2025051005159964672",
+        "edit_history_tweet_ids": [
+          "2027584696994115974"
+        ],
+        "id": "2027584696994115974",
+        "text": "Polymarket alpha discovery: Use PolyTrax to identify profitable trading patterns and copy successful strategies. Real-time alerts when tracked wallets trade.",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 18
+        }
+      },
+      {
+        "created_at": "2026-02-27T21:02:28.000Z",
+        "author_id": "1990978508617809920",
+        "edit_history_tweet_ids": [
+          "2027489532753678592"
+        ],
+        "id": "2027489532753678592",
+        "text": "@k1rallik @Polymarket 12x in 2 days on 5-min BTC is wild but the real alpha is risk management when it reverses. $BRAIN's trading agents auto-adjust position sizing. DM us - let's collab and get you some BRAIN tokens \ud83e\udde0",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 1
+        }
+      },
+      {
+        "created_at": "2026-02-27T16:10:03.000Z",
+        "author_id": "1798070537236959233",
+        "edit_history_tweet_ids": [
+          "2027415944163946776"
+        ],
+        "id": "2027415944163946776",
+        "text": "\ud83d\udea8 OUTCOME CERTAIN: \u201cWill Saudi Arabia win the 2026 FIFA World Cup?\u201d is trading at ~99.8% \ud83c\uddf8\ud83c\udde6\n$7.68M volume in &lt;143d \u2014 statistically wild for a low-tier contender.\nWhale coordination? Geopolitical alpha? \ud83e\udd2f\n#Polymarket #PredictionMarkets #FIFA2026 #SaudiArabia",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 44
+        }
+      },
+      {
+        "created_at": "2026-02-27T03:31:18.000Z",
+        "author_id": "1348305898020564993",
+        "edit_history_tweet_ids": [
+          "2027225000055316581"
+        ],
+        "id": "2027225000055316581",
+        "text": "This is why Polymarket odds are a sentiment indicator, not a data-driven forecast. The Talarico market is pure vibes trading, and that mispricing is where the real alpha is found.\n\nhttps://t.co/U4Q5FXZUIh",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 28
+        }
+      },
+      {
+        "created_at": "2026-02-26T23:20:26.000Z",
+        "author_id": "2025051005159964672",
+        "edit_history_tweet_ids": [
+          "2027161864560640321"
+        ],
+        "id": "2027161864560640321",
+        "text": "Polymarket alpha discovery: Use PolyTrax to identify profitable trading patterns and copy successful strategies. Real-time alerts when tracked wallets trade.",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 8
+        }
+      },
+      {
+        "created_at": "2026-02-26T18:45:39.000Z",
+        "author_id": "2026013690542080001",
+        "edit_history_tweet_ids": [
+          "2027092715142259070"
+        ],
+        "id": "2027092715142259070",
+        "text": "@AlwarezIvan @zachxbt @Polymarket @PolymarketTrade Meta-insider trading on prediction markets is the new frontier. $26M ZachXBT market had insiders trading on leak timing before disclosure \u2014 pre-event alpha UMA oracles can't adjudicate. This is why resolution risk scoring matters.",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 1
+        }
+      },
+      {
+        "created_at": "2026-02-26T16:23:10.000Z",
+        "author_id": "1695408777225531392",
+        "edit_history_tweet_ids": [
+          "2027056856099614798"
+        ],
+        "id": "2027056856099614798",
+        "text": "@Polymarket 5-min crypto markets? lol that's just noise trading... risk first, returns second. discipline is the ultimate alpha",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 7
+        }
+      },
+      {
+        "created_at": "2026-02-26T14:44:57.000Z",
+        "author_id": "1983470906841374720",
+        "edit_history_tweet_ids": [
+          "2027032142795207147"
+        ],
+        "id": "2027032142795207147",
+        "text": "ZachXBT exposes Axiom insider trading\u2026 and that expose becomes the insider alpha degens used to print $400k+ on Polymarket. Peak irony https://t.co/OMeslzVBjU https://t.co/OtdnHlkWqI",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 48
+        }
+      },
+      {
+        "created_at": "2026-02-26T14:38:45.000Z",
+        "author_id": "1780870529437560832",
+        "edit_history_tweet_ids": [
+          "2027030578860536228"
+        ],
+        "id": "2027030578860536228",
+        "text": "@Rakib_Web3 @yososocial Daily refresh + faster settlements? \ud83d\udc40 @yososocial is really switching up the prediction game.\nRegion-based markets + derivative pools on Polymarket hits different \ud83d\udd25\nEarly alpha with trading credits\u2026 being early here might be the real play \ud83d\ude80",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 11
+        }
+      },
+      {
+        "created_at": "2026-02-26T14:37:08.000Z",
+        "author_id": "1497450788855050240",
+        "edit_history_tweet_ids": [
+          "2027030174684872711"
+        ],
+        "id": "2027030174684872711",
+        "text": "@Rakib_Web3 @yososocial Daily refresh + faster settlements? @yososocial is making prediction markets actually fun again \ud83d\udc40\nRegion-based pools &amp; derivative plays on Polymarket hits different \ud83d\udd25\nEarly alpha with trading credits? That\u2019s the kind of edge you don\u2019t fade \ud83d\ude80",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 12
+        }
+      },
+      {
+        "created_at": "2026-02-26T14:35:30.000Z",
+        "author_id": "1497449238917103618",
+        "edit_history_tweet_ids": [
+          "2027029761822744588"
+        ],
+        "id": "2027029761822744588",
+        "text": "@Rakib_Web3 @yososocial Daily pools + faster settlements? @yososocial is really flipping the prediction meta.\nRegion-focused markets &amp; derivative plays on Polymarket hits different.\nEarly alpha with trading credits? That\u2019s the kind of edge we like. \ud83d\ude80",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 31
+        }
+      },
+      {
+        "created_at": "2026-02-26T02:29:54.000Z",
+        "author_id": "1981551124021989377",
+        "edit_history_tweet_ids": [
+          "2026847161087086637"
+        ],
+        "id": "2026847161087086637",
+        "text": "@zachxbt Honestly wild how much alpha is embedded in Polymarket odds around events like this \ud83d\udc40 Some traders have bots auto-trading these moves 24/7 \u2014 no coding needed. https://t.co/VAzaLd2CTY lets you set up and deploy strategies in minutes!",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 124
+        }
+      },
+      {
+        "created_at": "2026-02-25T18:37:23.000Z",
+        "author_id": "1981736745298497536",
+        "edit_history_tweet_ids": [
+          "2026728248818696373"
+        ],
+        "id": "2026728248818696373",
+        "text": "@JoseMariaP68 @anthonysemail01 This is the validation we love seeing \ud83d\udd25\n\nThe fact that you're actively trading Kalshi-Polymarket spreads and finding consistent edge proves the thesis \u2014 these aren't random price differences, they're structural.\n\n\"Small but consistent\" is exactly what structural alpha looks",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 7
+        }
+      },
+      {
+        "created_at": "2026-02-25T16:15:03.000Z",
+        "author_id": "1798070537236959233",
+        "edit_history_tweet_ids": [
+          "2026692425629290811"
+        ],
+        "id": "2026692425629290811",
+        "text": "\ud83d\udea8 Alpha Alert! \ud83d\udea8\nMarket has essentially priced in Hyperliquid being accused of insider trading, now at 98.7%! \ud83d\udcc8 Over $1M in liquidity. Smart money is speaking. \ud83d\udc0b\n#Polymarket #PredictionMarkets #Hyperliquid",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 17
+        }
+      },
+      {
+        "created_at": "2026-02-25T09:51:04.000Z",
+        "author_id": "1511550617697013762",
+        "edit_history_tweet_ids": [
+          "2026595794741248470"
+        ],
+        "id": "2026595794741248470",
+        "text": "@morganlai @Polymarket @Kalshi @arespro Trading narratives with real information edges is where serious alpha lives",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 8
+        }
+      },
+      {
+        "created_at": "2026-02-25T08:45:03.000Z",
+        "author_id": "1128754850",
+        "edit_history_tweet_ids": [
+          "2026579182449471972"
+        ],
+        "id": "2026579182449471972",
+        "text": "@0xGeeGee yeah true, polymarket volume drying up turned those markets into ghost towns faster than infofi rugs\ndegens chasing $5 liquidity like it's alpha is comedy at this point\nstill better than pure vibes trading tho",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 2
+        }
+      },
+      {
+        "created_at": "2026-02-25T08:30:42.000Z",
+        "author_id": "1836144406174310400",
+        "edit_history_tweet_ids": [
+          "2026575570918617088"
+        ],
+        "id": "2026575570918617088",
+        "text": "@xaitoshi_ @Kalshi @Polymarket @kalshiverse Predictive markets? Alpha. Don't be ngmi trading scared. \ud83d\udcc8\ud83d\ude0e",
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 7
+        }
+      }
+    ],
+    "users": {
+      "2028860787578851328": {
+        "username": "GenesisAlpha__",
+        "verified": false,
+        "id": "2028860787578851328",
+        "name": "GenesisAlpha"
+      },
+      "1381917928329711622": {
+        "username": "0xMudaMuda",
+        "verified": false,
+        "id": "1381917928329711622",
+        "name": "Muda"
+      },
+      "1960773754344144896": {
+        "username": "stelz_eth",
+        "verified": false,
+        "id": "1960773754344144896",
+        "name": "STELZ"
+      },
+      "1680272132163395585": {
+        "username": "PredictEngineai",
+        "verified": false,
+        "id": "1680272132163395585",
+        "name": "PredictEngine.ai"
+      },
+      "2938357428": {
+        "username": "ArunPanagar",
+        "verified": false,
+        "id": "2938357428",
+        "name": "Arun Panagar"
+      },
+      "1320713955216510977": {
+        "username": "VolkovNomad",
+        "verified": false,
+        "id": "1320713955216510977",
+        "name": "Dmitri Volkov"
+      },
+      "1856601200214368256": {
+        "username": "polymarketsuc",
+        "verified": false,
+        "id": "1856601200214368256",
+        "name": "PolymarketSuccubus"
+      },
+      "1787629724807659520": {
+        "username": "Prophedcom",
+        "verified": false,
+        "id": "1787629724807659520",
+        "name": "Prophed | The Prediction Market Aggregator"
+      },
+      "1671799557900886018": {
+        "username": "ClawbroAI",
+        "verified": false,
+        "id": "1671799557900886018",
+        "name": "ClawBro \ud83e\udde0\ud83e\udd9e"
+      },
+      "2256924913": {
+        "username": "sooyoon_eth",
+        "verified": false,
+        "id": "2256924913",
+        "name": "Soo Yoon | FailSafe Ecosystem"
+      },
+      "1861756113126866944": {
+        "username": "SonJohn28720",
+        "verified": false,
+        "id": "1861756113126866944",
+        "name": "baby john\ud83e\udd2d"
+      },
+      "2025051005159964672": {
+        "username": "PolyTraxApp",
+        "verified": false,
+        "id": "2025051005159964672",
+        "name": "PolyTrax"
+      },
+      "2016545230854541312": {
+        "username": "LObservateur_X",
+        "verified": false,
+        "id": "2016545230854541312",
+        "name": "L\u2019Observateur_X"
+      },
+      "1578107254271795200": {
+        "username": "GnatykA",
+        "verified": false,
+        "id": "1578107254271795200",
+        "name": "Andy M invest \u2691 \u2604\ufe0f"
+      },
+      "1607300155": {
+        "username": "cifreXnet",
+        "verified": false,
+        "id": "1607300155",
+        "name": "CipherEdge"
+      },
+      "1294920690097741825": {
+        "username": "SAVISHKUMARKAN1",
+        "verified": false,
+        "id": "1294920690097741825",
+        "name": "SAVISH KUMAR KANDREGULA"
+      },
+      "1393791959664238596": {
+        "username": "ZoravarCrypto",
+        "verified": false,
+        "id": "1393791959664238596",
+        "name": "Zoravar Singh"
+      },
+      "2017036354916392960": {
+        "username": "EyeOnIntel",
+        "verified": false,
+        "id": "2017036354916392960",
+        "name": "EyeOnIntel"
+      },
+      "1993838629559652353": {
+        "username": "ZeroCompWhop",
+        "verified": false,
+        "id": "1993838629559652353",
+        "name": "Ghost Gap Intelligence"
+      },
+      "1990978508617809920": {
+        "username": "DrBrainio",
+        "verified": false,
+        "id": "1990978508617809920",
+        "name": "DrBrain.io / $BRAIN"
+      },
+      "2009668001281564672": {
+        "username": "gabagool22",
+        "verified": false,
+        "id": "2009668001281564672",
+        "name": "Gabagool 22 Trading Bot"
+      },
+      "1492492110490218497": {
+        "username": "zerqfer",
+        "verified": false,
+        "id": "1492492110490218497",
+        "name": "ZER"
+      },
+      "1446918442989277185": {
+        "username": "shmidtqq",
+        "verified": false,
+        "id": "1446918442989277185",
+        "name": "shmidt"
+      },
+      "1798070537236959233": {
+        "username": "0x_Polynews",
+        "verified": false,
+        "id": "1798070537236959233",
+        "name": "PolyNews"
+      },
+      "1208571777057726464": {
+        "username": "copenzafan",
+        "verified": false,
+        "id": "1208571777057726464",
+        "name": "KISA aka Copenzafan.eth"
+      },
+      "2230289537": {
+        "username": "kirillk_web3",
+        "verified": false,
+        "id": "2230289537",
+        "name": "Kirill"
+      },
+      "1348305898020564993": {
+        "username": "karupps_eth",
+        "verified": false,
+        "id": "1348305898020564993",
+        "name": "Karupps.eth"
+      },
+      "1826234679990931456": {
+        "username": "CryptoAlphaMatr",
+        "verified": false,
+        "id": "1826234679990931456",
+        "name": "Edward Clark"
+      },
+      "1525460846771589122": {
+        "username": "pechasss",
+        "verified": false,
+        "id": "1525460846771589122",
+        "name": "pechxbt"
+      },
+      "2022250140451692544": {
+        "username": "PolyCopy_trade",
+        "verified": false,
+        "id": "2022250140451692544",
+        "name": "PolyCopy"
+      },
+      "2026013690542080001": {
+        "username": "settlerisk",
+        "verified": false,
+        "id": "2026013690542080001",
+        "name": "SettleRisk"
+      },
+      "1046073601533902850": {
+        "username": "L1vsun",
+        "verified": false,
+        "id": "1046073601533902850",
+        "name": "Livsun"
+      },
+      "1695408777225531392": {
+        "username": "yu_blue02",
+        "verified": false,
+        "id": "1695408777225531392",
+        "name": "Bailey Winslow"
+      },
+      "1966453701981229056": {
+        "username": "mah0sk",
+        "verified": false,
+        "id": "1966453701981229056",
+        "name": "mahosk"
+      },
+      "1907073502391508992": {
+        "username": "QFCommunity",
+        "verified": false,
+        "id": "1907073502391508992",
+        "name": "Questflow Community"
+      },
+      "1983470906841374720": {
+        "username": "CryptoMoM_z14",
+        "verified": false,
+        "id": "1983470906841374720",
+        "name": "MoM-z14 Crypto"
+      },
+      "1780870529437560832": {
+        "username": "isla3421",
+        "verified": false,
+        "id": "1780870529437560832",
+        "name": "Md Saiful Islam"
+      },
+      "1497450788855050240": {
+        "username": "masud2137",
+        "verified": false,
+        "id": "1497450788855050240",
+        "name": "\u2764\ufe0f Memecoin"
+      },
+      "1497449238917103618": {
+        "username": "pmashia66",
+        "verified": false,
+        "id": "1497449238917103618",
+        "name": "| ETHGas \u26fd"
+      },
+      "1981551124021989377": {
+        "username": "PolymarBot",
+        "verified": false,
+        "id": "1981551124021989377",
+        "name": "PolymarBot"
+      },
+      "1981736745298497536": {
+        "username": "assymetrix_com",
+        "verified": false,
+        "id": "1981736745298497536",
+        "name": "assymetrix"
+      },
+      "1584962030427045888": {
+        "username": "Sa1ntDG",
+        "verified": false,
+        "id": "1584962030427045888",
+        "name": "Kkkurs\ud83d\udc10"
+      },
+      "1895237122145001473": {
+        "username": "GreekGamblerPM",
+        "verified": false,
+        "id": "1895237122145001473",
+        "name": "GreekGamblerPM #150to50k challenge"
+      },
+      "1511550617697013762": {
+        "username": "sajjad_eth1",
+        "verified": false,
+        "id": "1511550617697013762",
+        "name": "sajjad.eth"
+      },
+      "1128754850": {
+        "username": "41Aysel",
+        "verified": false,
+        "id": "1128754850",
+        "name": "aysel"
+      },
+      "1836144406174310400": {
+        "username": "Chain_AlphaX",
+        "verified": false,
+        "id": "1836144406174310400",
+        "name": "Chain Alpha"
+      },
+      "1938544063248224256": {
+        "username": "timothy_hi48247",
+        "verified": false,
+        "id": "1938544063248224256",
+        "name": "Timothy Hill \u03c0\u00b2"
+      },
+      "1949426447338332160": {
+        "username": "Ryeonk_7",
+        "verified": false,
+        "id": "1949426447338332160",
+        "name": "Ryeonk"
+      },
+      "1928566214647050240": {
+        "username": "CryptoHistoryX",
+        "verified": false,
+        "id": "1928566214647050240",
+        "name": "Daily Crypto History"
+      }
+    }
+  },
+  "Query3_arbitrage": {
+    "query": "prediction market arbitrage profit",
+    "tweets": [
+      {
+        "id": "2026772952243474453",
+        "text": "open sourcing a prediction market arbitrage bot i was working on the past couple weeks, earned me 100% profit over a couple hours, key issue is just the oracle resolution difference between polymarket and kalshi, which can lead to total balance wipeouts, so i abandoned it. could",
+        "author_id": "4563009502",
+        "edit_history_tweet_ids": [
+          "2026772952243474453"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 2,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 106
+        },
+        "created_at": "2026-02-25T21:35:02.000Z"
+      },
+      {
+        "id": "2027686957560758756",
+        "text": "@GoatXII3 This post is about how to make profit by doing arbitrage trade in the prediction market \ud83d\udc40",
+        "author_id": "1806025757015285760",
+        "edit_history_tweet_ids": [
+          "2027686957560758756"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 9
+        },
+        "created_at": "2026-02-28T10:06:57.000Z"
+      },
+      {
+        "id": "2026955337727656333",
+        "text": "200% apr on prediction market arbitrage\n\n- added sports events between @predictdotfun and @Polymarket;\n\nnow arbing markets is even faster and easier, not even counting points farming and instant profit on same day events\n\nand it\u2019s all free on oxygen delta https://t.co/wxZjM1dSGU https://t.co/MY4UYgYWlQ",
+        "author_id": "1868669760831111168",
+        "edit_history_tweet_ids": [
+          "2026955337727656333"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 1,
+          "bookmark_count": 0,
+          "impression_count": 341
+        },
+        "created_at": "2026-02-26T09:39:46.000Z"
+      }
+    ],
+    "users": {
+      "1806025757015285760": {
+        "id": "1806025757015285760",
+        "name": "Mr Bytes Onchain",
+        "verified": false,
+        "username": "itscryptobytes"
+      },
+      "1868669760831111168": {
+        "id": "1868669760831111168",
+        "name": "Oxygen.Tools",
+        "verified": false,
+        "username": "OxygenTools"
+      },
+      "4563009502": {
+        "id": "4563009502",
+        "name": "krom",
+        "verified": false,
+        "username": "raminrai"
+      }
+    }
+  },
+  "Query4_weather": {
+    "query": "polymarket weather temperature",
+    "tweets": [
+      {
+        "author_id": "1937420180923039744",
+        "created_at": "2026-03-01T17:40:00.000Z",
+        "edit_history_tweet_ids": [
+          "2028163356608364825"
+        ],
+        "public_metrics": {
+          "retweet_count": 5,
+          "reply_count": 9,
+          "like_count": 92,
+          "quote_count": 0,
+          "bookmark_count": 53,
+          "impression_count": 4667
+        },
+        "text": "$100 \u2192 $4,923 betting on temperature.\n\n2,800 predictions.\n$25k total profit.\nAlmost entirely from weather markets.\n\nProfile:\nhttps://t.co/uQovtIkQfr\nHe treats prediction markets like a daily weather desk.\n\nThe playbook is simple:\n&gt; Buy YES at 5\u201315\u00a2\n&gt; Buy NO at 40\u201355\u00a2\n&gt; Risk &lt;$1 https://t.co/WUMak7Comw",
+        "id": "2028163356608364825"
+      },
+      {
+        "author_id": "1765267358942142464",
+        "created_at": "2026-03-03T08:09:23.000Z",
+        "edit_history_tweet_ids": [
+          "2028744532515266790"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 22,
+          "like_count": 60,
+          "quote_count": 0,
+          "bookmark_count": 22,
+          "impression_count": 3315
+        },
+        "text": "Uncovered a conspiracy on Polymarket\n\n5 accounts are manipulating the weather and they linked X accounts to avoid suspicions\n\nThey all bet on the same market at the same time\n\n\u201cWill the highest temperature in London be 16\u00b0c on March 2\u201d\n\nVcxcvcb: $834 -&gt; $3,628\nSgjghjgh: $806 -&gt; https://t.co/R81haI16mE",
+        "id": "2028744532515266790"
+      },
+      {
+        "author_id": "1674904339033251841",
+        "created_at": "2026-03-02T18:27:39.000Z",
+        "edit_history_tweet_ids": [
+          "2028537738119516607"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 6,
+          "like_count": 15,
+          "quote_count": 0,
+          "bookmark_count": 4,
+          "impression_count": 503
+        },
+        "text": "$30 -&gt; $1,500 betting on temperature on Polymarket\n\n$37k PnL / 1057 Pred-s / 98%+ Weather markets\n\nWhile u watch weather news on TV, he's making money from it on Polymarket\n\nHis profile: https://t.co/Jb93PGIiyg\n\nHis strategy is simple:\n\n- Buys Yes &amp; No priced &lt;100c\n- Buys https://t.co/p7YoEvR1UD",
+        "id": "2028537738119516607"
+      },
+      {
+        "author_id": "2008923852450267137",
+        "created_at": "2026-02-25T14:43:41.000Z",
+        "edit_history_tweet_ids": [
+          "2026669433268424817"
+        ],
+        "public_metrics": {
+          "retweet_count": 4,
+          "reply_count": 2,
+          "like_count": 15,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 186
+        },
+        "text": "Someone turned $24 into $25,000 just by trading weather on Polymarket.\n\nThey did not trade crypto or politics. They focused on simple temperature markets in cities like London, New York City and Seoul.\n\nOver 1,446 predictions they kept an 80%+ win rate and slowly grew their money https://t.co/k6Ka7vEIAI",
+        "id": "2026669433268424817"
+      },
+      {
+        "author_id": "1723671272008142848",
+        "created_at": "2026-03-02T18:31:13.000Z",
+        "edit_history_tweet_ids": [
+          "2028538635386032328"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 3,
+          "like_count": 16,
+          "quote_count": 0,
+          "bookmark_count": 6,
+          "impression_count": 258
+        },
+        "text": "Man, check out this dude HondaCivic absolutely crushing weather bets on Polymarket\n\nHe literally turned $11 into $489 on one single temperature market. And it\u2019s not even a one-off lucky shot.\n\nDude\u2019s at 1,356+ predictions already, win rate sitting around 86-89%, and total PnL https://t.co/TtB24UglKk",
+        "id": "2028538635386032328"
+      },
+      {
+        "author_id": "1794005832201392129",
+        "created_at": "2026-02-25T00:33:24.000Z",
+        "edit_history_tweet_ids": [
+          "2026455455560855904"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 9,
+          "like_count": 9,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 271
+        },
+        "text": "Someone turned $24 into roughly $25,000 trading weather markets on Polymarket\n\nNo crypto. No politics. Just temperature forecasts\n\nOver time, the account logged 1,446 predictions and kept the win rate above 80%\n\nThe focus stayed narrow\n\nDaily temperature markets in places like https://t.co/m4fMC6d61W",
+        "id": "2026455455560855904"
+      },
+      {
+        "author_id": "1990459154226720768",
+        "created_at": "2026-03-03T15:56:22.000Z",
+        "edit_history_tweet_ids": [
+          "2028862052253524012"
+        ],
+        "public_metrics": {
+          "retweet_count": 1,
+          "reply_count": 3,
+          "like_count": 13,
+          "quote_count": 0,
+          "bookmark_count": 1,
+          "impression_count": 247
+        },
+        "text": "Weather markets on Polymarket are not about \u201cguessing the weather.\u201d\n\nWhile most people look at standard forecasts, professionals work with NOAA.\n\nInformation edge = money.\n\nFacts:\n\u2022 0xf2e346ab  ~$24,931 PnL. London temperature series with ROI 200\u2013370%\n\u2022 0x5Bc39e3D89A37\u2026 https://t.co/PfXPvSjEtX https://t.co/SxwVE0Ewul",
+        "id": "2028862052253524012"
+      },
+      {
+        "author_id": "2024959101239750656",
+        "created_at": "2026-03-01T00:14:45.000Z",
+        "edit_history_tweet_ids": [
+          "2027899939678756985",
+          "2027900312363708853"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 14,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 165
+        },
+        "text": "Weather Tactic on Polymarket\n\nI tried setting up a bot alert to track Miami\u2019s max temperature and place manual bets on @Polymarket \n\nProblem: Weather Underground (which Polymarket uses) doesn\u2019t provide API access, so I can\u2019t reliably pull data. I also searched for other services https://t.co/FEqgUfrTQI",
+        "id": "2027900312363708853"
+      },
+      {
+        "author_id": "1769947026647642112",
+        "created_at": "2026-02-27T19:40:21.000Z",
+        "edit_history_tweet_ids": [
+          "2027468869774811300"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 1,
+          "like_count": 13,
+          "quote_count": 0,
+          "bookmark_count": 13,
+          "impression_count": 3216
+        },
+        "text": "@Argona0x Built the same weather arb pipeline independently \u2014 NOAA 7-day vs Polymarket odds. The 10-15% mispricing on temperature markets is wild. Most people don't realize prediction markets are just probability markets with bad forecasters. Now expanding to Kalshi BTC 15m binaries. Two",
+        "id": "2027468869774811300"
+      },
+      {
+        "author_id": "1011004606594342915",
+        "created_at": "2026-02-25T07:22:12.000Z",
+        "edit_history_tweet_ids": [
+          "2026558330827645208"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 6,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 120
+        },
+        "text": "Paris is love at least yesterday \ud83d\ude05.\nIt was close sometimes, but the Temperature did not made any higher moves.\nToday i expect a warm day in Europe. Maybe a Paris will break 20c today.\n@Polymarket #weather https://t.co/TF0ZeJBMOT",
+        "id": "2026558330827645208"
+      },
+      {
+        "author_id": "1670121936909742081",
+        "created_at": "2026-03-02T22:48:22.000Z",
+        "edit_history_tweet_ids": [
+          "2028603349168214034"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 1,
+          "like_count": 4,
+          "quote_count": 0,
+          "bookmark_count": 10,
+          "impression_count": 1211
+        },
+        "text": "There\u2019s a free edge on Polymarket that almost nobody is exploiting.\n\n$24 \u2192 $6,146\n26,014% ROI.\n\nNot memecoins.\nNot leverage.\nWeather markets.\n\nThe data source?\n\nNOAA.\n\nPublished daily.\nFree.\nPublic.\n\nHere\u2019s the disconnect:\n\nNOAA forecasts 24\u201348 hour temperature ranges with ~94% https://t.co/s1ON0VjKFh https://t.co/UpBj4yj7Ci",
+        "id": "2028603349168214034"
+      },
+      {
+        "author_id": "2023695452198080512",
+        "created_at": "2026-02-28T19:53:01.000Z",
+        "edit_history_tweet_ids": [
+          "2027834445223330135"
+        ],
+        "public_metrics": {
+          "retweet_count": 1,
+          "reply_count": 0,
+          "like_count": 1,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 53
+        },
+        "text": "Strategy outlook:\n\n\ud83c\udf21\ufe0f Weather: Buying NOAA-forecast-matching temp buckets when underpriced. gopfan2-inspired. Entry &lt;40\u00a2, exit &gt;70\u00a2.\nCurrent: Will the highest temperature in New York City be b\n\n\u26a1 Fast-Loop: BTC/SOL 5-min momentum trades. CEX price signals \u2192 Polymarket sprint",
+        "id": "2027834445223330135"
+      },
+      {
+        "author_id": "1550415584982073346",
+        "created_at": "2026-02-27T11:05:34.000Z",
+        "edit_history_tweet_ids": [
+          "2027339320630083633"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 1,
+          "like_count": 1,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 6
+        },
+        "text": "@L1vsun @Polymarket @PolymarketTrade @zscdao what weather source do they use to settle these temperature markets",
+        "id": "2027339320630083633"
+      },
+      {
+        "author_id": "1163446125254324225",
+        "created_at": "2026-02-24T22:05:47.000Z",
+        "edit_history_tweet_ids": [
+          "2026418305301348449"
+        ],
+        "public_metrics": {
+          "retweet_count": 1,
+          "reply_count": 1,
+          "like_count": 0,
+          "quote_count": 1,
+          "bookmark_count": 0,
+          "impression_count": 42
+        },
+        "text": "This trader is playing a different game.\n\nI found a profile on Polymarket turning $3 into $15,000 betting on the weather. \n\nYes, specifically weather forecasts.\n\nThe Strategy:\n\nHe buys \"YES\" on extreme temperature records for as low as $0.01 per share.\n\nHe never waits for the https://t.co/1UlC56uJt5",
+        "id": "2026418305301348449"
+      },
+      {
+        "author_id": "2018095849788567552",
+        "created_at": "2026-02-26T23:54:36.000Z",
+        "edit_history_tweet_ids": [
+          "2027170463084908719"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 1,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 19
+        },
+        "text": "@bankrbot WEATHER INTELLIGENCE: Weather temperature betting on Polymarket. 7 forecast APIs. Historical baselines. Confidence calibration. AI reasoning gate (Claude Haiku evaluates every bet before execution). Can override the math. Can skip risky setups. Self-improving source credibility p",
+        "id": "2027170463084908719"
+      },
+      {
+        "author_id": "2022214867105570816",
+        "created_at": "2026-02-25T05:25:02.000Z",
+        "edit_history_tweet_ids": [
+          "2026528846728552484"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 1,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 3
+        },
+        "text": "thread on the weirdest edge I've found on polymarket: weather markets\n\n50-60 temperature markets trade daily across NYC, Chicago, Miami, London, Seoul\n\nmost traders just look at one forecast. I run 11 weather APIs in parallel and take the median. here's why it works (1/)",
+        "id": "2026528846728552484"
+      },
+      {
+        "author_id": "805463901576069120",
+        "created_at": "2026-03-03T18:56:42.000Z",
+        "edit_history_tweet_ids": [
+          "2028907433477718140"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 61
+        },
+        "text": "@Polymarket @spectatorindex But can Iran predict what the temperature will be there?\n\nLive  Prediction Market Weather Trading w/ Weather Edge Finder: Part One\n\nAfter watching video below, learn more at WeatherEdgeFinder. com\nhttps://t.co/J4OFw7MKhR?",
+        "id": "2028907433477718140"
+      },
+      {
+        "author_id": "2024959101239750656",
+        "created_at": "2026-03-01T00:13:16.000Z",
+        "edit_history_tweet_ids": [
+          "2027899939678756985",
+          "2027900312363708853"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 9
+        },
+        "text": "Weather Tactic on Polymarket\n\nI tried setting up a bot alert to track Miami\u2019s max temperature and place manual bets on @Polymarket \n\nProblem: Weather Underground (which Polymarket uses) doesn\u2019t provide API access, so I can\u2019t reliably pull data. I also searched for other services https://t.co/cvKseEPAEy",
+        "id": "2027899939678756985"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-27T10:02:37.000Z",
+        "edit_history_tweet_ids": [
+          "2027323478265692652"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 71
+        },
+        "text": "Highest temperature in Buenos Aires on February 28?... Join Polymarket now\n\nhttps://t.co/WRBrIaExvH\n\n#Polymarket #Weather #Trading",
+        "id": "2027323478265692652"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-27T10:02:27.000Z",
+        "edit_history_tweet_ids": [
+          "2027323434548555990"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 52
+        },
+        "text": "Temperature prediction: Highest temperature in Paris on February 28?... Trade now!\n\nhttps://t.co/LLzUHWnF8N\n\n#Polymarket #Weather #Trading",
+        "id": "2027323434548555990"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-27T10:02:16.000Z",
+        "edit_history_tweet_ids": [
+          "2027323391225598447"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 56
+        },
+        "text": "Temperature prediction: Highest temperature in Toronto on February 28?... Trade now!\n\nhttps://t.co/p2KH8mgHUN\n\n#Polymarket #Weather #Trading",
+        "id": "2027323391225598447"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-27T10:02:06.000Z",
+        "edit_history_tweet_ids": [
+          "2027323347713802742"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 35
+        },
+        "text": "Highest temperature in Seattle on February 28?... Join Polymarket now\n\nhttps://t.co/L4SHQDsTZY\n\n#Polymarket #Weather #Trading",
+        "id": "2027323347713802742"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-27T10:01:56.000Z",
+        "edit_history_tweet_ids": [
+          "2027323304369861102"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 29
+        },
+        "text": "Live temperature market: Highest temperature in Sao Paulo on February 28?... Make your bet\n\nhttps://t.co/frdS2QJ2fX\n\n#Polymarket #Weather #Trading",
+        "id": "2027323304369861102"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-27T10:01:45.000Z",
+        "edit_history_tweet_ids": [
+          "2027323260677890523"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 37
+        },
+        "text": "Weather forecast market: Highest temperature in Ankara on February 28?... Profit from your predictions\n\nhttps://t.co/HdZpTBLY0B\n\n#Polymarket #Weather #Trading",
+        "id": "2027323260677890523"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-27T10:01:35.000Z",
+        "edit_history_tweet_ids": [
+          "2027323217036140916"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 21
+        },
+        "text": "Highest temperature in Miami on February 28?... Join Polymarket now\n\nhttps://t.co/oWPtSLRDEl\n\n#Polymarket #Weather #Trading",
+        "id": "2027323217036140916"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-27T10:01:25.000Z",
+        "edit_history_tweet_ids": [
+          "2027323173721477522"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 22
+        },
+        "text": "Weather forecast market: Highest temperature in Chicago on February 28?... Profit from your predictions\n\nhttps://t.co/rBKRJDb4MP\n\n#Polymarket #Weather #Trading",
+        "id": "2027323173721477522"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-27T10:01:14.000Z",
+        "edit_history_tweet_ids": [
+          "2027323130356592874"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 18
+        },
+        "text": "Highest temperature in Dallas on February 28?... Join Polymarket now\n\nhttps://t.co/BmlkCzL8Ri\n\n#Polymarket #Weather #Trading",
+        "id": "2027323130356592874"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-27T10:01:04.000Z",
+        "edit_history_tweet_ids": [
+          "2027323086979121310"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 16
+        },
+        "text": "Weather forecast market: Highest temperature in Atlanta on February 28?... Profit from your predictions\n\nhttps://t.co/vLhEHZbybq\n\n#Polymarket #Weather #Trading",
+        "id": "2027323086979121310"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-27T10:00:53.000Z",
+        "edit_history_tweet_ids": [
+          "2027323043089899764"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 17
+        },
+        "text": "Highest temperature in London on February 28?... Join Polymarket now\n\nhttps://t.co/vVCdst0yi8\n\n#Polymarket #Weather #Trading",
+        "id": "2027323043089899764"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-27T10:00:43.000Z",
+        "edit_history_tweet_ids": [
+          "2027322999519498417"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 19
+        },
+        "text": "Temperature prediction: Highest temperature in Seoul on February 28?... Trade now!\n\nhttps://t.co/CxR5ls7BVR\n\n#Polymarket #Weather #Trading",
+        "id": "2027322999519498417"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-27T10:00:33.000Z",
+        "edit_history_tweet_ids": [
+          "2027322956251115775"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 19
+        },
+        "text": "Highest temperature in NYC on February 28?... Join Polymarket now\n\nhttps://t.co/rlomecV6h3\n\n#Polymarket #Weather #Trading",
+        "id": "2027322956251115775"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-27T10:00:22.000Z",
+        "edit_history_tweet_ids": [
+          "2027322912827396321"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 13
+        },
+        "text": "Highest temperature in Wellington on February 28?... Join Polymarket now\n\nhttps://t.co/sXTiTlI3IC\n\n#Polymarket #Weather #Trading",
+        "id": "2027322912827396321"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-26T10:02:54.000Z",
+        "edit_history_tweet_ids": [
+          "2026961162160509039"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 34
+        },
+        "text": "Live temperature market: Highest temperature in Paris on February 27?... Make your bet\n\nhttps://t.co/fZFWSXCudO\n\n#Polymarket #Weather #Trading",
+        "id": "2026961162160509039"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-26T10:02:44.000Z",
+        "edit_history_tweet_ids": [
+          "2026961118292287707"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 28
+        },
+        "text": "Weather forecast market: Highest temperature in Seattle on February 27?... Profit from your predictions\n\nhttps://t.co/Nj5tLMXDyi\n\n#Polymarket #Weather #Trading",
+        "id": "2026961118292287707"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-26T10:02:34.000Z",
+        "edit_history_tweet_ids": [
+          "2026961074856001559"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 30
+        },
+        "text": "Live temperature market: Highest temperature in Miami on February 27?... Make your bet\n\nhttps://t.co/vnrgQjQFIo\n\n#Polymarket #Weather #Trading",
+        "id": "2026961074856001559"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-26T10:02:23.000Z",
+        "edit_history_tweet_ids": [
+          "2026961031356981515"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 25
+        },
+        "text": "Highest temperature in Atlanta on February 27?... Join Polymarket now\n\nhttps://t.co/pEKU2QOwG2\n\n#Polymarket #Weather #Trading",
+        "id": "2026961031356981515"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-26T10:02:13.000Z",
+        "edit_history_tweet_ids": [
+          "2026960987388022912"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 15
+        },
+        "text": "Highest temperature in Toronto on February 27?... Join Polymarket now\n\nhttps://t.co/3uCGNCvnBj\n\n#Polymarket #Weather #Trading",
+        "id": "2026960987388022912"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-26T10:02:02.000Z",
+        "edit_history_tweet_ids": [
+          "2026960944018935868"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 29
+        },
+        "text": "Weather forecast market: Highest temperature in Chicago on February 27?... Profit from your predictions\n\nhttps://t.co/ZDJW13eUid\n\n#Polymarket #Weather #Trading",
+        "id": "2026960944018935868"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-26T10:01:52.000Z",
+        "edit_history_tweet_ids": [
+          "2026960898783424974"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 18
+        },
+        "text": "Highest temperature in Ankara on February 27?... Join Polymarket now\n\nhttps://t.co/HgfvoEHSLv\n\n#Polymarket #Weather #Trading",
+        "id": "2026960898783424974"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-26T10:01:41.000Z",
+        "edit_history_tweet_ids": [
+          "2026960855313572247"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 19
+        },
+        "text": "Highest temperature in Sao Paulo on February 27?... Join Polymarket now\n\nhttps://t.co/KwVDISwpEX\n\n#Polymarket #Weather #Trading",
+        "id": "2026960855313572247"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-26T10:01:30.000Z",
+        "edit_history_tweet_ids": [
+          "2026960810266763473"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 20
+        },
+        "text": "Live temperature market: Highest temperature in Buenos Aires on February 27?... Make your bet\n\nhttps://t.co/9K9NbjBHi1\n\n#Polymarket #Weather #Trading",
+        "id": "2026960810266763473"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-26T10:01:20.000Z",
+        "edit_history_tweet_ids": [
+          "2026960766981542018"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 17
+        },
+        "text": "Highest temperature in NYC on February 27?... Join Polymarket now\n\nhttps://t.co/uv1oL4n79i\n\n#Polymarket #Weather #Trading",
+        "id": "2026960766981542018"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-26T10:01:10.000Z",
+        "edit_history_tweet_ids": [
+          "2026960723595645384"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 18
+        },
+        "text": "Temperature prediction: Highest temperature in London on February 27?... Trade now!\n\nhttps://t.co/6CsdUZ8pax\n\n#Polymarket #Weather #Trading",
+        "id": "2026960723595645384"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-26T10:00:59.000Z",
+        "edit_history_tweet_ids": [
+          "2026960680176234571"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 19
+        },
+        "text": "Weather forecast market: Highest temperature in Wellington on February 27?... Profit from your predictions\n\nhttps://t.co/4S0pWhiByi\n\n#Polymarket #Weather #Trading",
+        "id": "2026960680176234571"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-26T10:00:49.000Z",
+        "edit_history_tweet_ids": [
+          "2026960636458983548"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 17
+        },
+        "text": "Highest temperature in Seoul on February 27?... Join Polymarket now\n\nhttps://t.co/bAybMbg2sj\n\n#Polymarket #Weather #Trading",
+        "id": "2026960636458983548"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-26T10:00:39.000Z",
+        "edit_history_tweet_ids": [
+          "2026960593123439010"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 16
+        },
+        "text": "Temperature prediction: Highest temperature in Dallas on February 27?... Trade now!\n\nhttps://t.co/okMJyKWZxr\n\n#Polymarket #Weather #Trading",
+        "id": "2026960593123439010"
+      },
+      {
+        "author_id": "2010413698675056640",
+        "created_at": "2026-02-26T03:00:01.000Z",
+        "edit_history_tweet_ids": [
+          "2026854736993906702"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 21
+        },
+        "text": "\"Temperature rise &lt; 1.05\u00b0C in Feb?\n\u2514 4.4% chance (was lower)\n+238% this week \ud83d\ude80\nWhat's driving this? \ud83e\udd14\nhttps://t.co/IILCBvJi72\n#OddWons #PredictionMarkets #Polymarket #Kalshi #Weather\" https://t.co/Ls6WE6pwSA",
+        "id": "2026854736993906702"
+      },
+      {
+        "author_id": "2020176219354927104",
+        "created_at": "2026-02-25T15:50:28.000Z",
+        "edit_history_tweet_ids": [
+          "2026686239399698498"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 40
+        },
+        "text": "@adiix_official This is basically the Kelly Criterion applied to weather prediction markets.\n\nThe edge: @Polymarket prices weather events based on crowd sentiment. But weather data from NOAA/NWS is public, high-frequency, and surprisingly predictable within temperature ranges.\n\nSo the bot is",
+        "id": "2026686239399698498"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-25T10:02:04.000Z",
+        "edit_history_tweet_ids": [
+          "2026598563128500680"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 15
+        },
+        "text": "Weather forecast market: Highest temperature in Ankara on February 26?... Profit from your predictions\n\nhttps://t.co/RH01Fgy5NN\n\n#Polymarket #Weather #Trading",
+        "id": "2026598563128500680"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-25T10:01:53.000Z",
+        "edit_history_tweet_ids": [
+          "2026598519084142623"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 12
+        },
+        "text": "Live temperature market: Highest temperature in Dallas on February 26?... Make your bet\n\nhttps://t.co/BnLEL0pr4I\n\n#Polymarket #Weather #Trading",
+        "id": "2026598519084142623"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-25T10:01:43.000Z",
+        "edit_history_tweet_ids": [
+          "2026598475446558990"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 14
+        },
+        "text": "Live temperature market: Highest temperature in Chicago on February 26?... Make your bet\n\nhttps://t.co/s86TQYCvJt\n\n#Polymarket #Weather #Trading",
+        "id": "2026598475446558990"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-25T10:01:33.000Z",
+        "edit_history_tweet_ids": [
+          "2026598431515402597"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 14
+        },
+        "text": "Live temperature market: Highest temperature in Paris on February 26?... Make your bet\n\nhttps://t.co/Cq5PaMZDka\n\n#Polymarket #Weather #Trading",
+        "id": "2026598431515402597"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-25T10:01:12.000Z",
+        "edit_history_tweet_ids": [
+          "2026598344517202348"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 10
+        },
+        "text": "Highest temperature in Miami on February 26?... Join Polymarket now\n\nhttps://t.co/crpvv3xdN7\n\n#Polymarket #Weather #Trading",
+        "id": "2026598344517202348"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-25T10:01:02.000Z",
+        "edit_history_tweet_ids": [
+          "2026598301118747064"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 16
+        },
+        "text": "Weather forecast market: Highest temperature in Seattle on February 26?... Profit from your predictions\n\nhttps://t.co/NvMzq6zB25\n\n#Polymarket #Weather #Trading",
+        "id": "2026598301118747064"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-25T10:00:51.000Z",
+        "edit_history_tweet_ids": [
+          "2026598257481154722"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 9
+        },
+        "text": "Temperature prediction: Highest temperature in Wellington on February 26?... Trade now!\n\nhttps://t.co/VXpdTp5owi\n\n#Polymarket #Weather #Trading",
+        "id": "2026598257481154722"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-25T10:00:41.000Z",
+        "edit_history_tweet_ids": [
+          "2026598214023922024"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 37
+        },
+        "text": "Temperature prediction: Highest temperature in London on February 26?... Trade now!\n\nhttps://t.co/vVucLHCSCH\n\n#Polymarket #Weather #Trading",
+        "id": "2026598214023922024"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-25T10:00:30.000Z",
+        "edit_history_tweet_ids": [
+          "2026598169220366504"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 31
+        },
+        "text": "Live temperature market: Highest temperature in NYC on February 26?... Make your bet\n\nhttps://t.co/G1g1ByAHVC\n\n#Polymarket #Weather #Trading",
+        "id": "2026598169220366504"
+      },
+      {
+        "author_id": "1572859296458719234",
+        "created_at": "2026-02-25T10:00:20.000Z",
+        "edit_history_tweet_ids": [
+          "2026598125708673175"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 7
+        },
+        "text": "Highest temperature in Seoul on February 26?... Join Polymarket now\n\nhttps://t.co/W3sNfgXWBy\n\n#Polymarket #Weather #Trading",
+        "id": "2026598125708673175"
+      },
+      {
+        "author_id": "2024601239993151488",
+        "created_at": "2026-02-25T09:14:13.000Z",
+        "edit_history_tweet_ids": [
+          "2026586520484806944"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 5
+        },
+        "text": "My Weather Forecast Bot said buy 70-71F as the highest temperature in Dallas on February 24 at 5% (0,05). Now it\u2019s at 100% \n\nPolymarket Weather Predictions are too easy \ud83d\ude02 https://t.co/8Q5I5soFRm",
+        "id": "2026586520484806944"
+      },
+      {
+        "author_id": "1981837519097597952",
+        "created_at": "2026-02-25T00:07:54.000Z",
+        "edit_history_tweet_ids": [
+          "2026449034450190366"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 10
+        },
+        "text": "@nitesheth01 @PolymarketTrade $24 to $25K on weather markets is the most underrated edge on Polymarket. Everyone\u2019s fighting over crypto while this guy quietly prints on temperature data. We took the opposite path \u2014 crypto binaries, 1,632 trades, 70% WR. Different niches, same principle: find the gap the crowd",
+        "id": "2026449034450190366"
+      }
+    ],
+    "users": {
+      "805463901576069120": {
+        "verified": false,
+        "name": "WingGirl Trader",
+        "id": "805463901576069120",
+        "username": "WingGirlTrader"
+      },
+      "1990459154226720768": {
+        "verified": false,
+        "name": "exodus",
+        "id": "1990459154226720768",
+        "username": "greednvirtue"
+      },
+      "1765267358942142464": {
+        "verified": false,
+        "name": "Lorden",
+        "id": "1765267358942142464",
+        "username": "lorden_eth"
+      },
+      "1670121936909742081": {
+        "verified": false,
+        "name": "Simba",
+        "id": "1670121936909742081",
+        "username": "Simba_crpt"
+      },
+      "1723671272008142848": {
+        "verified": false,
+        "name": "fuche",
+        "id": "1723671272008142848",
+        "username": "fuchexcrypto"
+      },
+      "1674904339033251841": {
+        "verified": true,
+        "name": "FlipX",
+        "id": "1674904339033251841",
+        "username": "getFlipX"
+      },
+      "1937420180923039744": {
+        "verified": true,
+        "name": "Polycool",
+        "id": "1937420180923039744",
+        "username": "PolycoolApp"
+      },
+      "2024959101239750656": {
+        "verified": false,
+        "name": "Ostap",
+        "id": "2024959101239750656",
+        "username": "itsostap"
+      },
+      "2023695452198080512": {
+        "verified": false,
+        "name": "Nia",
+        "id": "2023695452198080512",
+        "username": "Nia1149784"
+      },
+      "1769947026647642112": {
+        "verified": false,
+        "name": "mimibuildsai",
+        "id": "1769947026647642112",
+        "username": "mimibuildsai"
+      },
+      "1550415584982073346": {
+        "verified": false,
+        "name": "Uragan",
+        "id": "1550415584982073346",
+        "username": "uraganqx"
+      },
+      "1572859296458719234": {
+        "verified": false,
+        "name": "Vitalik Smog",
+        "id": "1572859296458719234",
+        "username": "vitalik_smog"
+      },
+      "2018095849788567552": {
+        "verified": false,
+        "name": "Baggins Bot",
+        "id": "2018095849788567552",
+        "username": "BagginsBot"
+      },
+      "2010413698675056640": {
+        "verified": false,
+        "name": "OddWons AI \ud83d\udcca",
+        "id": "2010413698675056640",
+        "username": "OddWonsAI"
+      },
+      "2020176219354927104": {
+        "verified": false,
+        "name": "Libero \u2696\ufe0f\ud83d\udcc8",
+        "id": "2020176219354927104",
+        "username": "pathtolibero"
+      },
+      "2008923852450267137": {
+        "verified": false,
+        "name": "Mayur Parmar \ud83d\udd75",
+        "id": "2008923852450267137",
+        "username": "iam_mayur007"
+      },
+      "2024601239993151488": {
+        "verified": false,
+        "name": "IsobarQuant",
+        "id": "2024601239993151488",
+        "username": "IsobarQuant"
+      },
+      "1011004606594342915": {
+        "verified": false,
+        "name": "Harnisch",
+        "id": "1011004606594342915",
+        "username": "Harnisc08225444"
+      },
+      "2022214867105570816": {
+        "verified": false,
+        "name": "Clawy Trader",
+        "id": "2022214867105570816",
+        "username": "ClawyTrader"
+      },
+      "1794005832201392129": {
+        "verified": false,
+        "name": "Bitcoin Hustler",
+        "id": "1794005832201392129",
+        "username": "Bitc0inHustler"
+      },
+      "1981837519097597952": {
+        "verified": false,
+        "name": "ArgusNexusAI",
+        "id": "1981837519097597952",
+        "username": "ArgusNexusAI"
+      },
+      "1163446125254324225": {
+        "verified": false,
+        "name": "Mikoto",
+        "id": "1163446125254324225",
+        "username": "RavenFBI"
+      }
+    }
+  },
+  "Query5_whale": {
+    "query": "polymarket whale strategy",
+    "tweets": [
+      {
+        "text": "A $1.3M profit whale on Polymarket just doubled down on \"NO\"\n\nThis wallet has made over 400 predictions with a 62% win rate making it one of the most consistent accounts on the platform. The strategy is simple : wait patiently then bet big when the odds look wrong.\n\nNow the https://t.co/mGxq470Gw3",
+        "edit_history_tweet_ids": [
+          "2027237101692125430"
+        ],
+        "public_metrics": {
+          "retweet_count": 4,
+          "reply_count": 2,
+          "like_count": 14,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 140
+        },
+        "id": "2027237101692125430",
+        "author_id": "2008923852450267137",
+        "created_at": "2026-02-27T04:19:23.000Z"
+      },
+      {
+        "text": "How a $230,000 Polymarket whale consistently makes 10%.\n\n\u200bI've been tracking his account for two weeks .\n\nIn just 14 days, his profit is up by $13,000.\n\n\u200bIt\u2019s not a trading bot, but a real person focused on global politics.\n\nHis main strategy is simply betting against crazy news. https://t.co/DtfONy5qqj",
+        "edit_history_tweet_ids": [
+          "2026978575518183873"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 4,
+          "like_count": 8,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 271
+        },
+        "id": "2026978575518183873",
+        "author_id": "1646883272159289346",
+        "created_at": "2026-02-26T11:12:06.000Z"
+      },
+      {
+        "text": "Let your Clawdbot print $$$ on Polymarket.\n\nI built a SOUL-prompt that turns it into:\n\n\u2013 A Positive EV finder\n\u2013 An arbitrage scanner\n\u2013 A whale tracker\n\u2013 A news-driven strategy engine\n\nBacktesting, logs, and risk controls included.\n\nLink: https://t.co/XHP96lBAqc\n\nUse it as a base https://t.co/FDCQyHhQat",
+        "edit_history_tweet_ids": [
+          "2028202764774314102"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 8,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 155
+        },
+        "id": "2028202764774314102",
+        "author_id": "1998719446849060864",
+        "created_at": "2026-03-01T20:16:35.000Z"
+      },
+      {
+        "text": "@Atenov_D @Polymarket @PolymarketTrade @Silent_Whale_ @edwardmulraney @trangstah @JasonCISO @AryaGh6 @eden_noob @crypeii @vicenzo29 Can't wait to see which agent strategy comes out on top",
+        "edit_history_tweet_ids": [
+          "2028227757277126822"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 1,
+          "like_count": 1,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 163
+        },
+        "id": "2028227757277126822",
+        "author_id": "2262630787",
+        "created_at": "2026-03-01T21:55:54.000Z"
+      },
+      {
+        "text": "@Atenov_D @Polymarket @PolymarketTrade @Silent_Whale_ @edwardmulraney @trangstah @JasonCISO @AryaGh6 @eden_noob @crypeii @vicenzo29 your demo tests will reveal the top strategy",
+        "edit_history_tweet_ids": [
+          "2028227387310096394"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 1,
+          "like_count": 1,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 115
+        },
+        "id": "2028227387310096394",
+        "author_id": "1317755071",
+        "created_at": "2026-03-01T21:54:26.000Z"
+      },
+      {
+        "text": "\ud83d\udc0b Whale Trade Detected: Polymarket 8:31 AM EST\n\nBUY: TSG Hoffenheim lose German election bet\n\ud83d\udcb0 Paid: $40,000 | Odds: 37% | Payout: $108,488\n\n$40k bet on 37% odds to unseat the incumbent - bold strategy\n\n\ud83d\udd17 Link in comments\n#PolyWhale #Election2026 #Germany #Politics",
+        "edit_history_tweet_ids": [
+          "2027738769583927298"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 1,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 46
+        },
+        "id": "2027738769583927298",
+        "author_id": "2021430151116959744",
+        "created_at": "2026-02-28T13:32:50.000Z"
+      },
+      {
+        "text": "\ud83d\udc0b Whale Trade Detected: Polymarket 7:27 PM EST\n\nBUY: Thunder to defeat Raptors\n\ud83d\udcb0 Paid: $51,939 | Odds: 50% | Payout: $103,878\n\nThis whale must know the Raptors' secret strategy \ud83e\udd14\n\n\ud83d\udd17 Link in comments\n#PolyWhale #NBABets #ThunoerUp",
+        "edit_history_tweet_ids": [
+          "2026454107469275560"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 1,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 49
+        },
+        "id": "2026454107469275560",
+        "author_id": "2021430151116959744",
+        "created_at": "2026-02-25T00:28:03.000Z"
+      },
+      {
+        "text": "Want to track whales like piggyery?\n\nPredictEngine gives you real-time whale alerts, copy trading, and AI bots to automate your Polymarket strategy\n\nhttps://t.co/aSnJWzbSmI\n\n[AI-generated thread]",
+        "edit_history_tweet_ids": [
+          "2028888729461342308"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 39
+        },
+        "id": "2028888729461342308",
+        "author_id": "1680272132163395585",
+        "created_at": "2026-03-03T17:42:22.000Z"
+      },
+      {
+        "text": "@PMTraderAdam @Polymarket @PolymarketTrade Polymarket is doing what prediction markets were always supposed to do and most people are still sleeping on it\n\nThe real edge isnt picking 50/50 coinflips its stacking high probability outcomes with size exactly like the whale strategy\n\nThis is the new meta for risk adjusted https://t.co/BoNvVPCMu9",
+        "edit_history_tweet_ids": [
+          "2027330484514988155"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 85
+        },
+        "id": "2027330484514988155",
+        "author_id": "1938966850106273792",
+        "created_at": "2026-02-27T10:30:28.000Z"
+      },
+      {
+        "text": "@copenzafan @recogard @PolymarketTrade @Polymarket @zscdao Honest question\u2014once a whale bot's strategy is public on github, how long before the edge gets arbed out? 0x1979 might've crushed the book historically but if everyone's copying the same signals now, you're just providing exit liquidity.",
+        "edit_history_tweet_ids": [
+          "2026401203035292050"
+        ],
+        "public_metrics": {
+          "retweet_count": 0,
+          "reply_count": 0,
+          "like_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "impression_count": 45
+        },
+        "id": "2026401203035292050",
+        "author_id": "2011607486009393152",
+        "created_at": "2026-02-24T20:57:50.000Z"
+      }
+    ],
+    "users": {
+      "1680272132163395585": {
+        "id": "1680272132163395585",
+        "username": "PredictEngineai",
+        "verified": false,
+        "name": "PredictEngine.ai"
+      },
+      "2262630787": {
+        "id": "2262630787",
+        "username": "Bulgakoff_K",
+        "verified": false,
+        "name": "Billy Moose"
+      },
+      "1317755071": {
+        "id": "1317755071",
+        "username": "sandraaasol",
+        "verified": false,
+        "name": "sandra"
+      },
+      "1998719446849060864": {
+        "id": "1998719446849060864",
+        "username": "fgenstart",
+        "verified": false,
+        "name": "fgen"
+      },
+      "2021430151116959744": {
+        "id": "2021430151116959744",
+        "username": "PolyKalshwhales",
+        "verified": false,
+        "name": "Kalshi and Polymarket WhaleWatch"
+      },
+      "1938966850106273792": {
+        "id": "1938966850106273792",
+        "username": "FinancialAstroo",
+        "verified": false,
+        "name": "Financial Astrologer Defne"
+      },
+      "2008923852450267137": {
+        "id": "2008923852450267137",
+        "username": "iam_mayur007",
+        "verified": false,
+        "name": "Mayur Parmar \ud83d\udd75"
+      },
+      "1646883272159289346": {
+        "id": "1646883272159289346",
+        "username": "therealyou66",
+        "verified": false,
+        "name": "therealyou66"
+      },
+      "2011607486009393152": {
+        "id": "2011607486009393152",
+        "username": "PolyIntelHub",
+        "verified": false,
+        "name": "PolyIntelHub"
+      }
+    }
+  }
+}
