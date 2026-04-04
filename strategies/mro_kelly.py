@@ -235,7 +235,10 @@ class MROCalculator:
         price_change_pct = ((now_candle.close - ref_candle.close) / ref_candle.close) * 100.0
         volume_change_pct = ((now_candle.volume - ref_candle.volume) / ref_candle.volume) * 100.0
 
-        return price_change_pct * 100.0 + volume_change_pct / 2.0
+        # MRO = price_change_pct + volume_change_pct / 2
+        # Clamp to [-200, +200] to handle REST fallback volume anomalies
+        raw_mro = price_change_pct + volume_change_pct / 2.0
+        return max(-200.0, min(200.0, raw_mro))
 
     def volume_change_pct(self) -> float | None:
         """Volume change % vs 5 candles ago."""
