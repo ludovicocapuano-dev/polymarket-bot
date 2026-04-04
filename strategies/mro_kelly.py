@@ -344,6 +344,7 @@ class MROKellyStrategy:
     risk: RiskManager
     binance: BinanceFeed
     horizon: object = None  # v13.1: HorizonClient for primary execution
+    fast_executor: object = None  # v14.0: FastExecutor for sub-100ms execution
 
     # ── Parameters ──
     mro_threshold: float = 70.0     # |MRO| must exceed this
@@ -914,9 +915,42 @@ class MROKellyStrategy:
                 "pnl": pnl,
             })
         else:
-            # v13.1: Horizon SDK primary execution
+            # v14.0: FastExecutor -> Horizon -> native smart_buy
             target = min(buy_price + 0.03, 0.85)
-            if self.horizon is not None:
+            shares = round(size / target, 2) if target > 0 else 1.0
+            if shares < 1:
+                shares = 1.0
+
+            executed = False
+
+            # Try 1: FastExecutor (pre-signed, ~80ms)
+            if self.fast_executor is not None:
+                try:
+                    fe_result = self.fast_executor.execute(
+                        token_id=token_id,
+                        side="BUY",
+                        price=target,
+                        size=shares,
+                        strategy="mro_kelly",
+                    )
+                    if fe_result.success:
+                        if fe_result.fill_price > 0:
+                            trade.price = fe_result.fill_price
+                        self.risk.open_trade(trade)
+                        self._open_position_count += 1
+                        self._positions_per_crypto[crypto_symbol] = self._positions_per_crypto.get(crypto_symbol, 0) + 1
+                        logger.info(
+                            f"[LIVE] MRO-{sym_upper} [FAST-{fe_result.method.upper()}]: {signal.direction} "
+                            f"BUY {signal.side} ${size:.0f} @{buy_price:.3f} | "
+                            f"MRO={signal.mro_value:+.1f} edge={signal.edge:.4f} | "
+                            f"{sym_upper}=${signal.btc_price:,.2f} | latency={fe_result.latency_ms:.0f}ms"
+                        )
+                        executed = True
+                except Exception as e:
+                    logger.warning(f"[MRO-{sym_upper}] FastExecutor error, trying fallback: {e}")
+
+            # Try 2: Horizon SDK
+            if not executed and self.horizon is not None:
                 hz_result = self.horizon.execute_trade(
                     token_id=token_id,
                     side=f"BUY_{signal.side}",
@@ -936,11 +970,12 @@ class MROKellyStrategy:
                         f"MRO={signal.mro_value:+.1f} edge={signal.edge:.4f} | "
                         f"{sym_upper}=${signal.btc_price:,.2f}"
                     )
+                    executed = True
                 else:
-                    logger.warning(f"[MRO-{sym_upper}] Execution failed: {hz_result.error}")
-                    return False
-            else:
-                # Legacy path: direct native smart_buy
+                    logger.warning(f"[MRO-{sym_upper}] Horizon failed: {hz_result.error}")
+
+            # Try 3: Legacy native smart_buy
+            if not executed:
                 result = self.api.smart_buy(
                     token_id, size,
                     target_price=target,
@@ -957,6 +992,7 @@ class MROKellyStrategy:
                         f"MRO={signal.mro_value:+.1f} edge={signal.edge:.4f} | "
                         f"{sym_upper}=${signal.btc_price:,.2f}"
                     )
+                    executed = True
                 else:
                     logger.warning(f"[MRO-{sym_upper}] Order failed: {signal.market.id}")
                     return False

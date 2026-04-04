@@ -94,6 +94,7 @@ class BTCLatencyStrategy:
     risk: RiskManager
     binance: BinanceFeed
     horizon: object = None  # v13.1: HorizonClient for primary execution
+    fast_executor: object = None  # v14.0: FastExecutor for sub-100ms execution
 
     # ── Parametri Latency Mode ──
     bankroll: float = 5000.0         # capitale dedicato a questa strategia
@@ -815,9 +816,40 @@ class BTCLatencyStrategy:
                 "btc_open": signal.btc_open,
             }
         else:
-            # v13.1: Horizon SDK primary execution (speed-critical for latency arb)
+            # v14.0: FastExecutor -> Horizon -> native smart_buy
             target = min(buy_price + 0.03, self.max_entry_price)
-            if self.horizon is not None:
+            shares = round(size / target, 2) if target > 0 else 1.0
+            if shares < 1:
+                shares = 1.0
+
+            executed = False
+
+            # Try 1: FastExecutor (pre-signed, ~80ms)
+            if self.fast_executor is not None:
+                try:
+                    fe_result = self.fast_executor.execute(
+                        token_id=token_id,
+                        side="BUY",
+                        price=target,
+                        size=shares,
+                        strategy="btc_latency",
+                    )
+                    if fe_result.success:
+                        if fe_result.fill_price > 0:
+                            trade.price = fe_result.fill_price
+                        self.risk.open_trade(trade)
+                        logger.info(
+                            f"[LIVE] BTC-LATENCY [FAST-{fe_result.method.upper()}]: {signal.direction} "
+                            f"BUY {signal.side} ${size:.0f} @{buy_price:.3f} | "
+                            f"P_fair={signal.fair_prob:.3f} edge={signal.edge:.4f} | "
+                            f"BTC=${signal.btc_price:,.0f} | latency={fe_result.latency_ms:.0f}ms"
+                        )
+                        executed = True
+                except Exception as e:
+                    logger.warning(f"[BTC-LATENCY] FastExecutor error, trying fallback: {e}")
+
+            # Try 2: Horizon SDK (if FastExecutor failed or unavailable)
+            if not executed and self.horizon is not None:
                 hz_result = self.horizon.execute_trade(
                     token_id=token_id,
                     side=f"BUY_{signal.side}",
@@ -835,11 +867,12 @@ class BTCLatencyStrategy:
                         f"P_fair={signal.fair_prob:.3f} edge={signal.edge:.4f} | "
                         f"BTC=${signal.btc_price:,.0f}"
                     )
+                    executed = True
                 else:
-                    logger.warning(f"[BTC-LATENCY] Execution failed: {hz_result.error}")
-                    return False
-            else:
-                # Legacy path: direct native smart_buy
+                    logger.warning(f"[BTC-LATENCY] Horizon failed: {hz_result.error}")
+
+            # Try 3: Legacy native smart_buy
+            if not executed:
                 result = self.api.smart_buy(
                     token_id, size,
                     target_price=target,
@@ -854,6 +887,7 @@ class BTCLatencyStrategy:
                         f"P_fair={signal.fair_prob:.3f} edge={signal.edge:.4f} | "
                         f"BTC=${signal.btc_price:,.0f}"
                     )
+                    executed = True
                 else:
                     logger.warning(f"[BTC-LATENCY] Ordine fallito: {signal.market.id}")
                     return False

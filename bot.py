@@ -82,6 +82,7 @@ from monitoring.kyle_lambda import KyleLambdaEstimator
 from utils.kalman_forecast import WeatherKalmanFilter
 from utils.advanced_risk import run_advanced_risk_analysis
 from utils.horizon_client import HorizonClient, ExecutionResult as HorizonExecResult
+from utils.fast_executor import FastExecutor
 from utils.logit_market_maker import optimal_quotes, implied_belief_vol, two_sided_quotes
 from utils.unusual_whales import UnusualWhalesClient
 from utils.uw_polymarket_matcher import UWPolymarketMatcher
@@ -333,6 +334,14 @@ class MultiStrategyBot:
         # Wire Horizon into strategies that were initialized before it
         self.weather.horizon = self.horizon
 
+        # ── v14.0: FastExecutor — pre-signed orders for sub-100ms execution ──
+        self.fast_executor = None
+        if self.api.clob:
+            self.fast_executor = FastExecutor(self.api.clob)
+            logger.info(f"[FAST-EXEC] Initialized — {self.fast_executor.status_str()}")
+        else:
+            logger.info("[FAST-EXEC] Skipped — CLOB client not authenticated yet")
+
         # ── v12.6: Unusual Whales — congress + darkpool + insider signals ──
         self.unusual_whales = UnusualWhalesClient()
         if self.unusual_whales.api_key:
@@ -372,6 +381,7 @@ class MultiStrategyBot:
         self.btc_latency = BTCLatencyStrategy(
             api=self.api, risk=self.risk, binance=self.binance,
             horizon=self.horizon,  # v13.1: Horizon primary execution
+            fast_executor=self.fast_executor,  # v14.0: sub-100ms execution
             bankroll=1000.0, base_size=30.0, max_size=50.0,  # v12.10.8: raddoppio sizing (13/13 WR, +$541)
         )
         self.risk.set_strategy_budget("btc_latency", 1000.0)
@@ -395,6 +405,7 @@ class MultiStrategyBot:
         self.mro_kelly = MROKellyStrategy(
             api=self.api, risk=self.risk, binance=self.binance,
             horizon=self.horizon,  # v13.1: Horizon primary execution
+            fast_executor=self.fast_executor,  # v14.0: sub-100ms execution
             max_bet=70.0, min_bet=20.0, min_edge=0.05,  # v12.10.8: raddoppio sizing (13/13 WR, +$541)
             kelly_fraction=0.30, max_open_positions=5,
         )
@@ -563,12 +574,14 @@ class MultiStrategyBot:
         )
 
         # v12.10.8: Notify startup via Telegram — simplified strategy list
+        _fe_status = self.fast_executor.status_str() if self.fast_executor else "N/A"
         all_strats = [
             f"mro_kelly (${self.mro_kelly.max_bet:.0f}/trade, budget $500)",
             f"btc_latency (${self.btc_latency.max_size:.0f}/trade, budget $1000)",
             f"liquidity_vacuum ($50/trade, budget $300)",
             f"weather (difensivo, solo +2d+ sigma<3°F)",
             f"sport_latency ({'attivo' if not self.betfair._disabled else 'attende Betfair'})",
+            f"fast_executor ({_fe_status})",
         ]
         await self.telegram.notify_startup(
             mode="PAPER" if paper else "LIVE",
@@ -750,6 +763,25 @@ class MultiStrategyBot:
                 # ── 0.8.5. Market Making v2.0 — DISABILITATO v12.10.5 ──
                 # Postmortem: richiede $2K+ budget, 0 trade eseguiti. Focus su crypto arb.
                 pass
+
+                # ── 0.8.9. FastExecutor cache warming (every 100 cycles ~50min) ──
+                if self.fast_executor and self._cycle % 100 == 1:
+                    try:
+                        # Warm cache for active crypto market tokens
+                        _warm_tokens = set()
+                        for strat in [self.btc_latency, self.mro_kelly]:
+                            if hasattr(strat, '_active_tokens'):
+                                _warm_tokens.update(strat._active_tokens)
+                            # Also check recently traded markets for token IDs
+                            if hasattr(strat, '_recently_traded'):
+                                for mid in list(strat._recently_traded.keys())[:10]:
+                                    # Markets have yes/no tokens — we need the actual token_ids
+                                    pass
+                        if _warm_tokens:
+                            self.fast_executor.warm_cache_batch(list(_warm_tokens))
+                        self.fast_executor.cleanup_expired()
+                    except Exception as e:
+                        logger.debug(f"[FAST-EXEC] Cache warm error: {e}")
 
                 # ── 0.9. BTC Latency Arb v3.0 (Multi-Mode) ──
                 try:
