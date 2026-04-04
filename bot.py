@@ -81,7 +81,8 @@ from monitoring.hrp import HRPAllocator
 from monitoring.kyle_lambda import KyleLambdaEstimator
 from utils.kalman_forecast import WeatherKalmanFilter
 from utils.advanced_risk import run_advanced_risk_analysis
-from utils.horizon_client import HorizonClient
+from utils.horizon_client import HorizonClient, ExecutionResult as HorizonExecResult
+from utils.logit_market_maker import optimal_quotes, implied_belief_vol, two_sided_quotes
 from utils.unusual_whales import UnusualWhalesClient
 from utils.uw_polymarket_matcher import UWPolymarketMatcher
 from utils.market_db import db as market_db
@@ -321,12 +322,16 @@ class MultiStrategyBot:
         )
         self.risk.set_strategy_budget("resolution_sniper", config.capital_for("resolution_sniper"))
 
-        # ── v12.5.3: Horizon SDK — enhanced execution + cross-exchange arb ──
+        # ── v13.1: Horizon SDK — PRIMARY execution engine ──
         self.horizon = HorizonClient()
         if self.horizon.connect():
-            logger.info(f"[HORIZON] Connected — {self.horizon.status()}")
+            logger.info(f"[HORIZON] Connected as primary execution — {self.horizon.status()}")
         else:
-            logger.info("[HORIZON] Running without Horizon (native execution)")
+            logger.info("[HORIZON] Running without Horizon (native execution only)")
+        # Wire native API as fallback for when Horizon is unavailable or errors
+        self.horizon.set_native_fallback(self.api.smart_buy, self.api.smart_sell)
+        # Wire Horizon into strategies that were initialized before it
+        self.weather.horizon = self.horizon
 
         # ── v12.6: Unusual Whales — congress + darkpool + insider signals ──
         self.unusual_whales = UnusualWhalesClient()
@@ -366,6 +371,7 @@ class MultiStrategyBot:
         # v10.8.6: BTC Latency Arb v3.0 — Multi-Mode (Sniper + OFI + Latency)
         self.btc_latency = BTCLatencyStrategy(
             api=self.api, risk=self.risk, binance=self.binance,
+            horizon=self.horizon,  # v13.1: Horizon primary execution
             bankroll=1000.0, base_size=30.0, max_size=50.0,  # v12.10.8: raddoppio sizing (13/13 WR, +$541)
         )
         self.risk.set_strategy_budget("btc_latency", 1000.0)
@@ -388,6 +394,7 @@ class MultiStrategyBot:
         # v12.9: MRO-Kelly — Mean Reversion Oscillator on BTC 5-min markets
         self.mro_kelly = MROKellyStrategy(
             api=self.api, risk=self.risk, binance=self.binance,
+            horizon=self.horizon,  # v13.1: Horizon primary execution
             max_bet=70.0, min_bet=20.0, min_edge=0.05,  # v12.10.8: raddoppio sizing (13/13 WR, +$541)
             kelly_fraction=0.30, max_open_positions=5,
         )
@@ -544,6 +551,11 @@ class MultiStrategyBot:
 
         paper = self.config.paper_trading
         logger.info(f"Bot avviato in modalita' {'PAPER' if paper else 'LIVE'}")
+        hz_status = self.horizon.status()
+        logger.info(
+            f"[EXECUTION] Engine: {'HORIZON v' + str(hz_status.get('version', '?')) if hz_status['connected'] else 'NATIVE'} "
+            f"| TWAP>${hz_status['twap_threshold']:.0f} VWAP>${hz_status['vwap_threshold']:.0f}"
+        )
         logger.info(
             f"Allocazione v12.10.5: WEATHER={self.config.allocation.weather}% "
             f"| Indipendenti: mro_kelly($500) btc_latency($500) "
@@ -1157,6 +1169,37 @@ class MultiStrategyBot:
                             self.risk.sync_onchain_positions(funder)
                     except Exception as e:
                         logger.debug(f"[SYNC] Errore re-sync: {e}")
+
+                    # v13.1: Horizon position sync — detect untracked positions
+                    try:
+                        if self.horizon.available:
+                            sync_stats = self.horizon.sync_positions_with_risk(self.risk)
+                            if sync_stats.get("untracked", 0) > 0:
+                                logger.warning(
+                                    f"[HORIZON-SYNC] {sync_stats['untracked']} untracked "
+                                    f"positions detected on-chain"
+                                )
+                            logger.info(
+                                f"[HORIZON-SYNC] Sync complete: {sync_stats.get('synced', 0)} "
+                                f"on-chain, {sync_stats.get('tracked', 0)} tracked"
+                            )
+                    except Exception as e:
+                        logger.debug(f"[HORIZON-SYNC] Errore: {e}")
+
+                    # v13.1: Log Horizon execution stats
+                    try:
+                        hz_stats = self.horizon.status().get("stats", {})
+                        if hz_stats.get("horizon_orders", 0) > 0 or hz_stats.get("native_fallbacks", 0) > 0:
+                            logger.info(
+                                f"[HORIZON-STATS] orders={hz_stats.get('horizon_orders', 0)} "
+                                f"(limit={hz_stats.get('horizon_limit', 0)} "
+                                f"twap={hz_stats.get('horizon_twap', 0)} "
+                                f"vwap={hz_stats.get('horizon_vwap', 0)}) "
+                                f"fallbacks={hz_stats.get('native_fallbacks', 0)} "
+                                f"errors={hz_stats.get('errors', 0)}"
+                            )
+                    except Exception:
+                        pass
 
                 # ── v9.0: Drift + Calibration (ogni 500 cicli) ──
                 if self._cycle % 500 == 0 and self._cycle > 0:
@@ -1902,13 +1945,24 @@ class MultiStrategyBot:
                     closed += 1
                     continue
 
-                result = await asyncio.to_thread(
-                    self.api.smart_sell,
-                    trade.token_id, shares,
-                    current_price=real_entry,
-                    timeout_sec=8.0,
-                    fallback_market=True,
-                )
+                # v13.1: Route SELL through Horizon (with native fallback)
+                if self.horizon.available:
+                    hz_sell = await asyncio.to_thread(
+                        self.horizon.execute_trade,
+                        trade.token_id, "SELL",
+                        shares * real_entry,  # size in dollars
+                        real_entry,
+                        trade.strategy,
+                    )
+                    result = hz_sell.raw_result if hz_sell.success else None
+                else:
+                    result = await asyncio.to_thread(
+                        self.api.smart_sell,
+                        trade.token_id, shares,
+                        current_price=real_entry,
+                        timeout_sec=8.0,
+                        fallback_market=True,
+                    )
 
                 if result:
                     sell_price = current_bid if current_bid > 0 else real_entry * 0.5

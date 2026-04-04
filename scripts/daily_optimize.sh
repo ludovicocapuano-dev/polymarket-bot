@@ -53,6 +53,13 @@ else:
     print(f'Model fresh ({age_days:.1f}d old) — skip retrain')
 " >> "$LOG" 2>&1
 
+# 7. AutoEvolve — autonomous code evolution (1x/day, subtraction-biased)
+echo "--- AutoEvolve: code evolution loop ---" >> "$LOG"
+EVOLVE_OUTPUT=$(timeout 120 python3 scripts/auto_evolve.py --auto-apply 2>&1)
+echo "$EVOLVE_OUTPUT" >> "$LOG"
+EVOLVE_STATUS=$(echo "$EVOLVE_OUTPUT" | grep -oP "Run #\d+ COMPLETE — \K\w+" || echo "SKIPPED")
+echo "  AutoEvolve status: $EVOLVE_STATUS" >> "$LOG"
+
 echo "=== DONE $(date) ===" >> "$LOG"
 
 # 4. Invia risultati su Telegram
