@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AutoEvolve v1.0 — Autonomous code evolution loop.
+AutoEvolve v2.0 — Autonomous code evolution loop (multi-strategy).
 
 Inspired by Claude autoresearch (103 experiments, 21.4 Sharpe):
 "Every single feature removal improved performance."
@@ -17,10 +17,13 @@ Safety: NEVER modifies live code directly. Works on copies.
 Cost: ~$0.005/run via DeepSeek on localhost:4000.
 
 Usage:
-    python3 scripts/auto_evolve.py                    # single run
-    python3 scripts/auto_evolve.py --auto-apply       # allow auto-apply after 3 wins
-    python3 scripts/auto_evolve.py --target weather.py # target file (default: weather.py)
-    python3 scripts/auto_evolve.py --dry-run           # hypothesis only, no backtest
+    python3 scripts/auto_evolve.py                        # single run (weather)
+    python3 scripts/auto_evolve.py --auto-apply           # allow auto-apply after 3 wins
+    python3 scripts/auto_evolve.py --target weather       # target strategy (default: weather)
+    python3 scripts/auto_evolve.py --target mro_kelly     # target mro_kelly strategy
+    python3 scripts/auto_evolve.py --target btc_latency   # target btc_latency strategy
+    python3 scripts/auto_evolve.py --target all           # iterate all active strategies
+    python3 scripts/auto_evolve.py --dry-run              # hypothesis only, no backtest
 """
 
 import argparse
@@ -60,6 +63,25 @@ MIN_IMPROVEMENT = 0.05       # 5% score improvement required
 CONSECUTIVE_WINS_TO_APPLY = 3  # auto-apply after N consecutive improvements
 MAX_CODE_LINES = 800         # truncate code sent to LLM if too long
 
+# ── Strategy Registry ──
+# Maps strategy name -> file path (relative to BASE_DIR), LLM description
+STRATEGY_REGISTRY = {
+    "weather": {
+        "file": "weather.py",
+        "description": "Polymarket weather temperature prediction using multi-source forecast divergence",
+    },
+    "mro_kelly": {
+        "file": "strategies/mro_kelly.py",
+        "description": "5-minute crypto Up/Down markets using MRO oscillator (mean reversion) + Kelly sizing on BTC/ETH/SOL/XRP",
+    },
+    "btc_latency": {
+        "file": "strategies/btc_latency.py",
+        "description": "Crypto latency arbitrage exploiting Binance→Polymarket price delay on BTC/ETH/SOL/XRP",
+    },
+}
+
+ALL_ACTIVE_STRATEGIES = list(STRATEGY_REGISTRY.keys())
+
 
 def load_history() -> dict:
     """Load experiment history."""
@@ -93,8 +115,8 @@ def save_evolve_log(entry: dict):
     EVOLVE_LOG.write_text(json.dumps(log, indent=2, default=str))
 
 
-def get_recent_performance(days: int = 7) -> dict:
-    """Get performance stats from last N days of trades."""
+def get_recent_performance(days: int = 7, strategy: str = "weather") -> dict:
+    """Get performance stats from last N days of trades for a given strategy."""
     # Try trades.json first, fall back to logs
     trades = parse_trades_json()
     if not trades:
@@ -105,16 +127,16 @@ def get_recent_performance(days: int = 7) -> dict:
     if not trades:
         return {"error": "no trades found"}
 
-    # Filter to weather + last N days
+    # Filter to target strategy + last N days
     cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-    recent = [t for t in trades if t.strategy == "weather"
+    recent = [t for t in trades if t.strategy == strategy
               and t.timestamp >= cutoff and t.outcome in ("WIN", "LOSS")]
 
     if not recent:
-        return {"error": f"no closed weather trades in last {days} days"}
+        return {"error": f"no closed {strategy} trades in last {days} days"}
 
-    metrics = calc_metrics(recent + [t for t in trades if t.strategy != "weather"],
-                           strategy="weather")
+    metrics = calc_metrics(recent + [t for t in trades if t.strategy != strategy],
+                           strategy=strategy)
     # Add extra stats
     wins = [t for t in recent if t.outcome == "WIN"]
     losses = [t for t in recent if t.outcome == "LOSS"]
@@ -126,14 +148,14 @@ def get_recent_performance(days: int = 7) -> dict:
     return metrics
 
 
-def get_all_trades() -> list:
-    """Get all historical weather trades for backtesting."""
+def get_all_trades(strategy: str = "weather") -> list:
+    """Get all historical trades for a given strategy for backtesting."""
     trades = parse_trades_json()
     if not trades:
         log_files = sorted(LOG_DIR.glob("bot_*.log"), reverse=True)[:50]
         if log_files:
             trades = parse_trades_from_logs(log_files)
-    return [t for t in trades if t.strategy == "weather" and t.outcome in ("WIN", "LOSS")]
+    return [t for t in trades if t.strategy == strategy and t.outcome in ("WIN", "LOSS")]
 
 
 def read_strategy_code(filepath: Path) -> str:
@@ -149,7 +171,9 @@ def read_strategy_code(filepath: Path) -> str:
     return code
 
 
-def generate_hypothesis(code: str, performance: dict, history: dict) -> dict | None:
+def generate_hypothesis(code: str, performance: dict, history: dict,
+                        strategy_name: str = "weather",
+                        strategy_description: str = "") -> dict | None:
     """Ask DeepSeek for ONE code change hypothesis.
 
     Returns dict with keys: hypothesis, change_description, search_text, replace_text
@@ -157,9 +181,10 @@ def generate_hypothesis(code: str, performance: dict, history: dict) -> dict | N
     """
     import urllib.request
 
-    # Build context from past experiments
+    # Build context from past experiments (filtered to this strategy)
     past_summary = ""
-    past_exps = history.get("experiments", [])[-10:]
+    past_exps = [e for e in history.get("experiments", [])
+                 if e.get("strategy", "weather") == strategy_name][-10:]
     if past_exps:
         past_lines = []
         for e in past_exps:
@@ -168,7 +193,9 @@ def generate_hypothesis(code: str, performance: dict, history: dict) -> dict | N
                               f"(score {e.get('baseline_score', 0):.2f} -> {e.get('new_score', 0):.2f})")
         past_summary = "\nPast experiments (most recent):\n" + "\n".join(past_lines)
 
-    prompt = f"""You are optimizing a Polymarket weather trading strategy. The key insight from
+    strat_desc = strategy_description or f"Polymarket {strategy_name} trading strategy"
+
+    prompt = f"""You are optimizing a {strat_desc}. The key insight from
 autoresearch (103 experiments, 21.4 Sharpe): "Every single feature removal improved performance."
 
 Current performance (last {performance.get('days', 7)} days):
@@ -299,13 +326,15 @@ def apply_change(original_path: Path, search_text: str, replace_text: str) -> Pa
     return copy_path
 
 
-def backtest_baseline(trades: list) -> float:
+def backtest_baseline(trades: list, strategy: str = "weather") -> float:
     """Compute baseline score on all historical trades."""
-    metrics = calc_metrics(trades + [Trade(strategy="dummy")], strategy="weather")
-    return compute_score(metrics, strategy="weather")
+    metrics = calc_metrics(trades + [Trade(strategy="dummy")], strategy=strategy)
+    return compute_score(metrics, strategy=strategy)
 
 
-def backtest_modified(modified_path: Path, trades: list) -> float:
+def backtest_modified(modified_path: Path, trades: list,
+                      strategy: str = "weather",
+                      original_file: str = "weather.py") -> float:
     """Backtest modified code.
 
     Since we can't easily re-run the full strategy pipeline on historical data
@@ -327,12 +356,12 @@ def backtest_modified(modified_path: Path, trades: list) -> float:
     # BUT: we can do a simple heuristic — if the change REMOVES code (fewer lines),
     # give a small bonus (subtraction bias).
 
-    original_lines = (BASE_DIR / "weather.py").read_text().count("\n")
+    original_lines = (BASE_DIR / original_file).read_text().count("\n")
     modified_lines = modified_path.read_text().count("\n")
     lines_removed = original_lines - modified_lines
 
-    metrics = calc_metrics(trades + [Trade(strategy="dummy")], strategy="weather")
-    base_score = compute_score(metrics, strategy="weather")
+    metrics = calc_metrics(trades + [Trade(strategy="dummy")], strategy=strategy)
+    base_score = compute_score(metrics, strategy=strategy)
 
     # Subtraction bonus: +1% per line removed (max 5%)
     subtraction_bonus = min(0.05, max(0, lines_removed * 0.01))
@@ -357,9 +386,19 @@ def auto_apply_change(modified_path: Path, target_path: Path, hypothesis: str):
     print(f"[EVOLVE] To revert: cp {backup_path} {target_path}")
 
 
-def run_evolution(target_file: str = "weather.py", allow_auto_apply: bool = False,
+def run_evolution(strategy_name: str = "weather", allow_auto_apply: bool = False,
                   dry_run: bool = False) -> dict:
-    """Run one evolution cycle. Returns experiment record."""
+    """Run one evolution cycle for a single strategy. Returns experiment record."""
+
+    # Resolve strategy to file path and description
+    if strategy_name in STRATEGY_REGISTRY:
+        reg = STRATEGY_REGISTRY[strategy_name]
+        target_file = reg["file"]
+        strategy_description = reg["description"]
+    else:
+        # Legacy: treat as direct file path for backward compat
+        target_file = strategy_name
+        strategy_description = ""
 
     target_path = BASE_DIR / target_file
     if not target_path.exists():
@@ -370,21 +409,26 @@ def run_evolution(target_file: str = "weather.py", allow_auto_apply: bool = Fals
     run_id = history["total_runs"] + 1
 
     print(f"\n{'='*60}")
-    print(f"  AutoEvolve v1.0 — Run #{run_id}")
-    print(f"  Target: {target_file}")
-    print(f"  Consecutive wins: {history['consecutive_wins']}")
+    print(f"  AutoEvolve v2.0 — Run #{run_id}")
+    print(f"  Strategy: {strategy_name} ({target_file})")
+    print(f"  Consecutive wins: {history.get('consecutive_wins_' + strategy_name, history.get('consecutive_wins', 0))}")
     print(f"{'='*60}\n")
+
+    # Per-strategy consecutive wins tracking
+    consec_key = f"consecutive_wins_{strategy_name}"
+    if consec_key not in history:
+        history[consec_key] = 0
 
     # Step 1: Get recent performance
     print("[1/5] Analyzing recent performance...")
-    performance = get_recent_performance(days=7)
+    performance = get_recent_performance(days=7, strategy=strategy_name)
     if "error" in performance:
         print(f"  {performance['error']}")
         # Use all-time stats instead
-        performance = get_recent_performance(days=90)
+        performance = get_recent_performance(days=90, strategy=strategy_name)
         if "error" in performance:
             print(f"  {performance['error']} — aborting")
-            return {"error": performance["error"]}
+            return {"error": performance["error"], "strategy": strategy_name}
     print(f"  WR: {performance.get('wr', 0):.1f}% | "
           f"PnL: ${performance.get('pnl', 0):+.2f} | "
           f"Closed: {performance.get('closed', 0)}")
@@ -392,7 +436,9 @@ def run_evolution(target_file: str = "weather.py", allow_auto_apply: bool = Fals
     # Step 2: Generate hypothesis
     print("\n[2/5] Generating hypothesis via DeepSeek...")
     code = read_strategy_code(target_path)
-    hypothesis_data = generate_hypothesis(code, performance, history)
+    hypothesis_data = generate_hypothesis(code, performance, history,
+                                          strategy_name=strategy_name,
+                                          strategy_description=strategy_description)
 
     if not hypothesis_data:
         print("  Failed to generate hypothesis")
@@ -426,13 +472,14 @@ def run_evolution(target_file: str = "weather.py", allow_auto_apply: bool = Fals
         print("  Failed to apply change")
         experiment = {
             "run_id": run_id, "timestamp": datetime.now().isoformat(),
+            "strategy": strategy_name, "target_file": target_file,
             "hypothesis": hypothesis, "change_type": change_type,
             "reasoning": reasoning, "status": "FAILED_APPLY",
             "improved": False, "baseline_score": 0, "new_score": 0,
         }
         history["experiments"].append(experiment)
         history["total_runs"] = run_id
-        history["consecutive_wins"] = 0
+        history[consec_key] = 0
         save_history(history)
         save_evolve_log(experiment)
         return experiment
@@ -441,11 +488,12 @@ def run_evolution(target_file: str = "weather.py", allow_auto_apply: bool = Fals
 
     # Step 4: Backtest
     print("\n[4/5] Backtesting...")
-    trades = get_all_trades()
+    trades = get_all_trades(strategy=strategy_name)
     if len(trades) < 10:
-        print(f"  Only {len(trades)} trades — too few for backtest")
+        print(f"  Only {len(trades)} {strategy_name} trades — too few for backtest")
         experiment = {
             "run_id": run_id, "timestamp": datetime.now().isoformat(),
+            "strategy": strategy_name, "target_file": target_file,
             "hypothesis": hypothesis, "change_type": change_type,
             "reasoning": reasoning, "status": "INSUFFICIENT_DATA",
             "improved": False, "baseline_score": 0, "new_score": 0,
@@ -456,8 +504,10 @@ def run_evolution(target_file: str = "weather.py", allow_auto_apply: bool = Fals
         save_evolve_log(experiment)
         return experiment
 
-    baseline_score = backtest_baseline(trades)
-    new_score = backtest_modified(modified_path, trades)
+    baseline_score = backtest_baseline(trades, strategy=strategy_name)
+    new_score = backtest_modified(modified_path, trades,
+                                  strategy=strategy_name,
+                                  original_file=target_file)
     improvement = (new_score - baseline_score) / abs(baseline_score) if baseline_score != 0 else 0
 
     print(f"  Baseline score: {baseline_score:.4f}")
@@ -469,12 +519,12 @@ def run_evolution(target_file: str = "weather.py", allow_auto_apply: bool = Fals
     status = "IMPROVED" if improved else "NO_IMPROVEMENT"
 
     if improved:
-        history["consecutive_wins"] += 1
+        history[consec_key] += 1
         history["total_improvements"] += 1
-        print(f"\n  IMPROVED! Consecutive wins: {history['consecutive_wins']}")
+        print(f"\n  IMPROVED! Consecutive wins ({strategy_name}): {history[consec_key]}")
     else:
-        history["consecutive_wins"] = 0
-        print(f"\n  No improvement. Consecutive wins reset to 0.")
+        history[consec_key] = 0
+        print(f"\n  No improvement. Consecutive wins ({strategy_name}) reset to 0.")
         # Clean up failed copy
         if modified_path.exists():
             modified_path.unlink()
@@ -482,12 +532,12 @@ def run_evolution(target_file: str = "weather.py", allow_auto_apply: bool = Fals
     # Auto-apply check
     auto_applied = False
     if (improved and allow_auto_apply
-            and history["consecutive_wins"] >= CONSECUTIVE_WINS_TO_APPLY):
+            and history[consec_key] >= CONSECUTIVE_WINS_TO_APPLY):
         print(f"\n  {CONSECUTIVE_WINS_TO_APPLY}+ consecutive wins — AUTO-APPLYING!")
         auto_apply_change(modified_path, target_path, hypothesis)
         auto_applied = True
         history["auto_applied"] += 1
-        history["consecutive_wins"] = 0  # Reset after apply
+        history[consec_key] = 0  # Reset after apply
         status = "AUTO_APPLIED"
     elif improved:
         print(f"\n  Change saved as PENDING: {modified_path}")
@@ -497,6 +547,7 @@ def run_evolution(target_file: str = "weather.py", allow_auto_apply: bool = Fals
     experiment = {
         "run_id": run_id,
         "timestamp": datetime.now().isoformat(),
+        "strategy": strategy_name,
         "target_file": target_file,
         "hypothesis": hypothesis,
         "change_type": change_type,
@@ -537,9 +588,10 @@ def run_evolution(target_file: str = "weather.py", allow_auto_apply: bool = Fals
 
 
 def main():
-    parser = argparse.ArgumentParser(description="AutoEvolve — autonomous code evolution")
-    parser.add_argument("--target", default="weather.py",
-                        help="Target strategy file (default: weather.py)")
+    valid_targets = list(STRATEGY_REGISTRY.keys()) + ["all"]
+    parser = argparse.ArgumentParser(description="AutoEvolve v2.0 — autonomous code evolution (multi-strategy)")
+    parser.add_argument("--target", default="weather",
+                        help=f"Target strategy: {', '.join(valid_targets)} (default: weather)")
     parser.add_argument("--auto-apply", action="store_true",
                         help=f"Auto-apply after {CONSECUTIVE_WINS_TO_APPLY} consecutive wins")
     parser.add_argument("--dry-run", action="store_true",
@@ -548,30 +600,60 @@ def main():
                         help="Show experiment history")
     args = parser.parse_args()
 
+    # Backward compat: map old file-path targets to strategy names
+    file_to_strategy = {v["file"]: k for k, v in STRATEGY_REGISTRY.items()}
+    if args.target in file_to_strategy:
+        args.target = file_to_strategy[args.target]
+
     if args.report:
         history = load_history()
-        print(f"\nAutoEvolve History")
+        print(f"\nAutoEvolve v2.0 History")
         print(f"  Total runs: {history['total_runs']}")
         print(f"  Improvements: {history['total_improvements']}")
         print(f"  Auto-applied: {history['auto_applied']}")
-        print(f"  Consecutive wins: {history['consecutive_wins']}")
+        for sname in ALL_ACTIVE_STRATEGIES:
+            cw = history.get(f"consecutive_wins_{sname}", 0)
+            print(f"  Consecutive wins ({sname}): {cw}")
         print(f"\nLast 10 experiments:")
         for e in history.get("experiments", [])[-10:]:
             status = e.get("status", "?")
-            hyp = e.get("hypothesis", "?")[:60]
+            strat = e.get("strategy", "weather")
+            hyp = e.get("hypothesis", "?")[:50]
             score_delta = e.get("improvement", 0)
-            print(f"  [{e.get('timestamp', '?')[:10]}] {status:15s} "
+            print(f"  [{e.get('timestamp', '?')[:10]}] {strat:12s} {status:15s} "
                   f"{score_delta:+.1%} | {hyp}")
         return
 
-    result = run_evolution(
-        target_file=args.target,
-        allow_auto_apply=args.auto_apply,
-        dry_run=args.dry_run,
-    )
+    # Determine which strategies to run
+    if args.target == "all":
+        strategies = ALL_ACTIVE_STRATEGIES
+    elif args.target in STRATEGY_REGISTRY:
+        strategies = [args.target]
+    else:
+        print(f"[EVOLVE] Unknown target '{args.target}'. Valid: {', '.join(valid_targets)}")
+        sys.exit(1)
 
-    # Exit code: 0 if improved, 1 otherwise
-    sys.exit(0 if result.get("improved") else 1)
+    any_improved = False
+    for strategy_name in strategies:
+        print(f"\n{'#'*60}")
+        print(f"  AutoEvolve: processing strategy '{strategy_name}'")
+        print(f"{'#'*60}")
+
+        result = run_evolution(
+            strategy_name=strategy_name,
+            allow_auto_apply=args.auto_apply,
+            dry_run=args.dry_run,
+        )
+
+        if result.get("improved"):
+            any_improved = True
+
+        # If error is "no trades", that's expected for new strategies — continue
+        if result.get("error") and "no trades" not in result.get("error", ""):
+            print(f"[EVOLVE] {strategy_name}: {result.get('error')}")
+
+    # Exit code: 0 if any strategy improved, 1 otherwise
+    sys.exit(0 if any_improved else 1)
 
 
 if __name__ == "__main__":
