@@ -233,9 +233,13 @@ class WeatherStrategy:
             return getattr(self, '_weather_id_cache', [])
 
         markets = []
-        # Scan recent ID range (weather markets are in 1780000-1783000 range)
-        # Step by 5 to cover range efficiently
-        for mid in range(1781000, 1783000, 5):
+        # v13.1: Dynamic ID range — weather markets move ~1000 IDs per day
+        # Start from a recent known range and scan forward
+        # Use last known successful ID as anchor, scan ±5000 around it
+        last_known = getattr(self, '_last_weather_id', 1815000)
+        scan_start = max(last_known - 2000, 1810000)
+        scan_end = last_known + 5000
+        for mid in range(scan_start, scan_end, 5):
             try:
                 resp = _req.get(f"https://gamma-api.polymarket.com/markets/{mid}", timeout=3)
                 if resp.status_code == 200:
@@ -282,6 +286,8 @@ class WeatherStrategy:
                             'description': m.get("description", ""),
                         })()
                         markets.append(market)
+                        # Track highest found ID for next scan
+                        self._last_weather_id = max(getattr(self, '_last_weather_id', 0), mid)
                 elif resp.status_code == 404:
                     pass  # ID doesn't exist, skip
             except Exception:
@@ -290,7 +296,15 @@ class WeatherStrategy:
         self._weather_id_cache = markets
         self._weather_id_cache_ts = now
         if markets:
-            logger.info(f"[WEATHER] Fetched {len(markets)} weather markets by ID (range 1781000-1783000)")
+            logger.info(
+                f"[WEATHER] Fetched {len(markets)} weather markets "
+                f"(range {scan_start}-{scan_end}, last_id={getattr(self, '_last_weather_id', 0)})"
+            )
+        else:
+            logger.info(
+                f"[WEATHER] No active weather markets in range {scan_start}-{scan_end}. "
+                f"Markets may have moved to higher IDs."
+            )
         return markets
 
     async def scan(
