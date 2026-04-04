@@ -4,3 +4,4 @@ __pycache__/
 logs/
 bot.log
 bot.log.*
+.env.bak.old_profile

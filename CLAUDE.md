@@ -4,15 +4,22 @@
 
 # Regole di Engagement
 
-## Prima di ogni sessione
+## Prima di ogni sessione (OBBLIGATORIO)
 1. `ps aux | grep bot.py` — verifica bot running e nessun duplicato
 2. Leggi log recente: `ls -t logs/bot_*.log | head -1`
 3. Controlla errori: `grep ERROR $LOG | tail -5`
-4. Consulta memoria: `/root/.claude/projects/-root/memory/` (MEMORY.md, trade_insights.md, mistakes.md)
+4. **LEGGI TUTTI questi file memoria:**
+   - `MEMORY.md` — stato corrente, strategie, parametri
+   - `SESSION_LOG.md` — COSA È STATO FATTO nelle ultime 5 sessioni (evita duplicati!)
+   - `FILE_INVENTORY.md` — mappa file, import, copie duplicate
+   - `CHANGELOG.md` — ogni modifica recente con file:linea
+   - Path: `/root/.claude/projects/-root/memory/`
 
 ## Prima di ogni modifica al codice
-1. Leggere il file PRIMA di modificarlo
-2. Verificare che il diff sia corretto
+1. **Leggere FILE_INVENTORY.md** — verificare quale copia il bot usa
+2. Leggere il file PRIMA di modificarlo
+3. Verificare che il diff sia corretto
+4. **Pulire __pycache__**: `find . -type d -name __pycache__ -exec rm -rf {} +`
 3. Se modifica parametri trading: giustificare con dati (log, Becker, backtest)
 4. Se modifica filtri weather: simulare con `python3 backtest_replay.py --compare`
 5. Consultare mistakes.md per non ripetere errori noti
