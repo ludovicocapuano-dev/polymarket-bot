@@ -347,7 +347,7 @@ class MROKellyStrategy:
     fast_executor: object = None  # v14.0: FastExecutor for sub-100ms execution
 
     # ── Parameters ──
-    mro_threshold: float = 70.0     # |MRO| must exceed this
+    mro_threshold: float = 65.0     # v12.9 EXPERIMENT: lowered from 70 → 65 to catch SOL-like signals
     min_edge: float = 0.06          # 6% minimum edge
     min_bet: float = 5.0            # $ minimum bet
     max_bet: float = 20.0           # $ maximum bet (test phase)
@@ -623,6 +623,13 @@ class MROKellyStrategy:
 
             if abs(mro_value) < self.mro_threshold:
                 continue
+
+            # v12.9 EXPERIMENT: tag trades in 65-70 band for tracking
+            mro_band = "65-70" if abs(mro_value) < 70 else "70+"
+            logger.info(
+                f"[{log_prefix}] SIGNAL DETECTED: MRO={mro_value:+.1f} band={mro_band} "
+                f"{sym_upper}=${crypto_data.price:,.2f}"
+            )
 
             vol_change = calc.volume_change_pct()
             if vol_change is None:
