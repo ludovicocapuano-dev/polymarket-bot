@@ -1235,12 +1235,15 @@ class WeatherFeed:
             self._cache[city] = forecasts
             self._cache_time[city] = now
 
-            first = forecasts[0]
+            # v13.2: log the most relevant day (today or tomorrow, not yesterday)
+            from datetime import datetime as _dt
+            today_str = _dt.utcnow().strftime("%Y-%m-%d")
+            best = next((f for f in forecasts if str(f.date) >= today_str), forecasts[0])
             logger.info(
                 f"[WEATHER] Consensus {city}: {len(forecasts)} giorni, "
-                f"{first.n_sources} fonti "
-                f"({first.source}), "
-                f"oggi={first.forecast_temp:.1f}°C ±{first.uncertainty:.1f}"
+                f"{best.n_sources} fonti "
+                f"({best.source}), "
+                f"{best.date}={best.forecast_temp:.1f}°C ±{best.uncertainty:.1f}"
             )
         else:
             logger.warning(f"[WEATHER] Nessuna previsione per {city}")
