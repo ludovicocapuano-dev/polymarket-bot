@@ -955,10 +955,12 @@ class WeatherFeed:
 
         return forecasts
 
-    def get_forecast_for_date(self, city: str, date: str) -> CityForecast | None:
+    def get_forecast_for_date(self, city: str, date) -> CityForecast | None:
         """Ottieni previsione per una citta' e data specifica."""
         forecasts = self.get_forecast(city)
-        return next((f for f in forecasts if f.date == date), None)
+        # v13.2: handle both date objects and strings
+        date_str = str(date) if not isinstance(date, str) else date
+        return next((f for f in forecasts if str(f.date) == date_str), None)
 
     def detect_city(self, text: str) -> str | None:
         """Rileva la citta' da un testo (es. domanda Polymarket)."""

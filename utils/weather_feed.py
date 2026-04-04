@@ -1247,24 +1247,26 @@ class WeatherFeed:
 
         return forecasts
 
-    def get_forecast_for_date(self, city: str, date: str) -> CityForecast | None:
+    def get_forecast_for_date(self, city: str, date) -> CityForecast | None:
         """Ottieni previsione per una citta' e data specifica.
 
         Se non trova match esatto, prova ±1 giorno per gestire
         mismatch timezone (es. Seoul UTC+9 → date locali sfasate).
         """
         forecasts = self.get_forecast(city)
+        # v13.2: handle both date objects and strings
+        date_str = str(date) if not isinstance(date, str) else date
         # Exact match first
-        exact = next((f for f in forecasts if f.date == date), None)
+        exact = next((f for f in forecasts if str(f.date) == date_str), None)
         if exact:
             return exact
         # Fallback: ±1 day (timezone mismatch)
         from datetime import datetime, timedelta
         try:
-            target = datetime.strptime(date, "%Y-%m-%d")
+            target = datetime.strptime(date_str, "%Y-%m-%d")
             for delta in [1, -1]:
                 adj = (target + timedelta(days=delta)).strftime("%Y-%m-%d")
-                match = next((f for f in forecasts if f.date == adj), None)
+                match = next((f for f in forecasts if str(f.date) == adj), None)
                 if match:
                     logger.debug(
                         f"[WEATHER] Timezone fallback {city}: "
