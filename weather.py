@@ -335,9 +335,22 @@ class WeatherStrategy:
         if not markets:
             markets = []
 
-        # v12.9: ALWAYS fetch weather markets by ID — Gamma API listing
-        # no longer includes them. Shared_markets only has false positives (Mayweather etc.)
-        weather_markets = self._fetch_weather_markets_by_id()
+        # v13.3: Fetch in background thread to avoid blocking main loop
+        import threading
+        weather_markets = []
+        fetch_done = threading.Event()
+        def _bg_fetch():
+            nonlocal weather_markets
+            try:
+                weather_markets[:] = self._fetch_weather_markets_by_id()
+            except Exception as e:
+                logger.warning(f"[WEATHER] Background fetch error: {e}")
+            fetch_done.set()
+        t = threading.Thread(target=_bg_fetch, daemon=True)
+        t.start()
+        fetch_done.wait(timeout=30)  # max 30s, then continue without weather
+        if not fetch_done.is_set():
+            logger.warning("[WEATHER] Background fetch timed out after 30s")
         if not weather_markets:
             # Fallback to shared_markets filter (legacy, probably won't find any)
             weather_markets = self._filter_weather(markets)
