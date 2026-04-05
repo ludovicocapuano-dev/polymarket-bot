@@ -243,11 +243,15 @@ class WeatherStrategy:
         all_weather: list[dict] = []
         session = _req.Session()
         session.headers.update({"Connection": "keep-alive"})
+        scan_deadline = time.time() + 25  # hard timeout 25s per scan
 
         for mid in range(scan_start, scan_end):
+            if time.time() > scan_deadline:
+                logger.warning(f"[WEATHER] Scan timeout after 25s, got {len(all_weather)} markets")
+                break
             try:
                 resp = session.get(
-                    f"https://gamma-api.polymarket.com/markets/{mid}", timeout=3
+                    f"https://gamma-api.polymarket.com/markets/{mid}", timeout=2
                 )
                 if resp.status_code == 200:
                     m = resp.json()
