@@ -135,6 +135,7 @@ class HorizonClient:
         inventory_frac: float = 0.0,
         volume_24h: float = 0.0,
         vpin: float = 0.0,
+        allow_dead_book: bool = False,
     ) -> ExecutionResult:
         """
         Execute a trade via the optimal algorithm.
@@ -179,6 +180,7 @@ class HorizonClient:
             inventory_frac=inventory_frac,
             volume_24h=volume_24h,
             vpin=vpin,
+            allow_dead_book=allow_dead_book,
         )
 
     def _horizon_execute(
@@ -312,6 +314,7 @@ class HorizonClient:
         inventory_frac: float = 0.0,
         volume_24h: float = 0.0,
         vpin: float = 0.0,
+        allow_dead_book: bool = False,
     ) -> ExecutionResult:
         """Fallback to native PolymarketAPI smart_buy/smart_sell."""
         is_buy = "BUY" in side.upper()
@@ -325,6 +328,7 @@ class HorizonClient:
                     inventory_frac=inventory_frac,
                     volume_24h=volume_24h,
                     vpin=vpin,
+                    allow_dead_book=allow_dead_book,
                 )
                 self._stats["native_fallbacks"] += 1
                 if result:

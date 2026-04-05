@@ -659,6 +659,7 @@ class PolymarketAPI:
         inventory_frac: float = 0.0,
         volume_24h: float = 0.0,
         vpin: float = 0.0,
+        allow_dead_book: bool = False,
     ) -> dict | None:
         """
         Smart order routing: tenta MAKER limit order, fallback a TAKER market.
@@ -701,12 +702,17 @@ class PolymarketAPI:
         if not bids and not asks:
             logger.info(f"[SMART] Book vuoto (no bids/asks) — SKIP {token_id[:16]}")
             return None
-        if spread >= 0.90:
+        if spread >= 0.90 and not allow_dead_book:
             logger.info(
                 f"[SMART] Book morto (bid=${best_bid:.2f} ask=${best_ask:.2f} "
                 f"spread=${spread:.2f}) — SKIP, nessuna liquidità reale"
             )
             return None
+        if spread >= 0.90 and allow_dead_book:
+            logger.info(
+                f"[SMART] Book morto ma allow_dead_book=True — "
+                f"piazzo limit maker a ${target_price:.2f}"
+            )
 
         # Determine limit price based on book state
         if spread <= 0.10:

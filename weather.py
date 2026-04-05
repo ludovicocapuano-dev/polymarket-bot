@@ -1157,6 +1157,8 @@ class WeatherStrategy:
 
             if self.horizon is not None:
                 # Route through Horizon (handles algo selection + native fallback)
+                # Weather markets are fee-free and resolve with certainty —
+                # allow placing limit orders on empty books (maker, wait for fill)
                 hz_result = self.horizon.execute_trade(
                     token_id=token_id,
                     side=f"BUY_{opp.side}",
@@ -1166,6 +1168,7 @@ class WeatherStrategy:
                     inventory_frac=inv,
                     volume_24h=opp.market.volume,
                     vpin=vpin_val,
+                    allow_dead_book=True,
                 )
                 if hz_result.success:
                     if hz_result.fill_price > 0:
