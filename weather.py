@@ -236,9 +236,11 @@ class WeatherStrategy:
         # v13.3: Batch sequential scan with connection pooling.
         # Uses requests.Session (keep-alive) for ~3x speedup over bare requests.
         # ~460 IDs in ~20s. Cached 5min so only runs every 5 min.
+        # v13.3: Tight range based on known active IDs (1814899-1815341)
+        # Only ~442 IDs. Anchor updates dynamically.
         last_known = getattr(self, '_last_weather_id', 1815120)
-        scan_start = max(last_known - 230, 1814800)
-        scan_end = last_known + 230
+        scan_start = max(last_known - 225, 1814890)
+        scan_end = min(last_known + 225, 1815400)
 
         all_weather: list[dict] = []
         session = _req.Session()
@@ -251,7 +253,8 @@ class WeatherStrategy:
                 break
             try:
                 resp = session.get(
-                    f"https://gamma-api.polymarket.com/markets/{mid}", timeout=2
+                    f"https://gamma-api.polymarket.com/markets/{mid}",
+                    timeout=(2, 3),  # (connect_timeout, read_timeout)
                 )
                 if resp.status_code == 200:
                     m = resp.json()
