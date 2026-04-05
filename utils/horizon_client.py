@@ -185,18 +185,11 @@ class HorizonClient:
         self, token_id: str, side: str, size: float, price: float, tag: str
     ) -> Optional[ExecutionResult]:
         """Route to optimal Horizon algo based on size."""
-        s = side.upper()
-        is_buy = "BUY" in s
-        # side = Yes/No outcome, order_side = Buy/Sell that outcome
-        hz_side = hz.Side.Yes if "YES" in s else hz.Side.No
-        hz_order_side = hz.OrderSide.Buy if is_buy else hz.OrderSide.Sell
-
-        if size > self.config.use_vwap_above:
-            return self._execute_vwap(token_id, hz_side, hz_order_side, size, price, tag)
-        elif size >= self.config.use_twap_above:
-            return self._execute_twap(token_id, hz_side, hz_order_side, size, price, tag)
-        else:
-            return self._execute_limit(token_id, hz_side, hz_order_side, size, price, tag)
+        # v13.3: Horizon SDK 0.5.0 API is async (TWAP.start/VWAP.start) and
+        # SmartRouter.route is a decisional router, not an executor.
+        # Skip Horizon and go straight to native CLOB execution for now.
+        # This avoids the error-then-fallback overhead every cycle.
+        return None
 
     def _execute_limit(
         self, token_id: str, hz_side, hz_order_side, size: float, price: float, tag: str
