@@ -233,38 +233,33 @@ class WeatherStrategy:
             return getattr(self, '_weather_id_cache', [])
 
         markets = []
-        # v13.3: Parallel ID scan with ThreadPool — ~460 IDs in ~5s vs ~60s sequential.
-        # Gamma API list doesn't include weather markets, must fetch by ID.
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
+        # v13.3: Batch sequential scan with connection pooling.
+        # Uses requests.Session (keep-alive) for ~3x speedup over bare requests.
+        # ~460 IDs in ~20s. Cached 5min so only runs every 5 min.
         last_known = getattr(self, '_last_weather_id', 1815120)
         scan_start = max(last_known - 230, 1814800)
         scan_end = last_known + 230
 
         all_weather: list[dict] = []
+        session = _req.Session()
+        session.headers.update({"Connection": "keep-alive"})
 
-        def _fetch_one(mid):
+        for mid in range(scan_start, scan_end):
             try:
-                resp = _req.get(f"https://gamma-api.polymarket.com/markets/{mid}", timeout=5)
+                resp = session.get(
+                    f"https://gamma-api.polymarket.com/markets/{mid}", timeout=3
+                )
                 if resp.status_code == 200:
-                    return (mid, resp.json())
+                    m = resp.json()
+                    q = m.get("question", "")
+                    if "temperature" in q.lower() and m.get("active", True) and not m.get("closed", False):
+                        all_weather.append(m)
+                        self._last_weather_id = max(
+                            getattr(self, '_last_weather_id', 0), mid
+                        )
             except Exception:
-                pass
-            return None
-
-        with ThreadPoolExecutor(max_workers=30) as pool:
-            futures = {pool.submit(_fetch_one, mid): mid for mid in range(scan_start, scan_end)}
-            for future in as_completed(futures, timeout=30):
-                result = future.result()
-                if result is None:
-                    continue
-                mid, m = result
-                q = m.get("question", "")
-                if "temperature" in q.lower() and m.get("active", True) and not m.get("closed", False):
-                    all_weather.append(m)
-                    self._last_weather_id = max(
-                        getattr(self, '_last_weather_id', 0), mid
-                    )
+                continue
+        session.close()
 
         # Process all fetched weather markets
         for m in all_weather:
