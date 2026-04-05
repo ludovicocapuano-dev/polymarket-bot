@@ -646,9 +646,7 @@ class MROKellyStrategy:
                     logger.info(f"[{log_prefix}] SKIP UP: vol_change={vol_change:.1f}% < {self.vol_spike_up}%")
                     continue
 
-                if not calc.price_bounced_from_low(0.1):
-                    logger.info(f"[{log_prefix}] SKIP UP: no price bounce from low")
-                    continue
+                # v13.3: price_bounced_from_low rimosso (simmetrico a price_pulled_from_high)
 
                 if not calc.ema50_uptrend:
                     logger.info(f"[{log_prefix}] SKIP UP: EMA50 downtrend")
@@ -668,9 +666,9 @@ class MROKellyStrategy:
                     logger.info(f"[{log_prefix}] SKIP DOWN: vol_change={vol_change:.1f}% < {self.vol_spike_down}%")
                     continue
 
-                if not calc.price_pulled_from_high(0.1):
-                    logger.info(f"[{log_prefix}] SKIP DOWN: no price pull from high")
-                    continue
+                # v13.3: price_pulled_from_high rimosso — bloccava 100% dei segnali
+                # perché close == high nella candle corrente (prezzo sale in linea retta).
+                # MRO >= threshold è già conferma sufficiente di overbought.
 
                 if not calc.ema50_downtrend:
                     logger.info(f"[{log_prefix}] SKIP DOWN: EMA50 uptrend")
@@ -964,6 +962,7 @@ class MROKellyStrategy:
                     size=size,
                     price=target,
                     strategy="mro_kelly",
+                    allow_dead_book=True,
                 )
                 if hz_result.success:
                     if hz_result.fill_price > 0:
