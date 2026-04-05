@@ -84,7 +84,7 @@ class Config:
             builder_api_passphrase=os.getenv("BUILDER_API_PASSPHRASE", ""),
         )
         risk = RiskConfig(
-            total_capital=float(os.getenv("TOTAL_CAPITAL", "1000")),
+            total_capital=float(os.getenv("TOTAL_CAPITAL", "2000")),
             max_bet_size=float(os.getenv("MAX_BET_SIZE", "40")),
             max_bet_percent=float(os.getenv("MAX_BET_PERCENT", "8")),
             max_daily_loss=float(os.getenv("MAX_DAILY_LOSS", "150")),

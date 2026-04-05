@@ -350,7 +350,7 @@ class MROKellyStrategy:
     mro_threshold: float = 65.0     # v12.9 EXPERIMENT: lowered from 70 → 65 to catch SOL-like signals
     min_edge: float = 0.06          # 6% minimum edge
     min_bet: float = 5.0            # $ minimum bet
-    max_bet: float = 20.0           # $ maximum bet (test phase)
+    max_bet: float = 50.0           # v13.2: alzato da $20 con capitale $2000
     kelly_fraction: float = 0.25    # quarter-Kelly
     max_open_positions: int = 3     # max concurrent positions
     daily_stop_loss_pct: float = 0.10  # -10% daily stop
