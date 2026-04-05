@@ -612,8 +612,10 @@ class WeatherStrategy:
                     f"classifier={classification} ({clf_conf:.2f})"
                 )
             except Exception as e:
-                logger.debug(f"[WEATHER] Classifier error, blocking same-day: {e}")
-                return None
+                logger.debug(f"[WEATHER] Classifier error (non-blocking): {e}")
+                # v12.9 SUBTRACTION: Don't block trade on classifier error!
+                # This was blocking ALL same-day trades because forecast.temperature
+                # doesn't exist (attribute is .temp). Continue without classifier.
             effective_min_edge = 0.08  # same-day with classifier: cautious but tradeable
         elif days_ahead == 1:
             effective_min_edge = 0.12  # +1d: standard
