@@ -233,27 +233,30 @@ class WeatherStrategy:
             return getattr(self, '_weather_id_cache', [])
 
         markets = []
-        # v13.3: Gamma API list scan — fetch 200 markets per page, filter for temperature
-        # Much faster than single-ID fetches: 2-4 HTTP calls vs 400+
+        # v13.3: Sequential ID scan — Gamma API list doesn't include weather markets.
+        # Single-ID fetch is fast (~0.12s each). Range ~450 IDs, cached 5min.
+        # Scan from anchor ±500, step 1. Anchor auto-updates to latest found ID.
+        last_known = getattr(self, '_last_weather_id', 1815100)
+        scan_start = max(last_known - 300, 1814000)
+        scan_end = last_known + 300
+
         all_weather: list[dict] = []
-        for offset in range(0, 1000, 200):
+        for mid in range(scan_start, scan_end):
             try:
                 resp = _req.get(
-                    "https://gamma-api.polymarket.com/markets",
-                    params={"closed": "false", "limit": 200, "offset": offset},
-                    timeout=15,
+                    f"https://gamma-api.polymarket.com/markets/{mid}", timeout=3
                 )
                 if resp.status_code != 200:
-                    break
-                batch = resp.json()
-                if not batch:
-                    break
-                for m in batch:
-                    q = m.get("question", "")
-                    if "temperature" in q.lower() and m.get("active", True) and not m.get("closed", False):
-                        all_weather.append(m)
+                    continue
+                m = resp.json()
+                q = m.get("question", "")
+                if "temperature" in q.lower() and m.get("active", True) and not m.get("closed", False):
+                    all_weather.append(m)
+                    self._last_weather_id = max(
+                        getattr(self, '_last_weather_id', 0), mid
+                    )
             except Exception:
-                break
+                continue
 
         # Process all fetched weather markets
         for m in all_weather:
@@ -304,7 +307,8 @@ class WeatherStrategy:
         self._weather_id_cache_ts = now
         if markets:
             logger.info(
-                f"[WEATHER] Fetched {len(markets)} weather markets via Gamma API list"
+                f"[WEATHER] Fetched {len(markets)} weather markets "
+                f"(range {scan_start}-{scan_end}, last_id={getattr(self, '_last_weather_id', 0)})"
             )
         else:
             logger.info(
