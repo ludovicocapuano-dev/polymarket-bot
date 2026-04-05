@@ -115,11 +115,8 @@ class PolymarketAPI:
             )
 
             derived = self.clob.create_or_derive_api_creds()
-            logger.info(
-                f"[AUTH-DEBUG] derived_api_key={derived.api_key[:8]}... "
-                f"env_api_key={self.creds.api_key[:8]}..."
-            )
             self.clob.set_api_creds(derived)
+            logger.info(f"[AUTH] Using derived API creds: {derived.api_key[:12]}...")
             self._authenticated = True
             logger.info("Autenticazione riuscita")
             return True
