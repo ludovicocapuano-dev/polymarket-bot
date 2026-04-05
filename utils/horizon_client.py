@@ -185,24 +185,28 @@ class HorizonClient:
         self, token_id: str, side: str, size: float, price: float, tag: str
     ) -> Optional[ExecutionResult]:
         """Route to optimal Horizon algo based on size."""
-        is_buy = "BUY" in side.upper()
-        hz_side = hz.Side.Yes if is_buy else hz.Side.No
+        s = side.upper()
+        is_buy = "BUY" in s
+        # side = Yes/No outcome, order_side = Buy/Sell that outcome
+        hz_side = hz.Side.Yes if "YES" in s else hz.Side.No
+        hz_order_side = hz.OrderSide.Buy if is_buy else hz.OrderSide.Sell
 
         if size > self.config.use_vwap_above:
-            return self._execute_vwap(token_id, hz_side, size, price, tag)
+            return self._execute_vwap(token_id, hz_side, hz_order_side, size, price, tag)
         elif size >= self.config.use_twap_above:
-            return self._execute_twap(token_id, hz_side, size, price, tag)
+            return self._execute_twap(token_id, hz_side, hz_order_side, size, price, tag)
         else:
-            return self._execute_limit(token_id, hz_side, size, price, tag)
+            return self._execute_limit(token_id, hz_side, hz_order_side, size, price, tag)
 
     def _execute_limit(
-        self, token_id: str, hz_side, size: float, price: float, tag: str
+        self, token_id: str, hz_side, hz_order_side, size: float, price: float, tag: str
     ) -> Optional[ExecutionResult]:
         """Limit order via Horizon (maker, zero fee). For size < $30."""
         try:
             order = hz.OrderRequest(
                 market_id=token_id,
                 side=hz_side,
+                order_side=hz_order_side,
                 size=size,
                 price=price,
             )
@@ -228,13 +232,14 @@ class HorizonClient:
             return None
 
     def _execute_twap(
-        self, token_id: str, hz_side, size: float, price: float, tag: str
+        self, token_id: str, hz_side, hz_order_side, size: float, price: float, tag: str
     ) -> Optional[ExecutionResult]:
         """TWAP execution for medium orders ($30-$100)."""
         try:
             order = hz.OrderRequest(
                 market_id=token_id,
                 side=hz_side,
+                order_side=hz_order_side,
                 size=size,
                 price=price,
             )
@@ -265,13 +270,14 @@ class HorizonClient:
             return None
 
     def _execute_vwap(
-        self, token_id: str, hz_side, size: float, price: float, tag: str
+        self, token_id: str, hz_side, hz_order_side, size: float, price: float, tag: str
     ) -> Optional[ExecutionResult]:
         """VWAP execution for large orders (>$100)."""
         try:
             order = hz.OrderRequest(
                 market_id=token_id,
                 side=hz_side,
+                order_side=hz_order_side,
                 size=size,
                 price=price,
             )

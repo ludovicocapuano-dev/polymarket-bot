@@ -233,71 +233,78 @@ class WeatherStrategy:
             return getattr(self, '_weather_id_cache', [])
 
         markets = []
-        # v13.1: Dynamic ID range — weather markets cluster in ~500 ID blocks
-        # Scan in small steps near the anchor, bigger steps further out
-        last_known = getattr(self, '_last_weather_id', 1815000)
-        scan_start = max(last_known - 500, 1810000)
-        scan_end = last_known + 1000
-        for mid in range(scan_start, scan_end, 50):  # step 50 = fast scan (~30 fetches)
+        # v13.3: Gamma API list scan — fetch 200 markets per page, filter for temperature
+        # Much faster than single-ID fetches: 2-4 HTTP calls vs 400+
+        all_weather: list[dict] = []
+        for offset in range(0, 1000, 200):
             try:
-                resp = _req.get(f"https://gamma-api.polymarket.com/markets/{mid}", timeout=3)
-                if resp.status_code == 200:
-                    m = resp.json()
+                resp = _req.get(
+                    "https://gamma-api.polymarket.com/markets",
+                    params={"closed": "false", "limit": 200, "offset": offset},
+                    timeout=15,
+                )
+                if resp.status_code != 200:
+                    break
+                batch = resp.json()
+                if not batch:
+                    break
+                for m in batch:
                     q = m.get("question", "")
                     if "temperature" in q.lower() and m.get("active", True) and not m.get("closed", False):
-                        # Convert to Market-like object
-                        import json as _j
-                        prices_raw = m.get("outcomePrices", [])
-                        if isinstance(prices_raw, str):
-                            try: prices_raw = _j.loads(prices_raw)
-                            except: prices_raw = []
-                        tokens_raw = m.get("clobTokenIds", [])
-                        if isinstance(tokens_raw, str):
-                            try: tokens_raw = _j.loads(tokens_raw)
-                            except: tokens_raw = []
-
-                        # Build a Market-compatible object with all required attrs
-                        outcomes_raw = m.get("outcomes", ["Yes", "No"])
-                        if isinstance(outcomes_raw, str):
-                            try: outcomes_raw = _j.loads(outcomes_raw)
-                            except: outcomes_raw = ["Yes", "No"]
-                        market = type('WeatherMarket', (), {
-                            'id': m.get("conditionId", ""),
-                            'condition_id': m.get("conditionId", ""),
-                            'question': q,
-                            'category': 'weather',
-                            'active': True,
-                            'volume': float(m.get("volume", 0) or 0),
-                            'liquidity': float(m.get("liquidity", 0) or 0),
-                            'prices': {
-                                'yes': float(prices_raw[0]) if prices_raw else 0.5,
-                                'no': float(prices_raw[1]) if len(prices_raw) > 1 else 0.5,
-                            },
-                            'tokens': {
-                                'yes': tokens_raw[0] if tokens_raw else '',
-                                'no': tokens_raw[1] if len(tokens_raw) > 1 else '',
-                            },
-                            'spread': abs(1.0 - (float(prices_raw[0]) if prices_raw else 0.5) - (float(prices_raw[1]) if len(prices_raw) > 1 else 0.5)) if prices_raw else 0.05,
-                            'end_date': m.get("endDate", ""),
-                            'tags': [],
-                            'slug': m.get("slug", ""),
-                            'outcomes': outcomes_raw,
-                            'description': m.get("description", ""),
-                        })()
-                        markets.append(market)
-                        # Track highest found ID for next scan
-                        self._last_weather_id = max(getattr(self, '_last_weather_id', 0), mid)
-                elif resp.status_code == 404:
-                    pass  # ID doesn't exist, skip
+                        all_weather.append(m)
             except Exception:
-                pass
+                break
+
+        # Process all fetched weather markets
+        for m in all_weather:
+            q = m.get("question", "")
+            if "temperature" not in q.lower():
+                continue
+            if not m.get("active", True) or m.get("closed", False):
+                continue
+            import json as _j
+            prices_raw = m.get("outcomePrices", [])
+            if isinstance(prices_raw, str):
+                try: prices_raw = _j.loads(prices_raw)
+                except: prices_raw = []
+            tokens_raw = m.get("clobTokenIds", [])
+            if isinstance(tokens_raw, str):
+                try: tokens_raw = _j.loads(tokens_raw)
+                except: tokens_raw = []
+            outcomes_raw = m.get("outcomes", ["Yes", "No"])
+            if isinstance(outcomes_raw, str):
+                try: outcomes_raw = _j.loads(outcomes_raw)
+                except: outcomes_raw = ["Yes", "No"]
+            market = type('WeatherMarket', (), {
+                'id': m.get("conditionId", ""),
+                'condition_id': m.get("conditionId", ""),
+                'question': q,
+                'category': 'weather',
+                'active': True,
+                'volume': float(m.get("volume", 0) or 0),
+                'liquidity': float(m.get("liquidity", 0) or 0),
+                'prices': {
+                    'yes': float(prices_raw[0]) if prices_raw else 0.5,
+                    'no': float(prices_raw[1]) if len(prices_raw) > 1 else 0.5,
+                },
+                'tokens': {
+                    'yes': tokens_raw[0] if tokens_raw else '',
+                    'no': tokens_raw[1] if len(tokens_raw) > 1 else '',
+                },
+                'spread': abs(1.0 - (float(prices_raw[0]) if prices_raw else 0.5) - (float(prices_raw[1]) if len(prices_raw) > 1 else 0.5)) if prices_raw else 0.05,
+                'end_date': m.get("endDate", ""),
+                'tags': [],
+                'slug': m.get("slug", ""),
+                'outcomes': outcomes_raw,
+                'description': m.get("description", ""),
+            })()
+            markets.append(market)
 
         self._weather_id_cache = markets
         self._weather_id_cache_ts = now
         if markets:
             logger.info(
-                f"[WEATHER] Fetched {len(markets)} weather markets "
-                f"(range {scan_start}-{scan_end}, last_id={getattr(self, '_last_weather_id', 0)})"
+                f"[WEATHER] Fetched {len(markets)} weather markets via Gamma API list"
             )
         else:
             logger.info(
@@ -563,7 +570,7 @@ class WeatherStrategy:
         if best_edge > 0:
             logger.debug(
                 f"[WEATHER-EDGE] {city} {label}: raw_P={forecast_prob:.3f} "
-                f"adj_P={adj_forecast_prob:.3f} sigma={forecast_sigma:.1f}°{unit} "
+                f"adj_P={adj_forecast_prob:.3f} mkt={price_yes:.3f} sigma={forecast_sigma:.1f}°{unit} "
                 f"bw={effective_bw:.0f} penalty={sigma_penalty:.3f} "
                 f"edge={best_edge:.4f} side={best_side}"
             )
