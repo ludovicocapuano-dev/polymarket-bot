@@ -154,9 +154,11 @@ class BinanceFeed:
             try:
                 async with websockets.connect(
                     BINANCE_COMBINED_WS,
-                    ping_interval=20,
-                    ping_timeout=30,  # v9.2.2: timeout esplicito per pong
+                    ping_interval=30,
+                    ping_timeout=60,  # v13.3: rilassato per connessioni instabili
                     close_timeout=10,
+                    max_size=2**20,   # 1MB max message
+                    open_timeout=30,  # v13.3: timeout handshake più generoso
                 ) as ws:
                     # v9.2.2: Reset contatore disconnessioni su connessione riuscita
                     self._consecutive_disconnects = 0
