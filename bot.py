@@ -719,20 +719,8 @@ class MultiStrategyBot:
                 # Prima di v4.0.1, un errore in weather bloccava arb+data+event.
 
                 # ── 0. GABAGOOL Arbitraggio Puro (priorita' MASSIMA — profitto garantito) ──
-                # v5.9.1: ogni 10 cicli, scansiona 1000 mercati per arb a largo raggio
-                try:
-                    if self._cycle % 10 == 0:
-                        extended_markets = self.api.fetch_markets(limit=1000)
-                        gab_opps = await self.gabagool.scan(shared_markets=extended_markets or shared_markets)
-                    else:
-                        gab_opps = await self.gabagool.scan(shared_markets=shared_markets)
-                    if _can_trade:
-                        for opp in gab_opps[:5]:  # Piu' trade: l'arb e' risk-free
-                            if not self._running:
-                                break
-                            await self.gabagool.execute(opp, paper=paper)
-                except Exception as e:
-                    logger.error(f"[GABAGOOL] Errore strategia: {e}", exc_info=True)
+                # ── GABAGOOL — PAUSED v13.1: focus su mro_kelly + btc_latency + weather ──
+                pass
 
                 # ── 0.5. Resolution Sniper — DISABILITATO v12.10.5 ──
                 # Postmortem: 0/3 WR, -$97. LLM confidence non calibrata.
@@ -883,16 +871,8 @@ class MultiStrategyBot:
                 except Exception as e:
                     logger.error(f"[WEATHER] Errore strategia: {e}", exc_info=True)
 
-                # ── 3. Arbitraggio ──
-                try:
-                    arb_opps = await self.arb.scan(shared_markets=shared_markets)
-                    if _can_trade:
-                        for opp in arb_opps[:3]:
-                            if not self._running:
-                                break
-                            await self.arb.execute(opp, paper=paper)
-                except Exception as e:
-                    logger.error(f"[ARB] Errore strategia: {e}", exc_info=True)
+                # ── 3. Arbitraggio — PAUSED v13.1: focus su mro + btc + weather ──
+                pass
 
                 # ── 4. Data-Driven — PAUSATO v10.6 (WR 42.9% vs break-even 67%, edge hardcoded 0.06) ──
                 # Le posizioni aperte vengono gestite dal position manager, ma non apre nuove.
@@ -915,103 +895,16 @@ class MultiStrategyBot:
                 # except Exception as e:
                 #     logger.error(f"[DATA] Errore strategia: {e}", exc_info=True)
 
-                # ── 5. Event-Driven ──
-                try:
-                    events = await self.event.scan(shared_markets=shared_markets)
-                    if _can_trade:
-                        for ev in events[:10]:  # v5.6: era [:5], tutte e 5 bloccate → prova 10
-                            if not self._running:
-                                break
+                # ── 5. Event-Driven — PAUSED v13.1 ──
+                pass
 
-                            # v10.8: Panic fade bypassa flash move + VPIN gates
-                            # (quei segnali SONO il nostro trigger, non il nostro blocco)
-                            is_panic = getattr(ev, 'signal_type', '') == 'panic_fade'
-
-                            signal = from_event_opportunity(ev)
-                            kelly = self.risk.kelly_size(
-                                min(signal.price + signal.edge, 0.95), signal.price, "event_driven"
-                            )
-
-                            if is_panic:
-                                # Panic fade: skip validator (flash/VPIN bloccherebbero),
-                                # ma verifica edge minimo e size > 0
-                                if kelly > 0 and ev.edge >= 0.03 and ev.confidence >= 0.50:
-                                    logger.info(
-                                        f"[EVENT] PANIC FADE: edge={ev.edge:.4f} "
-                                        f"conf={ev.confidence:.2f} — bypass validator"
-                                    )
-                                    self.attribution.record_entry(
-                                        ev.market.tokens.get(ev.side.lower(), ""),
-                                        "event_driven", "panic_fade",
-                                        getattr(ev, 'event_type', ''),
-                                        edge_predicted=ev.edge, validation_score=0.80,
-                                    )
-                                    await self.event.execute(ev, paper=paper)
-                            else:
-                                report = self.signal_validator.validate(signal, trade_size=kelly)
-                                if report.result == ValidationResult.TRADE or (
-                                    report.result == ValidationResult.REVIEW and signal.edge >= 0.04
-                                ):
-                                    if report.result == ValidationResult.REVIEW:
-                                        logger.info(f"[EVENT] REVIEW accepted: edge={signal.edge:.4f} >= 0.04")
-                                    self.attribution.record_entry(
-                                        ev.market.tokens.get(ev.side.lower(), ""),
-                                        "event_driven", getattr(ev, 'signal_type', 'structural'),
-                                        getattr(ev, 'event_type', ''),
-                                        edge_predicted=ev.edge, validation_score=report.score,
-                                    )
-                                    await self.event.execute(ev, paper=paper)
-                except Exception as e:
-                    logger.error(f"[EVENT] Errore strategia: {e}", exc_info=True)
-
-                # ── 6. High-Probability Bonds (ogni 5 cicli — bond sono lenti) ──
-                if self._cycle % 5 == 0:
-                    try:
-                        bond_opps = await self.bond.scan(shared_markets=shared_markets)
-                        if _can_trade:
-                            for opp in bond_opps[:3]:
-                                if not self._running:
-                                    break
-                                signal = from_bond_opportunity(opp)
-                                kelly = self.risk.kelly_size(
-                                    min(signal.price + signal.edge, 0.99), opp.price_yes, "high_prob_bond"
-                                )
-                                report = self.signal_validator.validate(signal, trade_size=kelly)
-                                if report.result == ValidationResult.TRADE or (
-                                    report.result == ValidationResult.REVIEW and signal.edge >= 0.04
-                                ):
-                                    if report.result == ValidationResult.REVIEW:
-                                        logger.info(f"[BOND] REVIEW accepted: edge={signal.edge:.4f} >= 0.04")
-                                    self.attribution.record_entry(
-                                        opp.market.tokens.get("yes", ""),
-                                        "high_prob_bond", "bond", opp.market.category,
-                                        edge_predicted=opp.edge, validation_score=report.score,
-                                    )
-                                    await self.bond.execute(opp, paper=paper)
-                    except Exception as e:
-                        logger.error(f"[BOND] Errore strategia: {e}", exc_info=True)
+                # ── 6. High-Probability Bonds — PAUSED v13.1 ──
+                pass
 
                 # ── 7. Market Making — DISABILITATO v7.0 (necessita $2K+ budget) ──
 
-                # ── 8. Whale Copy Trading (ogni 2 cicli — monitoraggio wallet) ──
-                if self._cycle % 2 == 0:
-                    try:
-                        whale_opps = await self.whale.scan(shared_markets=shared_markets)
-                        if _can_trade:
-                            for opp in whale_opps[:3]:
-                                if not self._running:
-                                    break
-                                signal = from_whale_opportunity(opp)
-                                report = self.signal_validator.validate(signal, trade_size=opp.copy_size)
-                                if report.result == ValidationResult.TRADE:
-                                    self.attribution.record_entry(
-                                        opp.market.tokens.get(opp.side.lower(), ""),
-                                        "whale_copy", "whale_copy", opp.market.category,
-                                        edge_predicted=opp.edge, validation_score=report.score,
-                                    )
-                                    await self.whale.execute(opp, paper=paper)
-                    except Exception as e:
-                        logger.error(f"[WHALE] Errore strategia: {e}", exc_info=True)
+                # ── 8. Whale Copy Trading — PAUSED v13.1 ──
+                pass
 
                 # ── 8.1. Whale Profiler (ogni 1000 cicli ~50 min) ──
                 if self._cycle % 1000 == 500:
