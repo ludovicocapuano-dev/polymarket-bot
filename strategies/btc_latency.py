@@ -100,7 +100,7 @@ class BTCLatencyStrategy:
     bankroll: float = 5000.0         # capitale dedicato a questa strategia
     base_size: float = 25.0          # v12.9: ridotto da $100 — $25 era profittevole (7W/1L +$80)
     max_size: float = 50.0           # v13.2: ripristinato $50 con capitale $2000
-    min_edge: float = 0.05           # v13.3: alzato da 3% — 3.3% edge su $43 = $1.43 EV, troppo poco per latency
+    min_edge: float = 0.10           # v13.3: alzato da 3% → 10%. Segnali veri sono 15-45%, sotto 10% = rumore
     min_vol_zscore: float = 1.0      # Z-score volume minimo (surge detection)
     min_filters: int = 2             # minimo filtri confermanti su 4
     max_entry_price: float = 0.80    # non comprare sopra
