@@ -186,7 +186,7 @@ class HorizonClient:
     ) -> Optional[ExecutionResult]:
         """Route to optimal Horizon algo based on size."""
         is_buy = "BUY" in side.upper()
-        hz_side = hz.Side.BUY if is_buy else hz.Side.SELL
+        hz_side = hz.Side.Yes if is_buy else hz.Side.No
 
         if size > self.config.use_vwap_above:
             return self._execute_vwap(token_id, hz_side, size, price, tag)
@@ -210,7 +210,7 @@ class HorizonClient:
             self._stats["horizon_limit"] += 1
             fill_price = getattr(result, 'fill_price', price) if result else price
             logger.info(
-                f"{tag} LIMIT {'BUY' if hz_side == hz.Side.BUY else 'SELL'} "
+                f"{tag} LIMIT {'BUY' if hz_side == hz.Side.Yes else 'SELL'} "
                 f"${size:.0f} @ {price:.3f} → fill={fill_price:.3f}"
             )
             return ExecutionResult(
@@ -246,7 +246,7 @@ class HorizonClient:
             self._stats["horizon_twap"] += 1
             fill_price = getattr(result, 'fill_price', price) if result else price
             logger.info(
-                f"{tag} TWAP {'BUY' if hz_side == hz.Side.BUY else 'SELL'} "
+                f"{tag} TWAP {'BUY' if hz_side == hz.Side.Yes else 'SELL'} "
                 f"${size:.0f} @ {price:.3f} ({self.config.twap_slices} slices, "
                 f"{self.config.twap_duration_sec}s) → fill={fill_price:.3f}"
             )
@@ -283,7 +283,7 @@ class HorizonClient:
             self._stats["horizon_vwap"] += 1
             fill_price = getattr(result, 'fill_price', price) if result else price
             logger.info(
-                f"{tag} VWAP {'BUY' if hz_side == hz.Side.BUY else 'SELL'} "
+                f"{tag} VWAP {'BUY' if hz_side == hz.Side.Yes else 'SELL'} "
                 f"${size:.0f} @ {price:.3f} ({self.config.vwap_participation*100:.0f}% "
                 f"participation, {self.config.vwap_duration_sec}s) → fill={fill_price:.3f}"
             )

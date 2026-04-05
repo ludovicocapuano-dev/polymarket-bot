@@ -99,7 +99,7 @@ class BTCLatencyStrategy:
     # ── Parametri Latency Mode ──
     bankroll: float = 5000.0         # capitale dedicato a questa strategia
     base_size: float = 25.0          # v12.9: ridotto da $100 — $25 era profittevole (7W/1L +$80)
-    max_size: float = 50.0           # v12.9: ridotto da $2000 — survival > aggression
+    max_size: float = 49.0           # v13.2: $49 per rientrare nel 5% cap su $999 capitale
     min_edge: float = 0.03           # 3% edge minimo netto fee
     min_vol_zscore: float = 1.0      # Z-score volume minimo (surge detection)
     min_filters: int = 2             # minimo filtri confermanti su 4
