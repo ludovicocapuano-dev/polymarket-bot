@@ -234,11 +234,10 @@ class WeatherStrategy:
 
         markets = []
         # v13.3: Sequential ID scan — Gamma API list doesn't include weather markets.
-        # Single-ID fetch is fast (~0.12s each). Range ~450 IDs, cached 5min.
-        # Scan from anchor ±500, step 1. Anchor auto-updates to latest found ID.
-        last_known = getattr(self, '_last_weather_id', 1815100)
-        scan_start = max(last_known - 300, 1814000)
-        scan_end = last_known + 300
+        # Range ~500 IDs, cached 5min. Anchor auto-updates to latest found ID.
+        last_known = getattr(self, '_last_weather_id', 1815120)
+        scan_start = max(last_known - 230, 1814800)
+        scan_end = last_known + 230
 
         all_weather: list[dict] = []
         for mid in range(scan_start, scan_end):
