@@ -60,6 +60,7 @@ class ExecutionResult:
     fill_price: float = 0.0
     raw_result: Optional[dict] = None
     error: str = ""
+    dead_book: bool = False
 
 
 class HorizonClient:
@@ -337,9 +338,12 @@ class HorizonClient:
                 self._stats["native_fallbacks"] += 1
                 if result:
                     fill_price = price
-                    if isinstance(result, dict) and result.get("_fill_price"):
-                        fill_price = result["_fill_price"]
-                    logger.info(f"{tag} [NATIVE] smart_buy ${size:.0f} @ {price:.3f}")
+                    dead_book = False
+                    if isinstance(result, dict):
+                        if result.get("_fill_price"):
+                            fill_price = result["_fill_price"]
+                        dead_book = result.get("_dead_book", False)
+                    logger.info(f"{tag} [NATIVE] smart_buy ${size:.0f} @ {price:.3f}{' (dead_book)' if dead_book else ''}")
                     return ExecutionResult(
                         success=True,
                         engine="native",
@@ -347,6 +351,7 @@ class HorizonClient:
                         size=size,
                         price=price,
                         fill_price=fill_price,
+                        dead_book=dead_book,
                         raw_result=result,
                     )
                 else:

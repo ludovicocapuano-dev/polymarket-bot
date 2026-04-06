@@ -705,7 +705,8 @@ class PolymarketAPI:
                 f"spread=${spread:.2f}) — SKIP, nessuna liquidità reale"
             )
             return None
-        if spread >= 0.90 and allow_dead_book:
+        _is_dead_book = spread >= 0.90
+        if _is_dead_book and allow_dead_book:
             logger.info(
                 f"[SMART] Book morto ma allow_dead_book=True — "
                 f"piazzo limit maker a ${target_price:.2f}"
@@ -775,6 +776,8 @@ class PolymarketAPI:
             order_id = result.get("orderID") or result.get("id") or result.get("order_id")
         if not order_id:
             logger.info("[SMART] Limit postato ma nessun orderID — assumo fill immediato")
+            if isinstance(result, dict):
+                result["_dead_book"] = _is_dead_book
             return result
 
         # 4. Attendi fill con polling

@@ -856,10 +856,13 @@ class BTCLatencyStrategy:
                     size=size,
                     price=target,
                     strategy="btc_latency",
-                    allow_dead_book=False,
+                    allow_dead_book=True,
                     aggressive=True,
                 )
                 if hz_result.success:
+                    if hz_result.dead_book:
+                        logger.info(f"[BTC-LATENCY] Dead book — limit piazzato ma non notificare")
+                        return False  # don't trigger Telegram
                     if hz_result.fill_price > 0:
                         trade.price = hz_result.fill_price
                     self.risk.open_trade(trade)

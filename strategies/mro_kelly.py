@@ -962,10 +962,13 @@ class MROKellyStrategy:
                     size=size,
                     price=target,
                     strategy="mro_kelly",
-                    allow_dead_book=False,
+                    allow_dead_book=True,
                     aggressive=True,
                 )
                 if hz_result.success:
+                    if hz_result.dead_book:
+                        logger.info(f"[MRO-{sym_upper}] Dead book — limit piazzato ma non notificare")
+                        return False
                     if hz_result.fill_price > 0:
                         trade.price = hz_result.fill_price
                     self.risk.open_trade(trade)
