@@ -822,8 +822,44 @@ class PolymarketAPI:
                     f"(target=${target_price:.2f} + 10% cap)"
                 )
                 fallback_result = self.buy_limit(token_id, max_price, shares)
+                if not fallback_result:
+                    return None
+
+                # v13.3.1: Poll for fill on fallback too (was missing — caused
+                # phantom Telegram notifications for unfilled orders)
+                fb_order_id = None
+                if isinstance(fallback_result, dict):
+                    fb_order_id = fallback_result.get("orderID") or fallback_result.get("id") or fallback_result.get("order_id")
+
+                if fb_order_id:
+                    fb_filled = False
+                    fb_start = time.time()
+                    while time.time() - fb_start < timeout_sec:
+                        try:
+                            fb_status = self.clob.get_order(fb_order_id)
+                            if isinstance(fb_status, dict):
+                                st = fb_status.get("status", "").upper()
+                                sm = float(fb_status.get("size_matched", 0) or 0)
+                                if st in ("MATCHED", "FILLED", "CLOSED") or sm > 0:
+                                    fb_filled = True
+                                    logger.info(f"[SMART] Fallback FILLATO! matched={sm:.1f} status={st}")
+                                    break
+                                elif st in ("CANCELLED", "REJECTED"):
+                                    break
+                        except Exception as e:
+                            logger.debug(f"[SMART] Fallback poll error: {e}")
+                        time.sleep(poll_interval)
+
+                    if not fb_filled:
+                        try:
+                            self.clob.cancel(fb_order_id)
+                            logger.info(f"[SMART] Fallback non fillato in {timeout_sec}s, cancellato")
+                        except Exception:
+                            pass
+                        return None
+
                 # CRITICAL: embed the REAL price so PnL is calculated correctly
-                if fallback_result and isinstance(fallback_result, dict):
+                if isinstance(fallback_result, dict):
                     fallback_result["_fill_price"] = max_price
                     fallback_result["_fallback_from"] = target_price
                     logger.info(f"[SMART] Fallback fill price recorded: ${max_price:.2f} (was target ${target_price:.2f})")

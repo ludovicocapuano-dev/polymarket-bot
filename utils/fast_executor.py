@@ -419,6 +419,15 @@ class FastExecutor:
                     f"oid={order_id[:12] if order_id else 'N/A'}"
                 )
 
+                # v13.3.1: verify fill before reporting success
+                if order_id and not self._verify_fill(order_id, tag):
+                    return ExecutionResult(
+                        success=False,
+                        method="pre-signed",
+                        latency_ms=latency_ms,
+                        error="not filled",
+                    )
+
                 return ExecutionResult(
                     success=True,
                     method="pre-signed",
@@ -473,10 +482,19 @@ class FastExecutor:
                 f"oid={order_id[:12] if order_id else 'N/A'}"
             )
 
+            # v13.3.1: verify fill before reporting success
+            if order_id and not self._verify_fill(order_id, tag):
+                return ExecutionResult(
+                    success=False,
+                    method=method,
+                    latency_ms=(time.time() - t0) * 1000,
+                    error="not filled",
+                )
+
             return ExecutionResult(
                 success=True,
                 method=method,
-                latency_ms=latency_ms,
+                latency_ms=(time.time() - t0) * 1000,
                 fill_price=price,
                 order_id=order_id,
                 raw_result=result,
@@ -493,6 +511,38 @@ class FastExecutor:
                 latency_ms=latency_ms,
                 error=str(e),
             )
+
+    # ── Fill verification ──────────────────────────────────────
+
+    def _verify_fill(self, order_id: str, tag: str, timeout: float = 10.0) -> bool:
+        """
+        v13.3.1: Poll order status to confirm fill.
+        Returns True if filled, False if not filled (and cancels the order).
+        """
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                status = self.clob.get_order(order_id)
+                if isinstance(status, dict):
+                    st = status.get("status", "").upper()
+                    sm = float(status.get("size_matched", 0) or 0)
+                    if st in ("MATCHED", "FILLED", "CLOSED") or sm > 0:
+                        logger.info(f"{tag} Fill verified: matched={sm:.1f} status={st}")
+                        return True
+                    elif st in ("CANCELLED", "REJECTED"):
+                        logger.info(f"{tag} Order {st} — not filled")
+                        return False
+            except Exception as e:
+                logger.debug(f"{tag} Fill poll error: {e}")
+            time.sleep(1.0)
+
+        # Timeout — cancel unfilled order
+        try:
+            self.clob.cancel(order_id)
+            logger.info(f"{tag} Not filled in {timeout:.0f}s, cancelled")
+        except Exception:
+            pass
+        return False
 
     # ── Convenience: execute with dollar amount ─────────────────
 

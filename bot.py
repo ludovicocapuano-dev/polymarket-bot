@@ -1844,29 +1844,15 @@ class MultiStrategyBot:
             ("btc_latency", self.btc_latency, "base_size", "max_size"),
             ("mro_kelly", self.mro_kelly, "min_bet", "max_bet"),
         ]:
-            stats = getattr(strat, 'stats', None)
-            if stats is None:
-                stats = getattr(strat, '_pnl_tracker', {})
-                if isinstance(stats, dict):
-                    trades_list = list(stats.values())
-                    total = len(trades_list)
-                    wins = sum(1 for t in trades_list if t.get('won'))
-                else:
-                    continue
-            elif isinstance(stats, dict):
-                total = stats.get('trades', 0)
-                wins = stats.get('wins', 0)
-            elif hasattr(stats, '__get__'):
-                # property
-                s = stats
-                total = s.get('trades', 0)
-                wins = s.get('wins', 0)
-            else:
-                continue
-
+            # v13.3.1: read from risk manager (source of truth for live trades)
+            # Old code read from strategy._pnl_tracker/stats which are only
+            # populated in paper mode — in live, wins was always 0.
+            closed = [t for t in self.risk.trades
+                      if t.strategy == name and t.result in ("WIN", "LOSS")]
+            total = len(closed)
             if total == 0:
                 continue
-
+            wins = sum(1 for t in closed if t.result == "WIN")
             wr = wins / total
             current_size = getattr(strat, size_attr, 0)
             current_max = getattr(strat, max_attr, 0)
