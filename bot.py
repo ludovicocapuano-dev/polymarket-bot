@@ -666,7 +666,9 @@ class MultiStrategyBot:
                 # Se il saldo e' < $2, salta tutti i trade (ma continua a scannare)
                 if self._cycle % 50 == 1 and not self.config.paper_trading:
                     try:
-                        usdc_bal = self.api.get_usdc_balance()
+                        usdc_bal = await asyncio.wait_for(
+                            asyncio.to_thread(self.api.get_usdc_balance), timeout=10
+                        )
                         if usdc_bal >= 0:
                             self._usdc_balance = usdc_bal
                             if usdc_bal < 2.0:
@@ -685,8 +687,9 @@ class MultiStrategyBot:
                 # v12.8: Auto-redeem ogni 50 cicli — riscuoti vincite automaticamente
                 if self._cycle % 50 == 25 and not self.config.paper_trading and self.redeemer:
                     try:
-                        redeem_result = await asyncio.to_thread(
-                            self.redeemer.redeem_all_redeemable
+                        redeem_result = await asyncio.wait_for(
+                            asyncio.to_thread(self.redeemer.redeem_all_redeemable),
+                            timeout=30,
                         )
                         if redeem_result and redeem_result.get("redeemed", 0) > 0:
                             logger.info(
