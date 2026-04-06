@@ -960,9 +960,16 @@ class MultiStrategyBot:
                             # Check max 20 posizioni per ciclo per non sovraccaricare
                             to_check = list(self.risk.open_trades)[:20]
                             for t in to_check:
-                                bal = await asyncio.to_thread(
-                                    self.api.get_token_balance, t.token_id
-                                )
+                                try:
+                                    bal = await asyncio.wait_for(
+                                        asyncio.to_thread(
+                                            self.api.get_token_balance, t.token_id
+                                        ),
+                                        timeout=5,
+                                    )
+                                except (asyncio.TimeoutError, Exception) as e:
+                                    logger.warning(f"[TIMEOUT] get_token_balance (phantom check): {e}")
+                                    bal = -1  # skip this token
                                 if bal == 0:
                                     self.risk.close_trade(
                                         t.token_id, won=False, pnl=0.0
@@ -1031,7 +1038,10 @@ class MultiStrategyBot:
                 # ── v10.8.3: Portfolio reale dalla Data API (al primo ciclo, poi ogni 200) ──
                 if self._cycle % 200 == 0 or self._real_portfolio is None:
                     try:
-                        portfolio = self._fetch_real_portfolio()
+                        portfolio = await asyncio.wait_for(
+                            asyncio.to_thread(self._fetch_real_portfolio),
+                            timeout=25,
+                        )
                         if portfolio:
                             self._real_portfolio = portfolio
                             logger.info(
@@ -1041,6 +1051,8 @@ class MultiStrategyBot:
                                 f"PnL=${portfolio['real_pnl']:+.2f} ({portfolio['real_pnl_pct']:+.1f}%) "
                                 f"| {portfolio['n_active']} attive, {portfolio['n_redeemable']} redeemable"
                             )
+                    except asyncio.TimeoutError:
+                        logger.warning("[TIMEOUT] _fetch_real_portfolio: >25s")
                     except Exception as e:
                         logger.warning(f"[PORTFOLIO] Errore: {e}")
 
@@ -1398,8 +1410,11 @@ class MultiStrategyBot:
         has_redeemer = self.redeemer and self.redeemer.available
         if has_redeemer:
             try:
-                redeemable_positions = await asyncio.to_thread(
-                    self.redeemer.fetch_redeemable_positions
+                redeemable_positions = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self.redeemer.fetch_redeemable_positions
+                    ),
+                    timeout=15,
                 )
                 if redeemable_positions:
                     # Build set di conditionId noti dai nostri trade (via Gamma cache)
@@ -1663,10 +1678,13 @@ class MultiStrategyBot:
         for trade in self.risk.open_trades:
             age_hours = (now - trade.timestamp) / 3600
             try:
-                book = await asyncio.to_thread(self.api.get_order_book, trade.token_id)
+                book = await asyncio.wait_for(
+                    asyncio.to_thread(self.api.get_order_book, trade.token_id),
+                    timeout=8,
+                )
                 bids = book.get("bids", [])
                 current_bid = float(bids[0]["price"]) if bids else 0
-            except Exception:
+            except (asyncio.TimeoutError, Exception) as e:
                 current_bid = 0
 
             # v10.5: Book vuoto → HOLD, non vendere (nessuno compra)
@@ -1793,9 +1811,16 @@ class MultiStrategyBot:
         for trade, current_bid, age_hours, pnl_pct, _prio, signal in to_sell[:max_sells]:
             try:
                 # v12.1: Pre-sell balance check — verifica shares on-chain
-                token_balance = await asyncio.to_thread(
-                    self.api.get_token_balance, trade.token_id
-                )
+                try:
+                    token_balance = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            self.api.get_token_balance, trade.token_id
+                        ),
+                        timeout=5,
+                    )
+                except (asyncio.TimeoutError, Exception) as e:
+                    logger.warning(f"[TIMEOUT] get_token_balance (pre-sell): {e}")
+                    token_balance = -1  # will skip via balance check below
                 if token_balance == 0:
                     # Nessuna share: posizione fantasma, rimuovila dal tracking
                     self.risk.close_trade(
@@ -1837,22 +1862,36 @@ class MultiStrategyBot:
 
                 # v13.1: Route SELL through Horizon (with native fallback)
                 if self.horizon.available:
-                    hz_sell = await asyncio.to_thread(
-                        self.horizon.execute_trade,
-                        trade.token_id, "SELL",
-                        shares * real_entry,  # size in dollars
-                        real_entry,
-                        trade.strategy,
-                    )
-                    result = hz_sell.raw_result if hz_sell.success else None
+                    try:
+                        hz_sell = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                self.horizon.execute_trade,
+                                trade.token_id, "SELL",
+                                shares * real_entry,  # size in dollars
+                                real_entry,
+                                trade.strategy,
+                            ),
+                            timeout=30,
+                        )
+                        result = hz_sell.raw_result if hz_sell.success else None
+                    except (asyncio.TimeoutError, Exception) as e:
+                        logger.warning(f"[TIMEOUT] horizon.execute_trade SELL: {e}")
+                        result = None
                 else:
-                    result = await asyncio.to_thread(
-                        self.api.smart_sell,
-                        trade.token_id, shares,
-                        current_price=real_entry,
-                        timeout_sec=8.0,
-                        fallback_market=True,
-                    )
+                    try:
+                        result = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                self.api.smart_sell,
+                                trade.token_id, shares,
+                                current_price=real_entry,
+                                timeout_sec=8.0,
+                                fallback_market=True,
+                            ),
+                            timeout=20,
+                        )
+                    except (asyncio.TimeoutError, Exception) as e:
+                        logger.warning(f"[TIMEOUT] smart_sell: {e}")
+                        result = None
 
                 if result:
                     sell_price = current_bid if current_bid > 0 else real_entry * 0.5
@@ -1911,7 +1950,10 @@ class MultiStrategyBot:
 
         for trade in self.risk.open_trades:
             try:
-                book = await asyncio.to_thread(self.api.get_order_book, trade.token_id)
+                book = await asyncio.wait_for(
+                    asyncio.to_thread(self.api.get_order_book, trade.token_id),
+                    timeout=8,
+                )
                 bids = book.get("bids", [])
                 asks = book.get("asks", [])
 
@@ -1941,7 +1983,7 @@ class MultiStrategyBot:
                 if checked >= 20:
                     break
 
-            except Exception:
+            except (asyncio.TimeoutError, Exception):
                 continue
 
         return total_pnl, n_profit, n_loss
@@ -2206,7 +2248,10 @@ class MultiStrategyBot:
 
         for trade in trades[:10]:
             try:
-                book = await asyncio.to_thread(self.api.get_order_book, trade.token_id)
+                book = await asyncio.wait_for(
+                    asyncio.to_thread(self.api.get_order_book, trade.token_id),
+                    timeout=8,
+                )
                 bids = book.get("bids", [])
                 if not bids:
                     continue
