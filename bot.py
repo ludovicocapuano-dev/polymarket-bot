@@ -635,9 +635,10 @@ class MultiStrategyBot:
                         pass
 
                 # ── v9.2: Fetch ibrido REST + WebSocket ──
-                # REST full refresh ogni 20 cicli (~60s) o se WS non disponibile
-                # WS aggiorna solo i prezzi tra un refresh e l'altro
-                if self._cycle == 1 or self._cycle % 20 == 0 or not self.ws_feed.available:
+                # v13.3: REST refresh ogni 500 cicli (~25min) — Gamma API stalla spesso.
+                # BTC latency e MRO usano CLOB API diretto, non Gamma.
+                # Questo fetch è solo per contesto orchestrator/validator.
+                if self._cycle == 1 or self._cycle % 500 == 0:
                     try:
                         shared_markets = await asyncio.wait_for(
                             asyncio.to_thread(self.api.fetch_markets, limit=400),
@@ -646,22 +647,17 @@ class MultiStrategyBot:
                     except (asyncio.TimeoutError, Exception) as e:
                         logger.warning(f"[FETCH] fetch_markets timeout/error: {e}")
                         shared_markets = self._shared_markets_cache if hasattr(self, '_shared_markets_cache') else []
-                    if not shared_markets:
-                        logger.warning(f"Ciclo #{self._cycle}: 0 mercati dall'API, skip")
+                    if shared_markets:
+                        self._shared_markets_cache = shared_markets
+                        self.ws_feed.register_markets(shared_markets)
+                    elif not hasattr(self, '_shared_markets_cache') or not self._shared_markets_cache:
+                        logger.warning(f"Ciclo #{self._cycle}: 0 mercati, no cache — skip")
                         await asyncio.sleep(self.config.poll_interval)
                         continue
-                    self._shared_markets_cache = shared_markets
-                    self.ws_feed.register_markets(shared_markets)
-                    ws_tag = " (REST)" if not self.ws_feed.available else " (REST+WS sync)"
-                    logger.debug(
-                        f"Ciclo #{self._cycle}: {len(shared_markets)} mercati fetchati{ws_tag}"
-                    )
-                else:
-                    # Usa cache con prezzi aggiornati dal WS
-                    shared_markets = self.ws_feed.update_prices(self._shared_markets_cache)
-                    logger.debug(
-                        f"Ciclo #{self._cycle}: {len(shared_markets)} mercati da cache WS"
-                    )
+                # Use cache if not a fetch cycle
+                shared_markets = getattr(self, '_shared_markets_cache', []) or []
+                if self.ws_feed.available and shared_markets:
+                    shared_markets = self.ws_feed.update_prices(shared_markets)
 
                 # ── v9.0: Orchestrator — prioritizzazione mercati ──
                 try:
