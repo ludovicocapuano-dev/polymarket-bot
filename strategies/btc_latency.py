@@ -856,7 +856,7 @@ class BTCLatencyStrategy:
                     size=size,
                     price=target,
                     strategy="btc_latency",
-                    allow_dead_book=True,
+                    allow_dead_book=False,
                     aggressive=True,
                 )
                 if hz_result.success:
