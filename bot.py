@@ -820,16 +820,8 @@ class MultiStrategyBot:
                 # ── 1. Crypto 5-Min — DISABILITATO v7.0 (fees > edge, Kelly negativo) ──
 
                 # ── 2. Weather (previsioni meteo — mercati giornalieri) ──
-                # v10.8: Usa cache asincrona dei weather markets extra (popolata da _weather_fetch_loop)
-                try:
-                    if self._weather_extra_cache:
-                        seen_ids = {m.id for m in shared_markets}
-                        new = [m for m in self._weather_extra_cache if m.id not in seen_ids]
-                        if new:
-                            shared_markets = shared_markets + new
-                            logger.info(f"[WEATHER] +{len(new)} mercati da cache async")
-                except Exception:
-                    pass
+                # v13.3: Weather cache async SOSPESA (blocca event loop)
+                pass
                 # v13.3: Weather SOSPESO — ID scan blocca main loop, impedisce MRO/BTC latency
                 # TODO: implementare scan asincrono non-bloccante prima di riattivare
                 weather_opps = []
@@ -2647,6 +2639,8 @@ class MultiStrategyBot:
     async def _weather_fetch_loop(self):
         """v10.8: Fetch asincrono dei weather markets extra (offset 400-1400).
         Gira ogni 60s in background, popola _weather_extra_cache senza bloccare il main loop."""
+        # v13.3: SOSPESO — weather disabilitato, questo loop blocca l'event loop
+        return
         await asyncio.sleep(2)  # attendi primo fetch REST
         while self._running:
             try:
