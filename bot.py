@@ -681,14 +681,15 @@ class MultiStrategyBot:
                 # ── 10. Pulizia ordini stale (ogni 20 cicli) ──
                 if self._cycle % 20 == 0 and not self.config.paper_trading:
                     try:
-                        stale = self.api.get_open_orders()
+                        stale = await asyncio.wait_for(
+                            asyncio.to_thread(self.api.get_open_orders), timeout=8
+                        )
                         if stale:
-                            logger.info(
-                                f"[ORDERS] {len(stale)} ordini aperti residui, "
-                                f"cancello stale"
+                            logger.info(f"[ORDERS] {len(stale)} ordini aperti, cancello stale")
+                            await asyncio.wait_for(
+                                asyncio.to_thread(self.api.cancel_all), timeout=8
                             )
-                            self.api.cancel_all()
-                    except Exception as e:
+                    except (asyncio.TimeoutError, Exception) as e:
                         logger.debug(f"[ORDERS] Errore pulizia: {e}")
 
                 # ── 10.5. Auto-Scaler crypto sizing (ogni 200 cicli ~100min) ──
