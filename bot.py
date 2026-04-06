@@ -1225,7 +1225,10 @@ class MultiStrategyBot:
                                     won=True,
                                     neg_risk=pos.get("negRisk", pos.get("neg_risk", False)),
                                 )
-                                redeemed = self.redeemer._redeem_position(rpos)
+                                redeemed = await asyncio.wait_for(
+                                    asyncio.to_thread(self.redeemer._redeem_position, rpos),
+                                    timeout=20,
+                                )
                             except Exception as e:
                                 logger.warning(f"[REDEEM] On-chain fallito (Data API): {e}", exc_info=True)
 
@@ -1277,10 +1280,13 @@ class MultiStrategyBot:
         for mid in market_ids_to_check:
             try:
                 # Query Gamma API per mercato specifico
-                resp = await asyncio.to_thread(
-                    requests.get,
-                    f"https://gamma-api.polymarket.com/markets/{mid}",
-                    timeout=10,
+                resp = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        requests.get,
+                        f"https://gamma-api.polymarket.com/markets/{mid}",
+                        timeout=(2, 5),
+                    ),
+                    timeout=8,
                 )
 
                 if resp.status_code in (404, 422, 500, 502, 503):
@@ -1359,9 +1365,12 @@ class MultiStrategyBot:
                             won=True,
                             neg_risk=m.get("negRisk", False),
                         )
-                        redeemed = self.redeemer._redeem_position(pos)
-                    except Exception as e:
-                        logger.warning(f"[REDEEM] On-chain fallito: {e}", exc_info=True)
+                        redeemed = await asyncio.wait_for(
+                            asyncio.to_thread(self.redeemer._redeem_position, pos),
+                            timeout=20,
+                        )
+                    except (asyncio.TimeoutError, Exception) as e:
+                        logger.warning(f"[REDEEM] On-chain fallito/timeout: {e}")
 
                 # v10.2.1: Se redeem ritorna None, condizione non risolta on-chain
                 if redeemed is None:
