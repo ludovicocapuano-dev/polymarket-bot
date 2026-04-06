@@ -102,7 +102,7 @@ class BTCLatencyStrategy:
     max_size: float = 50.0           # v13.2: ripristinato $50 con capitale $2000
     min_edge: float = 0.10           # v13.3: alzato da 3% → 10%. Segnali veri sono 15-45%, sotto 10% = rumore
     min_vol_zscore: float = 1.0      # Z-score volume minimo (surge detection)
-    min_filters: int = 3             # v13.3: alzato da 2 — WR 50% con 2 filtri, serve qualità migliore
+    min_filters: int = 2             # 2/4 filtri — 3 taglia il 93% dei segnali
     max_entry_price: float = 0.80    # non comprare sopra
     min_entry_price: float = 0.52    # non comprare sotto (troppo vicino a 50/50)
     entry_window: tuple = (30, 240)  # secondi nel slot: entry tra 30s e 240s
