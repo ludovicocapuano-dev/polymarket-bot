@@ -372,7 +372,7 @@ class MROKellyStrategy:
     _daily_pnl_reset: float = 0.0   # epoch of last daily reset
     _consecutive_losses: int = 0
     _loss_cooldown_until: float = 0.0
-    _open_position_count: int = 0
+    _open_position_count: int = 0  # v13.3 BUG: was never decremented, now synced in scan()
     _recently_traded: dict = field(default_factory=dict)   # market_id -> epoch
     _market_cache: dict = field(default_factory=dict)       # slug -> (Market, expire)
     _trade_log: deque = field(default_factory=lambda: deque(maxlen=200))
@@ -583,9 +583,14 @@ class MROKellyStrategy:
         now = time.time()
         all_signals = []
 
-        # Track positions per crypto for the max_positions_per_crypto limit
-        if not hasattr(self, '_positions_per_crypto'):
-            self._positions_per_crypto = {sym: 0 for sym in SUPPORTED_CRYPTOS}
+        # v13.3: Sync position counters from risk manager (fix: was never decremented)
+        mro_open = [t for t in self.risk.open_trades if t.strategy == "mro_kelly"]
+        self._open_position_count = len(mro_open)
+        self._positions_per_crypto = {sym: 0 for sym in SUPPORTED_CRYPTOS}
+        for t in mro_open:
+            for sym in SUPPORTED_CRYPTOS:
+                if sym.upper() in (getattr(t, 'reasoning', '') or '').upper():
+                    self._positions_per_crypto[sym] = self._positions_per_crypto.get(sym, 0) + 1
 
         for crypto_symbol in SUPPORTED_CRYPTOS:
             sym_upper = crypto_symbol.upper()
