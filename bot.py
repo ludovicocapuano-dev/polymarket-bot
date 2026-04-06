@@ -638,7 +638,14 @@ class MultiStrategyBot:
                 # REST full refresh ogni 20 cicli (~60s) o se WS non disponibile
                 # WS aggiorna solo i prezzi tra un refresh e l'altro
                 if self._cycle == 1 or self._cycle % 20 == 0 or not self.ws_feed.available:
-                    shared_markets = self.api.fetch_markets(limit=400)
+                    try:
+                        shared_markets = await asyncio.wait_for(
+                            asyncio.to_thread(self.api.fetch_markets, limit=400),
+                            timeout=15,
+                        )
+                    except (asyncio.TimeoutError, Exception) as e:
+                        logger.warning(f"[FETCH] fetch_markets timeout/error: {e}")
+                        shared_markets = self._shared_markets_cache if hasattr(self, '_shared_markets_cache') else []
                     if not shared_markets:
                         logger.warning(f"Ciclo #{self._cycle}: 0 mercati dall'API, skip")
                         await asyncio.sleep(self.config.poll_interval)
