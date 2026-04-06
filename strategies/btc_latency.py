@@ -166,7 +166,7 @@ class BTCLatencyStrategy:
                 resp = requests.get(
                     self.GAMMA_API,
                     params={"slug": slug},
-                    timeout=5,
+                    timeout=(2, 3),  # (connect, read) timeout
                 )
                 if resp.status_code != 200:
                     continue
@@ -294,7 +294,17 @@ class BTCLatencyStrategy:
             if self.binance.symbol_price(crypto_symbol) == 0:
                 continue
 
-            crypto_markets = self.discover_crypto_markets(symbol=crypto_symbol)
+            # v13.3: Cache discovery for 60s — avoids 12 Gamma API calls per cycle
+            _cache_key = f"_markets_cache_{crypto_symbol}"
+            _cache_ts_key = f"_markets_cache_ts_{crypto_symbol}"
+            now_ts = time.time()
+            if now_ts - getattr(self, _cache_ts_key, 0) > 60:
+                crypto_markets = self.discover_crypto_markets(symbol=crypto_symbol)
+                if crypto_markets:
+                    setattr(self, _cache_key, crypto_markets)
+                    setattr(self, _cache_ts_key, now_ts)
+            else:
+                crypto_markets = getattr(self, _cache_key, [])
             if not crypto_markets:
                 continue
 
