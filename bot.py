@@ -830,12 +830,15 @@ class MultiStrategyBot:
                             logger.info(f"[WEATHER] +{len(new)} mercati da cache async")
                 except Exception:
                     pass
-                # v10.8.5: Latency Hunter — priority scan dopo model update
-                if self._weather_priority_scan:
-                    self._weather_priority_scan = False
-                    logger.info("[LATENCY-HUNTER] Priority weather scan — model update detected")
+                # v13.3: Weather SOSPESO — ID scan blocca main loop, impedisce MRO/BTC latency
+                # TODO: implementare scan asincrono non-bloccante prima di riattivare
+                weather_opps = []
+                if False:  # DISABLED
+                    if self._weather_priority_scan:
+                        self._weather_priority_scan = False
+                        logger.info("[LATENCY-HUNTER] Priority weather scan — model update detected")
                 try:
-                    weather_opps = await self.weather.scan(shared_markets=shared_markets)
+                    pass  # weather_opps = await self.weather.scan(shared_markets=shared_markets)
                     if _can_trade:
                         for opp in weather_opps[:5]:  # v10.6: da 3 — più trade weather per ciclo
                             if not self._running:
