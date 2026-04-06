@@ -650,6 +650,28 @@ class RiskManager:
         budget = self._strategy_budgets.get(strategy, self.capital * 0.2)
         size = frac * budget
 
+        # v13.3: Win-rate confidence scaler — scale size based on recent performance
+        # Uses last 20 closed trades per strategy. More wins → bigger size, more losses → smaller.
+        _wr_trades = [t for t in self.trades if t.strategy == strategy and t.result in ("WIN", "LOSS")][-20:]
+        if len(_wr_trades) >= 5:  # need at least 5 trades for meaningful WR
+            _wr_wins = sum(1 for t in _wr_trades if t.result == "WIN")
+            _wr = _wr_wins / len(_wr_trades)
+            # Scale: 80%+ WR → 1.5x, 60% → 1.0x, 40% → 0.5x, <30% → 0.25x
+            if _wr >= 0.80:
+                _wr_mult = 1.5
+            elif _wr >= 0.60:
+                _wr_mult = 1.0
+            elif _wr >= 0.40:
+                _wr_mult = 0.5
+            else:
+                _wr_mult = 0.25
+            size *= _wr_mult
+            if _wr_mult != 1.0:
+                logger.info(
+                    f"[WR-SCALER] {strategy}: {_wr_wins}W/{len(_wr_trades)-_wr_wins}L "
+                    f"({_wr:.0%}) → size x{_wr_mult}"
+                )
+
         # v7.3: Grossman-Zhou cushion (Paleologo Elements of Quantitative Investing)
         # Allocazione proporzionale al "cuscino" sopra il floor.
         # Quando capitale → floor, size → 0 progressivamente.
