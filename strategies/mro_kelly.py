@@ -347,7 +347,7 @@ class MROKellyStrategy:
     fast_executor: object = None  # v14.0: FastExecutor for sub-100ms execution
 
     # ── Parameters ──
-    mro_threshold: float = 65.0     # v12.9 EXPERIMENT: lowered from 70 → 65 to catch SOL-like signals
+    mro_threshold: float = 70.0     # v13.3: raised back from 65 — MRO=69.5 lost $68 (signal too weak)
     min_edge: float = 0.06          # 6% minimum edge
     min_bet: float = 5.0            # $ minimum bet
     max_bet: float = 50.0           # v13.2: alzato da $20 con capitale $2000
