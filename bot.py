@@ -50,32 +50,21 @@ from utils.redeemer import Redeemer
 from utils.onchain_monitor import OnChainMonitor
 from utils.telegram_notifier import TelegramNotifier
 from utils.metaculus_feed import CrossPlatformFeed
-from utils.perplexity_feed import PerplexityFeed
+# from utils.perplexity_feed import PerplexityFeed  # removed: only used by sniper
 
-from strategies.arbitrage import ArbitrageStrategy
-from strategies.data_driven import DataDrivenStrategy
-from strategies.event_driven import EventDrivenStrategy
-from strategies.crypto_5min import Crypto5MinStrategy
+# Active strategies
 from strategies.weather import WeatherStrategy
-from strategies.arb_gabagool import GabagoolStrategy
-from strategies.high_prob_bond import HighProbBondStrategy
-from strategies.market_making import MarketMakingStrategy
-from strategies.whale_copy import WhaleCopyStrategy
-from strategies.resolution_sniper import ResolutionSniperStrategy
-from strategies.negrisk_arb import NegRiskArbScanner
-from strategies.holding_rewards import HoldingRewardsStrategy
-from strategies.favorite_longshot import FavoriteLongshotStrategy
 from strategies.btc_latency import BTCLatencyStrategy
-from strategies.sport_latency import SportLatencyStrategy
-from strategies.liquidity_vacuum import LiquidityVacuumStrategy
-from strategies.abandoned_position import AbandonedPositionStrategy
-from strategies.cross_platform_arb import CrossPlatformArbStrategy
-from strategies.econ_release_sniper import EconReleaseSniper
-from strategies.crowd_sport import CrowdSportStrategy
-from strategies.crowd_prediction import CrowdPredictionStrategy
 from strategies.mro_kelly import MROKellyStrategy
-from strategies.xgboost_predictor import XGBoostStrategy
-from utils.uma_monitor import UmaMonitor
+
+# Removed strategies (dead code cleanup):
+# ArbitrageStrategy, DataDrivenStrategy, EventDrivenStrategy, Crypto5MinStrategy,
+# GabagoolStrategy, HighProbBondStrategy, MarketMakingStrategy, WhaleCopyStrategy,
+# ResolutionSniperStrategy, NegRiskArbScanner, HoldingRewardsStrategy,
+# FavoriteLongshotStrategy, SportLatencyStrategy, LiquidityVacuumStrategy,
+# AbandonedPositionStrategy, CrossPlatformArbStrategy, EconReleaseSniper,
+# CrowdSportStrategy, CrowdPredictionStrategy, XGBoostStrategy
+# from utils.uma_monitor import UmaMonitor  # removed: only used by sniper
 from monitoring.quant_metrics import evaluate_all_strategies
 from monitoring.hrp import HRPAllocator
 from monitoring.kyle_lambda import KyleLambdaEstimator
@@ -96,10 +85,11 @@ except ImportError:
 # v9.0: Architettura agentica a 6 layer
 from validators.signal_validator import SignalValidator, ValidationResult
 from validators.devils_advocate import DevilsAdvocate
-from validators.signal_converter import (
-    from_event_opportunity, from_bond_opportunity,
-    from_whale_opportunity, from_prediction, from_weather_opportunity,
-)
+# Signal converters — unused while weather/event/bond/whale strategies are disabled
+# from validators.signal_converter import (
+#     from_event_opportunity, from_bond_opportunity,
+#     from_whale_opportunity, from_prediction, from_weather_opportunity,
+# )
 from monitoring.attribution import AttributionEngine
 from monitoring.drift_detector import DriftDetector
 from monitoring.calibration import CalibrationEngine
@@ -240,14 +230,8 @@ class MultiStrategyBot:
                 f"— vicino/oltre il limite {max_pos}"
             )
 
-        # Imposta budget per strategia
-        self.risk.set_strategy_budget("arb_gabagool", config.capital_for("arb_gabagool"))
-        # v7.0: crypto_5min DISABILITATO (allocazione 0%)
-        # self.risk.set_strategy_budget("crypto_5min", config.capital_for("crypto_5min"))
+        # Imposta budget per strategia (only active ones)
         self.risk.set_strategy_budget("weather", config.capital_for("weather"))
-        self.risk.set_strategy_budget("arbitrage", config.capital_for("arbitrage"))
-        self.risk.set_strategy_budget("data_driven", config.capital_for("data_driven"))
-        self.risk.set_strategy_budget("event_driven", config.capital_for("event_driven"))
 
         # Inizializza strategie
         # v7.0: crypto_5min DISABILITATO (Kelly negativo, fees 3.15% > edge)
@@ -262,66 +246,12 @@ class MultiStrategyBot:
             min_edge=0.03,  # v5.3: 3% (same-day 1.8% via 0.6x) + Bayesian posterior
             meta_labeler=self.meta_labeler,  # v12.0.1: Lopez de Prado meta-labeling
         )
-        self.arb = ArbitrageStrategy(
-            self.api, self.risk,
-            arbbets=self.arbbets_feed,
-            dome=self.dome_feed,
-            min_edge=config.risk.min_edge,
-        )
-        self.data = DataDrivenStrategy(
-            self.api, self.risk, self.binance,
-            lunar=self.lunar_feed,
-            cquant=self.cquant_feed,
-            nansen=self.nansen_feed,
-            min_edge=config.risk.min_edge,
-        )
-        self.event = EventDrivenStrategy(
-            self.api, self.risk,
-            finlight=self.finlight_feed,
-            gdelt=self.gdelt_feed,
-            glint=self.glint_feed,
-            twitter=self.twitter_feed,
-            min_edge=config.risk.min_edge,
-        )
-        self.gabagool = GabagoolStrategy(
-            self.api, self.risk,
-            min_profit=0.005,  # 0.5% profitto minimo per trade
-        )
+        # Removed: ArbitrageStrategy, DataDrivenStrategy, EventDrivenStrategy,
+        # GabagoolStrategy, HighProbBondStrategy, MarketMakingStrategy,
+        # WhaleCopyStrategy, ResolutionSniperStrategy (all disabled, dead code)
 
-        # v6.0: Nuove strategie
-        self.bond = HighProbBondStrategy(
-            self.api, self.risk,
-            min_edge=0.01,  # 1% — bond near-certain
-        )
-        self.risk.set_strategy_budget("high_prob_bond", config.capital_for("high_prob_bond"))
-
-        # v12.3: Market Making riattivato con v2.0 two-sided quoting
-        from strategies.market_making import MarketMakingStrategy
-        self.mm = MarketMakingStrategy(self.api, self.risk)
-        self.risk.set_strategy_budget("market_making", 500.0)  # budget indipendente
-
-        self.whale = WhaleCopyStrategy(
-            self.api, self.risk,
-            min_edge=0.03,
-        )
-        self.risk.set_strategy_budget("whale_copy", config.capital_for("whale_copy"))
-
-        # v10.4: On-Chain Monitor — rilevamento whale trade via Polygon WebSocket (~2s)
-        from strategies.whale_copy import TRACKED_WALLETS as _TW
-        tracked_addrs = {v["address"] for v in _TW.values() if v.get("address")}
-        self.onchain_monitor = OnChainMonitor(tracked_wallets=tracked_addrs)
-        self.onchain_monitor.add_callback(self.whale.on_chain_trade)
-
-        # v5.9.2: Resolution Sniper + v10.8: Perplexity verification
-        self.uma_monitor = UmaMonitor()
-        self.perplexity_feed = PerplexityFeed()
-        self.sniper = ResolutionSniperStrategy(
-            self.api, self.risk,
-            uma_monitor=self.uma_monitor,
-            perplexity=self.perplexity_feed,
-            min_edge=0.03,  # 3% — fee-free markets
-        )
-        self.risk.set_strategy_budget("resolution_sniper", config.capital_for("resolution_sniper"))
+        # v10.4: On-Chain Monitor — rilevamento trade via Polygon WebSocket (~2s)
+        self.onchain_monitor = OnChainMonitor(tracked_wallets=set())
 
         # ── v13.1: Horizon SDK — PRIMARY execution engine ──
         self.horizon = HorizonClient()
@@ -351,32 +281,8 @@ class MultiStrategyBot:
         self.uw_matcher = UWPolymarketMatcher()
         logger.info("[UW-MATCH] Matcher initialized")
 
-        # ── v10.8.4: NegRisk Sum Arbitrage Scanner ──
-        self.negrisk_arb = NegRiskArbScanner()
-
-        # ── v12.5: Economic Data Release Sniper ──
-        self.econ_sniper = EconReleaseSniper(self.api, self.risk)
-        self.econ_sniper.fetch_schedule()
-        nxt = self.econ_sniper.next_release()
-        if nxt:
-            logger.info(f"[ECON-SNIPER] Next release: {nxt.name} on {nxt.date.strftime('%Y-%m-%d %H:%M UTC')}")
-
-        # ── v12.6: Crowd Sport — DISABILITATO v12.9.1 (no edge, LLM consensus ≠ informazione) ──
-        # self.crowd_sport = CrowdSportStrategy(api=self.api, risk=self.risk)
-        # self.risk.set_strategy_budget("crowd_sport", 300.0)
-        logger.info("[CROWD-SPORT] DISABILITATO v12.9.1 — capitale riallocato a weather")
-
-        # ── v12.7: Crowd Prediction — DISABILITATO v12.9.1 (no edge, costa $0.08/mercato DeepSeek) ──
-        # self.crowd_prediction = CrowdPredictionStrategy(
-        #     api=self.api, risk=self.risk,
-        #     domains=["politics", "crypto", "geopolitics", "entertainment"],
-        # )
-        # self.risk.set_strategy_budget("crowd_prediction", 200.0)
-        logger.info("[CROWD-PRED] DISABILITATO v12.9.1 — capitale riallocato a weather")
-
-        # ── v10.8.4: Holding Rewards (4% APY) + Favorite-Longshot Bias ──
-        self.holding_rewards = HoldingRewardsStrategy()
-        self.favorite_longshot = FavoriteLongshotStrategy()
+        # Removed: NegRiskArbScanner, EconReleaseSniper, CrowdSportStrategy,
+        # CrowdPredictionStrategy, HoldingRewardsStrategy, FavoriteLongshotStrategy (all disabled)
         # v10.8.6: BTC Latency Arb v3.0 — Multi-Mode (Sniper + OFI + Latency)
         self.btc_latency = BTCLatencyStrategy(
             api=self.api, risk=self.risk, binance=self.binance,
@@ -388,18 +294,7 @@ class MultiStrategyBot:
         # v12.10.5: reset PnL tracker — old halt losses shouldn't block new trades
         self.risk._strategy_pnl["btc_latency"] = 0.0
 
-        # v12.10: Sport Latency — Betfair Exchange odds for in-play sport arbitrage
-        self.sport_latency = SportLatencyStrategy(
-            api=self.api, risk=self.risk, betfair=self.betfair,
-            bankroll=500.0, max_size=100.0,
-        )
-        self.risk.set_strategy_budget("sport_latency", 500.0)
-
-        # v12.10: Liquidity Vacuum Sniper — mean reversion on thin book spikes
-        self.liquidity_vacuum = LiquidityVacuumStrategy(
-            api=self.api, risk=self.risk,
-        )
-        self.risk.set_strategy_budget("liquidity_vacuum", 300.0)
+        # Removed: SportLatencyStrategy, LiquidityVacuumStrategy (blocked by user)
 
         # v12.9: MRO-Kelly — Mean Reversion Oscillator on BTC 5-min markets
         self.mro_kelly = MROKellyStrategy(
@@ -412,20 +307,7 @@ class MultiStrategyBot:
         self.risk.set_strategy_budget("mro_kelly", 500.0)  # v12.10: budget alzato da $200
         logger.info("[MRO-KELLY] Strategy initialized (v12.10: $10-35/trade, max 5 pos, budget $500)")
 
-        # v13.0: XGBoost Prediction Strategy — 330 boosted stumps, 7 features
-        self.xgboost_strategy = XGBoostStrategy(
-            api=self.api, risk=self.risk,
-            max_bet=60.0, min_bet=5.0, kelly_fraction=0.25,
-            max_open_positions=15,
-        )
-        self.risk.set_strategy_budget("xgboost_pred", 300.0)
-        logger.info("[XGBOOST] Strategy initialized (budget=$300, max_bet=$60, 7-feature model)")
-
-        # v12.0: Book-derived strategies
-        self.abandoned_position = AbandonedPositionStrategy()
-        self.cross_platform_arb = CrossPlatformArbStrategy(
-            cross_platform_feed=self.cross_platform_feed if hasattr(self, 'cross_platform_feed') else None
-        )
+        # Removed: XGBoostStrategy, AbandonedPositionStrategy, CrossPlatformArbStrategy (disabled)
 
         # v12.0: Quant monitoring (Lopez de Prado)
         active_strats = ["weather", "resolution_sniper", "favorite_longshot",
@@ -595,11 +477,10 @@ class MultiStrategyBot:
             self.binance.connect(),
             self.betfair.connect(),    # v12.10: Betfair Exchange streaming for sport latency
             self.dashboard.run(),      # v12.10: Rich terminal dashboard (noop if not TTY)
-            self.uma_monitor.start(),  # v5.9.2: UMA resolution monitor
             self.ws_feed.connect(),    # v9.2: Polymarket WS price feed
-            self.onchain_monitor.start(),  # v10.4: On-chain whale trade monitor
+            self.onchain_monitor.start(),  # v10.4: On-chain monitor
             self.glint_feed.connect(),  # v10.5: Glint.trade real-time intelligence
-            self._weather_fetch_loop(),  # v10.8: async weather market fetch
+            self._weather_fetch_loop(),  # v10.8: SOSPESO (returns immediately)
             self._model_update_loop(),  # v10.8.5: latency hunter — scan on model update
             self._main_loop(),
             self._dashboard_loop(),
@@ -705,39 +586,9 @@ class MultiStrategyBot:
                 # Se una strategia crasha, le altre continuano a funzionare.
                 # Prima di v4.0.1, un errore in weather bloccava arb+data+event.
 
-                # ── 0. GABAGOOL Arbitraggio Puro (priorita' MASSIMA — profitto garantito) ──
-                # ── GABAGOOL — PAUSED v13.1: focus su mro_kelly + btc_latency + weather ──
-                pass
-
-                # ── 0.5. Resolution Sniper — DISABILITATO v12.10.5 ──
-                # Postmortem: 0/3 WR, -$97. LLM confidence non calibrata.
-                # Perplexity "85% confident" ha perso tutti e 3 i trade.
-                pass
-
-                # ── 0.6. NegRisk Sum Arbitrage — PAUSED v12.9 ──
-                # 112K wallet study: specialize in 1-2 categories. Arb is noise.
-                pass
-
-                # ── 0.7. Holding Rewards — PAUSED v12.9 ──
-                # 112K wallet study: focus on 1-2 categories. Holding rewards is noise.
-                # if self._cycle % 10 == 0: ...
-                pass
-
-                # ── 0.8. Favorite-Longshot Bias — PAUSED v12.9 ──
-                # 112K wallet study: 0% WR, -$742 total. Focus on weather instead.
-                # if self._cycle % 5 == 0: ...
-                pass
-
-                # ── 0.8.6. Economic Data Release Sniper — DISABILITATO v12.10.5 ──
-                # Postmortem: 0 trade eseguiti, nessun edge provato. Focus su crypto.
-                pass
-
-                # ── 0.8.7. Crowd Sport — DISABILITATO v12.9.1 ──
-                # ── 0.8.8. Crowd Prediction — DISABILITATO v12.9.1 ──
-
-                # ── 0.8.5. Market Making v2.0 — DISABILITATO v12.10.5 ──
-                # Postmortem: richiede $2K+ budget, 0 trade eseguiti. Focus su crypto arb.
-                pass
+                # Disabled strategies removed: gabagool, resolution_sniper, negrisk_arb,
+                # holding_rewards, favorite_longshot, econ_sniper, crowd_sport,
+                # crowd_prediction, market_making
 
                 # ── 0.8.9. FastExecutor cache warming (every 100 cycles ~50min) ──
                 if self.fast_executor and self._cycle % 100 == 1:
@@ -770,11 +621,7 @@ class MultiStrategyBot:
                 except Exception as e:
                     logger.warning(f"[BTC-LATENCY] Errore: {e}", exc_info=True)
 
-                # ── 0.9.0.1. Sport Latency — BLOCCATO su richiesta utente ──
-                pass
-
-                # ── 0.9.0.2. Liquidity Vacuum — BLOCCATO su richiesta utente ──
-                pass
+                # Sport Latency / Liquidity Vacuum — BLOCCATO su richiesta utente (removed)
 
                 # ── 0.9.1. MRO-Kelly — Mean Reversion Oscillator BTC 5-min ──
                 try:
@@ -790,114 +637,13 @@ class MultiStrategyBot:
                 except Exception as e:
                     logger.warning(f"[MRO-KELLY] Errore: {e}", exc_info=True)
 
-                # ── 0.9.2. XGBoost — DISABILITATO v12.10.5 ──
-                # Postmortem: 0 trade, no trained model. Semplificare.
-                pass
+                # Disabled strategies removed: xgboost, abandoned_position, cross_platform_arb, crypto_5min
 
-                # ── 0.10. Abandoned Position Arb — DISABILITATO v12.5.3 ──
-                # Motivo: 0% WR, -$742 PnL, posizioni accumulate senza chiudersi
-                # I mercati "near-certain" a 95-99c spesso NON risolvono come atteso
-                # if _can_trade and aband_opps: ...
-                pass
-
-                # ── 0.11. Cross-Platform Arb — DISABILITATO v12.10.5 ──
-                # Postmortem: 0 trade, Horizon SDK connesso ma mai tradato. Semplificare.
-                pass
-
-                # ── 1. Crypto 5-Min — DISABILITATO v7.0 (fees > edge, Kelly negativo) ──
-
-                # ── 2. Weather (previsioni meteo — mercati giornalieri) ──
-                # v13.3: Weather cache async SOSPESA (blocca event loop)
-                pass
-                # v13.3: Weather SOSPESO — ID scan blocca main loop, impedisce MRO/BTC latency
+                # ── Weather — SOSPESO v13.3 (ID scan blocca main loop) ──
                 # TODO: implementare scan asincrono non-bloccante prima di riattivare
-                weather_opps = []
-                if False:  # DISABLED
-                    if self._weather_priority_scan:
-                        self._weather_priority_scan = False
-                        logger.info("[LATENCY-HUNTER] Priority weather scan — model update detected")
-                try:
-                    pass  # weather_opps = await self.weather.scan(shared_markets=shared_markets)
-                    if _can_trade:
-                        for opp in weather_opps[:5]:  # v10.6: da 3 — più trade weather per ciclo
-                            if not self._running:
-                                break
-                            signal = from_weather_opportunity(opp)
-                            price = getattr(signal, 'price', None) or getattr(opp, 'buy_price', 0.5)
-                            kelly = self.risk.kelly_size(opp.forecast_prob, price, "weather")
-                            report = self.signal_validator.validate(signal, trade_size=kelly)
-                            if report.result == ValidationResult.TRADE or (
-                                report.result == ValidationResult.REVIEW and signal.edge >= 0.04
-                            ):
-                                if report.result == ValidationResult.REVIEW:
-                                    logger.info(f"[WEATHER] REVIEW accepted: edge={signal.edge:.4f} >= 0.04")
-                                self.attribution.record_entry(
-                                    opp.market.tokens.get(opp.side.lower(), ""),
-                                    "weather", "weather", "weather",
-                                    edge_predicted=opp.edge, validation_score=report.score,
-                                )
-                                traded = await self.weather.execute(opp, paper=paper)
-                                if traded:
-                                    # v12.9: Get actual fill price for accurate notification
-                                    fill_price = getattr(opp, 'buy_price', getattr(opp, 'price', 0.5))
-                                    if isinstance(traded, dict) and traded.get("_fill_price"):
-                                        fill_price = traded["_fill_price"]
-                                    asyncio.ensure_future(self.telegram.notify_trade(
-                                        "weather", f"BUY_{opp.side}",
-                                        f"{opp.city} {opp.bucket_label}" if hasattr(opp, 'city') else opp.market.question[:60],
-                                        opp.target_size if hasattr(opp, 'target_size') else 0,
-                                        fill_price,
-                                        opp.edge,
-                                        paper=paper,
-                                    ))
-                except Exception as e:
-                    logger.error(f"[WEATHER] Errore strategia: {e}", exc_info=True)
 
-                # ── 3. Arbitraggio — PAUSED v13.1: focus su mro + btc + weather ──
-                pass
-
-                # ── 4. Data-Driven — PAUSATO v10.6 (WR 42.9% vs break-even 67%, edge hardcoded 0.06) ──
-                # Le posizioni aperte vengono gestite dal position manager, ma non apre nuove.
-                # try:
-                #     predictions = await self.data.analyze(shared_markets=shared_markets)
-                #     if _can_trade:
-                #         for pred in predictions[:3]:
-                #             if not self._running:
-                #                 break
-                #             signal = from_prediction(pred)
-                #             kelly = self.risk.kelly_size(pred.true_prob_yes, signal.price, "data_driven")
-                #             report = self.signal_validator.validate(signal, trade_size=kelly)
-                #             if report.result == ValidationResult.TRADE:
-                #                 self.attribution.record_entry(
-                #                     pred.market.tokens.get(pred.best_side.lower(), ""),
-                #                     "data_driven", "data_driven", pred.market.category,
-                #                     edge_predicted=pred.best_edge, validation_score=report.score,
-                #                 )
-                #                 await self.data.execute(pred, paper=paper)
-                # except Exception as e:
-                #     logger.error(f"[DATA] Errore strategia: {e}", exc_info=True)
-
-                # ── 5. Event-Driven — PAUSED v13.1 ──
-                pass
-
-                # ── 6. High-Probability Bonds — PAUSED v13.1 ──
-                pass
-
-                # ── 7. Market Making — DISABILITATO v7.0 (necessita $2K+ budget) ──
-
-                # ── 8. Whale Copy Trading — PAUSED v13.1 ──
-                pass
-
-                # ── 8.1. Whale Profiler (ogni 1000 cicli ~50 min) ──
-                if self._cycle % 1000 == 500:
-                    try:
-                        from utils.whale_profiler import WhaleProfiler
-                        profiler = WhaleProfiler()
-                        whitelist = profiler.profile_all_wallets()
-                        profiler.save_whitelist(whitelist)
-                        self.whale._load_whitelist()
-                    except Exception as e:
-                        logger.warning(f"[WHALE_PROFILER] Errore profiling periodico: {e}")
+                # Disabled strategies removed: arbitrage, data_driven, event_driven,
+                # high_prob_bond, market_making, whale_copy, whale_profiler
 
                 # ── 9. Monitoraggio mercati risolti + Auto-Redeem ──
                 try:
@@ -2314,61 +2060,8 @@ class MultiStrategyBot:
                 "city_tier2_max_bet": "city_tier2_max_bet",
                 "max_weather_bet": "max_weather_bet",
             }),
-            "favorite_longshot": (self.favorite_longshot, {
-                "min_price": "MIN_PRICE",
-                "max_price": "MAX_PRICE",
-                "base_alpha": "BASE_ALPHA",
-                "min_edge": "MIN_EDGE",
-                "min_volume": "MIN_VOLUME",
-                "max_bet": "MAX_BET",
-            }),
-            "abandoned_position": (self.abandoned_position, {
-                "min_near_certain_price": "MIN_NEAR_CERTAIN_PRICE",
-                "max_near_certain_price": "MAX_NEAR_CERTAIN_PRICE",
-                "max_volume_24h": "MAX_VOLUME_24H",
-                "max_hours_to_resolution": "MAX_HOURS_TO_RESOLUTION",
-                "min_hours_to_resolution": "MIN_HOURS_TO_RESOLUTION",
-                "max_position": "MAX_POSITION",
-            }),
-            "negrisk_arb": (self.negrisk_arb, {
-                "min_deviation": "MIN_DEVIATION",
-                "max_arb_size": "MAX_ARB_SIZE",
-                "min_liquidity": "MIN_LIQUIDITY",
-                "cooldown_minutes": "COOLDOWN_MINUTES",
-            }),
-            "holding_rewards": (self.holding_rewards, {
-                "max_bet_per_market": "MAX_BET_PER_MARKET",
-                "min_holding_days": "MIN_HOLDING_DAYS",
-                "max_positions": "MAX_POSITIONS",
-            }),
-            "econ_sniper": (self.econ_sniper, {
-                "nfp_surprise_threshold": "NFP_SURPRISE_THRESHOLD",
-                "unemployment_surprise_threshold": "UNEMPLOYMENT_SURPRISE_THRESHOLD",
-                "cpi_surprise_threshold": "CPI_SURPRISE_THRESHOLD",
-                "max_bet": "MAX_BET",
-            }),
-            "market_making": (self.mm, {
-                "min_spread": "MIN_SPREAD",
-                "max_spread": "MAX_SPREAD",
-                "order_size": "ORDER_SIZE",
-                "max_inventory_per_side": "MAX_INVENTORY_PER_SIDE",
-                "max_concurrent_markets": "MAX_CONCURRENT_MARKETS",
-            }),
-            # v12.10: crowd_sport e crowd_prediction disabilitati — skip se non inizializzati
-            **({"crowd_sport": (self.crowd_sport, {
-                "min_edge": "MIN_EDGE",
-                "max_bet": "MAX_BET",
-                "kelly_fraction": "KELLY_FRACTION",
-                "min_volume": "MIN_VOLUME",
-                "max_markets_per_scan": "MAX_MARKETS_PER_SCAN",
-            })} if hasattr(self, 'crowd_sport') else {}),
-            **({"crowd_prediction": (self.crowd_prediction, {
-                "min_edge": "MIN_EDGE",
-                "max_bet": "MAX_BET",
-                "kelly_fraction": "KELLY_FRACTION",
-                "min_volume": "MIN_VOLUME",
-                "max_markets_per_scan": "MAX_MARKETS_PER_SCAN",
-            })} if hasattr(self, 'crowd_prediction') else {}),
+            # Removed: favorite_longshot, abandoned_position, negrisk_arb,
+            # holding_rewards, econ_sniper, market_making, crowd_sport, crowd_prediction
         }
 
         for strat_name, (strat_obj, param_map) in strategy_map.items():
@@ -2669,29 +2362,8 @@ class MultiStrategyBot:
             logger.debug(f"[AUTO-REVERT] Error: {e}")
 
     async def _weather_fetch_loop(self):
-        """v10.8: Fetch asincrono dei weather markets extra (offset 400-1400).
-        Gira ogni 60s in background, popola _weather_extra_cache senza bloccare il main loop."""
-        # v13.3: SOSPESO — weather disabilitato, questo loop blocca l'event loop
+        """v10.8: Weather market fetch — SOSPESO v13.3 (weather disabled)."""
         return
-        await asyncio.sleep(2)  # attendi primo fetch REST
-        while self._running:
-            try:
-                extra = []
-                base_ids = {m.id for m in self._shared_markets_cache} if self._shared_markets_cache else set()
-                for _off in range(400, 1400, 200):
-                    page = await asyncio.to_thread(self.api.fetch_markets, limit=200, offset=_off)
-                    if not page:
-                        break
-                    new = [m for m in page if m.id not in base_ids]
-                    extra.extend(new)
-                    base_ids.update(m.id for m in new)
-                self._weather_extra_cache = extra
-                self._weather_extra_last = time.time()
-                if extra:
-                    logger.debug(f"[WEATHER-ASYNC] Cache aggiornata: {len(extra)} mercati extra")
-            except Exception as e:
-                logger.debug(f"[WEATHER-ASYNC] Errore fetch: {e}")
-            await asyncio.sleep(60)
 
     async def _model_update_loop(self):
         """v10.8.5: Latency Hunter — monitora orari di rilascio modelli meteo.
