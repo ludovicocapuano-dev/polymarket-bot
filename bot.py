@@ -635,29 +635,10 @@ class MultiStrategyBot:
                         pass
 
                 # ── v9.2: Fetch ibrido REST + WebSocket ──
-                # v13.3: REST refresh ogni 500 cicli (~25min) — Gamma API stalla spesso.
-                # BTC latency e MRO usano CLOB API diretto, non Gamma.
-                # Questo fetch è solo per contesto orchestrator/validator.
-                if self._cycle == 1 or self._cycle % 500 == 0:
-                    try:
-                        shared_markets = await asyncio.wait_for(
-                            asyncio.to_thread(self.api.fetch_markets, limit=400),
-                            timeout=15,
-                        )
-                    except (asyncio.TimeoutError, Exception) as e:
-                        logger.warning(f"[FETCH] fetch_markets timeout/error: {e}")
-                        shared_markets = self._shared_markets_cache if hasattr(self, '_shared_markets_cache') else []
-                    if shared_markets:
-                        self._shared_markets_cache = shared_markets
-                        self.ws_feed.register_markets(shared_markets)
-                    elif not hasattr(self, '_shared_markets_cache') or not self._shared_markets_cache:
-                        logger.warning(f"Ciclo #{self._cycle}: 0 mercati, no cache — skip")
-                        await asyncio.sleep(self.config.poll_interval)
-                        continue
-                # Use cache if not a fetch cycle
-                shared_markets = getattr(self, '_shared_markets_cache', []) or []
-                if self.ws_feed.available and shared_markets:
-                    shared_markets = self.ws_feed.update_prices(shared_markets)
+                # v13.3: Gamma API DISABILITATA — stalla e blocca main loop.
+                # BTC latency e MRO usano CLOB API diretto per market discovery.
+                # shared_markets vuoto = orchestrator/validator non attivi (OK).
+                shared_markets = getattr(self, '_shared_markets_cache', None) or []
 
                 # ── v9.0: Orchestrator — prioritizzazione mercati ──
                 try:
